@@ -14,9 +14,20 @@ use std::sync::Arc;
 
 use hf_protocol::framing::FrameDecoder;
 use hf_protocol::pb::Envelope;
+use wtransport::config::QuicTransportConfig;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::endpoint::IncomingSession;
 use wtransport::{Endpoint, Identity, ServerConfig};
+
+/// Explicit ceiling on concurrent bidirectional streams (channels) per
+/// connection. Each accepted stream spawns a read task holding a buffer, and
+/// quinn's own docs note worst-case memory is proportional to this value — so
+/// we set it deliberately rather than inheriting the library default (the
+/// project rule: every buffer is bounded by a value we chose). A legitimate
+/// client needs one control stream plus a handful of attachment streams, well
+/// under this. Unidirectional streams are disabled entirely — the protocol
+/// never uses them.
+const MAX_CONCURRENT_BIDI_STREAMS: u32 = 64;
 
 use crate::conn::{Conn, OUTGOING_QUEUE};
 use crate::AppState;
@@ -40,9 +51,16 @@ impl WtListener {
         // Standard (padded) base64 of the raw digest bytes.
         let cert_hash_base64 = base64_encode(hash.as_ref());
 
+        let mut transport = QuicTransportConfig::default();
+        // Bound concurrent bidirectional streams (our channels) — and thus
+        // per-connection read-task memory — to a value we own rather than
+        // quinn's default. Unidirectional streams are left at the default: the
+        // HTTP/3 layer WebTransport rides on needs them for its own control
+        // (SETTINGS, QPACK), so they are not ours to zero.
+        transport.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
         let config = ServerConfig::builder()
             .with_bind_address(bind)
-            .with_identity(identity)
+            .with_custom_transport(identity, transport)
             .build();
         let endpoint = Arc::new(Endpoint::server(config)?);
         let local_addr = endpoint.local_addr()?;

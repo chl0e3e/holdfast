@@ -28,7 +28,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 tokio = { version = "1.52", features = ["full"] }
-wtransport = "0.7"
+wtransport = { version = "0.7", features = ["quinn"] }
 quinn = "0.11"
 prost = "0.14"
 prost-build = "0.14"

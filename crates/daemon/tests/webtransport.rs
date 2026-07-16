@@ -366,3 +366,45 @@ async fn webtransport_shell_reattaches_over_websocket() {
 
     daemon.abort();
 }
+
+/// Concurrent bidirectional streams per connection are bounded to a value the
+/// daemon owns (not quinn's default), so one connection cannot spawn unbounded
+/// per-stream read tasks/buffers. Opening streams past the cap blocks rather
+/// than being granted.
+#[tokio::test]
+async fn concurrent_bidi_streams_are_capped() {
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let (_ep, conn, _control) = wt_connect(&daemon).await;
+
+    // Hold every opened stream so it stays counted against the cap. Open until
+    // the next open blocks (times out) — that point is the enforced ceiling.
+    let mut held = Vec::new();
+    loop {
+        let opened = tokio::time::timeout(Duration::from_millis(500), async {
+            let opening = conn.open_bi().await.ok()?;
+            opening.await.ok()
+        })
+        .await;
+        match opened {
+            Ok(Some(pair)) => held.push(pair),
+            _ => break, // blocked by the cap, or errored — either way saturated
+        }
+        if held.len() > 500 {
+            panic!("stream cap not enforced: opened {} streams", held.len());
+        }
+    }
+
+    // The daemon sets max_concurrent_bidi_streams = 64; the WebTransport session
+    // consumes a little of that, so the reachable app total is at or just below
+    // it. Assert it is genuinely bounded and not pathologically tight.
+    assert!(held.len() <= 64, "concurrent bidi streams must be capped, got {}", held.len());
+    assert!(held.len() >= 32, "cap unexpectedly tight, got {}", held.len());
+
+    daemon.abort();
+}
