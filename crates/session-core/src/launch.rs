@@ -62,6 +62,19 @@ fn setpriv_wrap(ids: AccountIds, program: &str, args: &[String]) -> Launch {
         // so it gains exactly its groups and no others — in particular it does
         // NOT keep the daemon's groups.
         "--init-groups".to_string(),
+        // Clear inheritable and ambient capabilities before exec. This matters
+        // in the recommended non-root deployment where the daemon itself holds
+        // AmbientCapabilities=CAP_SETUID CAP_SETGID to perform the switch:
+        // ambient capabilities survive setuid, so without this the dropped
+        // shell would inherit CAP_SETUID and could switch back to another uid.
+        // The capability *bounding set* is deliberately left intact so ordinary
+        // setuid-root programs (sudo, ping, su) work as in a normal login shell.
+        // When the daemon runs as root these sets are already empty, so this is
+        // a harmless no-op there.
+        "--inh-caps".to_string(),
+        "-all".to_string(),
+        "--ambient-caps".to_string(),
+        "-all".to_string(),
         // Start from a clean environment for the dropped process.
         "--reset-env".to_string(),
         "--".to_string(),
@@ -164,6 +177,8 @@ mod tests {
                 "--reuid", "1001",
                 "--regid", "2002",
                 "--init-groups",
+                "--inh-caps", "-all",
+                "--ambient-caps", "-all",
                 "--reset-env",
                 "--",
                 "/bin/bash",

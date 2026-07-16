@@ -84,11 +84,18 @@ The **preferred** `setpriv` approach is now built:
   needs root + a secondary account, so it is `#[ignore]`d and run via
   `tests/authorization/run.sh`.
 
-Still deferred: the daemon does not itself acquire/relinquish privilege
-(systemd `AmbientCapabilities`/`User=` and the exact capability set for a
-production unit remain a deployment-hardening task), and the switch has been
-verified on this single host — a broader multi-user/multi-account soak is still
-worthwhile before wide deployment.
+Production deployment is now specified too (`deploy/systemd/`): the daemon runs
+as an unprivileged service account holding only `AmbientCapabilities=CAP_SETUID`
+`CAP_SETGID` — the "just enough privilege, never the whole gateway as root"
+model. Because ambient capabilities survive `setuid`, the launcher additionally
+clears the inheritable and ambient sets (`--inh-caps -all --ambient-caps -all`)
+before exec so the dropped shell inherits none of the daemon's capabilities,
+while leaving the bounding set intact so ordinary setuid-root tools still work.
+`--drop-privileges` also now refuses to start without an explicit `--account`
+allowlist, closing the "permissive AllowAll + drop" gap.
+
+Still worthwhile: the switch has been verified on a single host — a broader
+multi-user/multi-account soak before wide deployment.
 
 ## Consequences
 

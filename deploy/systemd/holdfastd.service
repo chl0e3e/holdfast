@@ -1,0 +1,62 @@
+# Holdfast daemon — single-user deployment.
+#
+# Every shell runs as the unprivileged `holdfast` service account. No privilege
+# drop, so this unit can be aggressively locked down. Use this when the server
+# is administered by one account (the common standalone case).
+#
+# Install:
+#   sudo useradd --system --home /var/lib/holdfast --shell /usr/sbin/nologin holdfast
+#   sudo install -Dm755 target/release/holdfastd /usr/local/bin/holdfastd
+#   sudo install -Dm644 deploy/systemd/holdfastd.service /etc/systemd/system/holdfastd.service
+#   sudo mkdir -p /var/lib/holdfast/web && sudo cp -r web/dist/* /var/lib/holdfast/web/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now holdfastd
+
+[Unit]
+Description=Holdfast roaming terminal daemon (single-user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=holdfast
+Group=holdfast
+
+# The daemon owns UDP 443 for WebTransport/QUIC (nginx keeps TCP 443). Binding
+# a port below 1024 is the ONLY privilege it needs here.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+ExecStart=/usr/local/bin/holdfastd \
+    --bind 127.0.0.1:8080 \
+    --wt-bind 0.0.0.0:443 \
+    --web-root /var/lib/holdfast/web \
+    --ssh-auth admin /var/lib/holdfast/authorized_keys \
+    --allowed-origin https://terminal.example.com
+
+Restart=on-failure
+RestartSec=2s
+
+# --- Sandboxing ---
+# NOTE: this service's whole purpose is to run interactive shells as its own
+# user, so the sandbox protects the HOST from a daemon compromise without
+# crippling those shells. It is deliberately lighter than a typical network
+# daemon: aggressive filters (ProtectHome, a restrictive SystemCallFilter,
+# MemoryDenyWriteExecute) would break ordinary interactive use, since the
+# shells are children of this unit.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/holdfast
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+StateDirectory=holdfast
+
+[Install]
+WantedBy=multi-user.target

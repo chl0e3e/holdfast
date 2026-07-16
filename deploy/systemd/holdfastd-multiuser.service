@@ -1,0 +1,64 @@
+# Holdfast daemon — multi-user deployment with privilege drop.
+#
+# The network-facing daemon runs as the unprivileged `holdfast` account but
+# holds just enough capability (CAP_SETUID + CAP_SETGID) to launch each shell
+# under the authenticated user's own Unix account via setpriv (ADR 0007). This
+# is the "just enough privilege, never the whole gateway as root" model the
+# project plan mandates.
+#
+# Prerequisites:
+#   - setpriv (util-linux) at /usr/bin/setpriv.
+#   - Each end user has a real Unix account and an authorized_keys file.
+#   - An --account mapping per user (the daemon refuses --drop-privileges
+#     without one, so a client can never request an arbitrary account).
+
+[Unit]
+Description=Holdfast roaming terminal daemon (multi-user, privilege drop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=holdfast
+Group=holdfast
+
+# Just enough privilege to switch to an allowed account, plus the low-port bind.
+# CAP_SETUID/CAP_SETGID let setpriv change uid/gid; CAP_DAC_READ_SEARCH lets the
+# daemon read each user's ~/.ssh/authorized_keys at startup. The launcher clears
+# inheritable+ambient caps before exec, so NONE of these leak into the shell.
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+
+ExecStart=/usr/local/bin/holdfastd \
+    --bind 127.0.0.1:8080 \
+    --wt-bind 0.0.0.0:443 \
+    --web-root /var/lib/holdfast/web \
+    --drop-privileges \
+    --ssh-auth alice /home/alice/.ssh/authorized_keys \
+    --account alice alice \
+    --ssh-auth bob /home/bob/.ssh/authorized_keys \
+    --account bob bob \
+    --allowed-origin https://terminal.example.com
+
+Restart=on-failure
+RestartSec=2s
+
+# --- Sandboxing ---
+# CRITICAL: NoNewPrivileges must stay OFF here. The shells run as real user
+# accounts and, like a normal SSH login, must be able to run setuid-root
+# programs (sudo, ping, passwd); NoNewPrivileges=yes would block all of them.
+# The daemon's own attack surface is instead bounded by the tiny capability set
+# above and the filters below.
+NoNewPrivileges=no
+PrivateTmp=no
+# Do NOT set ProtectHome/ProtectSystem=strict: the whole point is to run users'
+# shells in their own homes. Host protection here comes from the minimal
+# capability set, not filesystem sandboxing that would break interactive use.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -209,6 +209,13 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
   than ever running under the daemon's (more-privileged) identity. There is no
   unprivileged fallback. The drop is off by default, so the standalone
   single-user daemon runs every shell as its own (correct, only) account.
+- Production model (`deploy/systemd/`): the daemon runs unprivileged with only
+  `AmbientCapabilities=CAP_SETUID CAP_SETGID`. Since ambient caps survive
+  `setuid`, the launcher clears the inheritable+ambient sets before exec so the
+  shell inherits none of the daemon's capabilities (bounding set left intact so
+  `sudo`/`ping` still work). `--drop-privileges` refuses to start without an
+  explicit `--account` allowlist, so it can never fall back to permissive
+  `AllowAll`.
 - **Tests:** authorization rejects accounts outside policy
   (`account_authorization_is_enforced`); pure argv-construction/resolver unit
   tests (`launch.rs`); the real uid switch verified over a PTY
