@@ -27,9 +27,17 @@ use hf_protocol::ids::ShellId;
 use hf_pty::{ExitSummary, PtyConfig, PtyError, PtyProcess};
 
 pub use policy::{AccessPolicy, AllowAll, Denied, StaticPolicy};
-use hf_terminal_model::{HistoryRange, TerminalModel, TerminalModelConfig};
+use hf_terminal_model::{HistoryRange, TerminalModel, TerminalModelConfig, MIN_COLS, MIN_ROWS};
 
 pub use token::ResumeToken;
+
+/// Clamp client-supplied terminal dimensions to the safe floor the terminal
+/// model enforces, so the PTY winsize and the model never disagree and neither
+/// can be driven into `avt`'s degenerate 0/1-column code paths (threat model
+/// T9). Applied identically to every open/attach/resize entry point.
+fn clamp_dims(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.max(MIN_COLS), rows.max(MIN_ROWS))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -226,8 +234,12 @@ impl ShellManager {
             return Err(SessionError::LimitExceeded("max_shells"));
         }
 
-        let cols = if req.cols == 0 { 80 } else { req.cols };
-        let rows = if req.rows == 0 { 24 } else { req.rows };
+        // 0 means "client didn't say"; fall back to the conventional 80x24,
+        // then clamp to the model's safe floor.
+        let (cols, rows) = clamp_dims(
+            if req.cols == 0 { 80 } else { req.cols },
+            if req.rows == 0 { 24 } else { req.rows },
+        );
         let mut pty = PtyProcess::spawn(&PtyConfig {
             program: req.command.clone(),
             args: req.args.clone(),
@@ -298,11 +310,16 @@ impl ShellManager {
             return Err(SessionError::LimitExceeded("max_attachments_per_shell"));
         }
 
-        if rt.model.size() != (cols, rows) && cols != 0 && rows != 0 {
-            if let Some(pty) = rt.pty.as_mut() {
-                pty.resize(cols, rows)?;
+        // 0 dimensions mean "keep the current size" on reattach; otherwise
+        // clamp to the model's safe floor before touching the PTY or model.
+        if cols != 0 && rows != 0 {
+            let (cols, rows) = clamp_dims(cols, rows);
+            if rt.model.size() != (cols, rows) {
+                if let Some(pty) = rt.pty.as_mut() {
+                    pty.resize(cols, rows)?;
+                }
+                rt.model.resize(cols, rows);
             }
-            rt.model.resize(cols, rows);
         }
 
         let rotated = ResumeToken::generate();
@@ -346,6 +363,13 @@ impl ShellManager {
 
     /// Resize the shell (newest size wins; callers may coalesce — spec §9).
     pub fn resize(&self, shell_id: &ShellId, cols: u16, rows: u16) -> Result<(), SessionError> {
+        // 0 means "unknown/keep current"; any other value is clamped to the
+        // model's safe floor so the PTY and model stay in sync and neither
+        // reaches avt's degenerate 0/1-column paths (threat model T9).
+        if cols == 0 || rows == 0 {
+            return Ok(());
+        }
+        let (cols, rows) = clamp_dims(cols, rows);
         let entry = self.entry(shell_id)?;
         let mut rt = entry.runtime.lock().unwrap();
         match rt.pty.as_mut() {

@@ -34,15 +34,35 @@ export function sanitizeTitle(raw: string): string {
   return out.length > MAX_TITLE_LEN ? out.slice(0, MAX_TITLE_LEN) + "…" : out;
 }
 
-/// A paste that contains newlines or control characters can execute commands
-/// the user did not intend (paste-injection). Callers should confirm before
-/// sending such a paste to the shell.
+/// Unicode format/control code points that are invisible or reorder text, so a
+/// pasted command can read differently than it runs (Trojan Source, CVE-2021-
+/// 42574) or smuggle a line break past a naive newline check:
+///   U+2028/U+2029  line / paragraph separator (newline-equivalent to some shells)
+///   U+202A–U+202E  bidi embeddings and overrides (LRE/RLE/PDF/LRO/RLO)
+///   U+2066–U+2069  bidi isolates (LRI/RLI/FSI/PDI)
+///   U+200B–U+200F  zero-width spaces/joiners and LRM/RLM marks
+///   U+FEFF         zero-width no-break space / BOM
+function isDangerousFormatChar(code: number): boolean {
+  return (
+    code === 0x2028 ||
+    code === 0x2029 ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) ||
+    (code >= 0x200b && code <= 0x200f) ||
+    code === 0xfeff
+  );
+}
+
+/// A paste that contains newlines, control characters, or invisible/direction-
+/// altering Unicode can execute commands the user did not intend (paste-
+/// injection). Callers should confirm before sending such a paste to the shell.
 export function pasteNeedsConfirmation(text: string): boolean {
   for (const ch of text) {
     const code = ch.codePointAt(0)!;
     if (code === 0x09) continue; // tab is benign
     if (code === 0x0a || code === 0x0d) return true; // newline / CR
     if (isControl(code)) return true; // other C0 / C1 / DEL
+    if (isDangerousFormatChar(code)) return true; // bidi / zero-width / separators
   }
   return false;
 }

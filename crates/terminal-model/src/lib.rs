@@ -10,6 +10,16 @@ mod utf8;
 
 pub use history::{HistoryRange, HistoryRing};
 
+/// Smallest column count we hand to `avt`. Below this the emulator is both
+/// useless and unsafe: `avt` 0.18 enters an infinite loop at 0 columns and
+/// panics (subtract-with-overflow) when a resize to 1 column splits a
+/// double-width cell. A terminal narrower than one wide glyph is degenerate
+/// anyway, so every dimension is clamped to this floor (threat model T9 —
+/// resize dimensions are attacker-controlled).
+pub const MIN_COLS: u16 = 2;
+/// Smallest row count we hand to `avt`; 0 rows panics on resize.
+pub const MIN_ROWS: u16 = 1;
+
 /// Bounds and initial dimensions for one shell's terminal model.
 #[derive(Debug, Clone)]
 pub struct TerminalModelConfig {
@@ -45,18 +55,20 @@ pub struct TerminalModel {
 
 impl TerminalModel {
     pub fn new(config: TerminalModelConfig) -> TerminalModel {
+        let cols = config.cols.max(MIN_COLS);
+        let rows = config.rows.max(MIN_ROWS);
         TerminalModel {
             // scrollback_limit(0): avt evicts every scrolled-off primary line
             // immediately and hands it to us (ADR 0004); we own the ring.
             vt: avt::Vt::builder()
-                .size(config.cols as usize, config.rows as usize)
+                .size(cols as usize, rows as usize)
                 .scrollback_limit(0)
                 .build(),
             utf8: utf8::IncrementalUtf8::new(),
             history: HistoryRing::new(config.max_history_lines, config.max_history_bytes),
             revision: 1,
-            cols: config.cols,
-            rows: config.rows,
+            cols,
+            rows,
         }
     }
 
@@ -79,7 +91,13 @@ impl TerminalModel {
     /// Resize the model (the caller must also resize the PTY). History keeps
     /// its original wrapping (spec §10 v0 reflow decision); the visible
     /// screen is reflowed by avt.
+    /// Resize the emulator. `cols`/`rows` are clamped to [`MIN_COLS`]/
+    /// [`MIN_ROWS`] first, so hostile or degenerate client dimensions (0, or a
+    /// 1-column split of a wide glyph) can never reach `avt`'s panicking/hanging
+    /// paths. Returns the (possibly unchanged) revision.
     pub fn resize(&mut self, cols: u16, rows: u16) -> u64 {
+        let cols = cols.max(MIN_COLS);
+        let rows = rows.max(MIN_ROWS);
         if (cols, rows) != (self.cols, self.rows) {
             self.vt.resize(cols as usize, rows as usize);
             self.cols = cols;

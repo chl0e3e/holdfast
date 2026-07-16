@@ -18,7 +18,7 @@ Last updated: 2026-07-16
 | T6 fork bombs / PTY exhaustion | partial | per-user shell/attachment limits enforced; cgroup/rlimit launcher pending |
 | T7 origin confusion | covered | Origin allowlist on the WS endpoint (daemon `origin.rs` tests); dev auth refuses non-loopback |
 | T8 replay of open/terminate | covered | idempotency keys + idempotent terminate (session-core) |
-| T9 terminal escape attacks | partial | title sanitization, paste-injection guard, inert OSC-52/OSC-8 (no clipboard/links addons loaded) — `web/src/client/terminal-safety.ts` + tests; broader escape corpora pending |
+| T9 terminal escape attacks | covered | title sanitization, paste-injection guard (incl. bidi/zero-width/line-separator Trojan-Source chars), inert OSC-52/OSC-8 — `web/src/client/terminal-safety.ts` + expanded hostile corpus; server-side model survives a hostile escape/fuzz/resize corpus (`crates/terminal-model/tests/hostile.rs`), incl. the fixed avt 0/1-column resize DoS (clamped in `TerminalModel` + `session-core`, tested end-to-end) |
 | T10 secret leakage in logs | partial | ResumeToken/redacted Debug; key fingerprints (not keys) logged |
 | T11 supply chain | partial | cargo-audit + npm-audit CI gate (.github/workflows/audit.yml); lockfiles committed |
 | T12 privilege escalation | partial | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop mechanism is a deployment integration (ADR 0007) needing a rooted host |
@@ -154,8 +154,19 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
 - Hyperlink (OSC 8) activation requires user gesture and shows the target.
 - Terminal-answerback sequences that echo attacker-controlled bytes back as
   input are filtered/disabled in the client emulator configuration.
-- **Tests:** terminal-compatibility suite includes malicious escape corpora;
-  clipboard write attempts without the feature enabled are no-ops.
+- The server-side terminal model parses attacker-controlled PTY output, so it
+  must never panic, hang, or grow unbounded on hostile input. Client-supplied
+  terminal dimensions are clamped to a safe floor (`MIN_COLS`/`MIN_ROWS`) before
+  reaching `avt`, which otherwise infinite-loops at 0 columns and panics on a
+  1-column split of a wide glyph or 0 rows.
+- **Tests:** `crates/terminal-model/tests/hostile.rs` (named hostile corpus,
+  byte-at-a-time feeding, seeded random + escape-biased fuzz, resize storm,
+  history-bound flood, degenerate-dimension clamping); the resize DoS is also
+  covered end-to-end over a real PTY in
+  `hostile_resize_dimensions_do_not_crash_or_hang_the_shell`
+  (`crates/session-core/tests/lifecycle.rs`); browser-side title/paste/clipboard
+  corpora in `web/src/spike/terminal-safety.test.ts`; clipboard write attempts
+  without the feature enabled are no-ops.
 
 ### T10. Secrets leaked through logs, crash dumps or metrics
 

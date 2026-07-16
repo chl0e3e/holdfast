@@ -166,6 +166,45 @@ fn detach_does_not_kill_and_terminate_does() {
     ));
 }
 
+/// A malicious or buggy client can drive the shell to hostile terminal
+/// dimensions. avt 0.18 hangs at 0 columns and panics at 1 column (wide-glyph
+/// split) or 0 rows; the manager must clamp every open/attach/resize so those
+/// never reach the emulator (threat model T9). A hang here fails via the T
+/// timeout in read_until; a panic fails the test thread.
+#[test]
+fn hostile_resize_dimensions_do_not_crash_or_hang_the_shell() {
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+
+    // Open with a degenerate 1x0 request: must be clamped, not fatal.
+    let opened = mgr
+        .open_shell(&OpenShellRequest {
+            command: Some("bash".into()),
+            args: vec!["--norc".into()],
+            cols: 1,
+            rows: 0,
+            idempotency_key: [90; 16],
+            ..Default::default()
+        })
+        .unwrap();
+    let a = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
+
+    // Put a wide glyph on screen — the ingredient for the 1-column panic.
+    mgr.write_input(&opened.shell_id, b"printf '\\xf0\\x9f\\xa6\\x80wide\\n'\r").unwrap();
+    read_until(&a, "wide");
+
+    // Every degenerate size the emulator would otherwise choke on.
+    for (cols, rows) in [(0u16, 24u16), (1, 24), (80, 0), (0, 0), (1, 1), (2, 1)] {
+        mgr.resize(&opened.shell_id, cols, rows).unwrap();
+    }
+
+    // Back to a sane size, the shell is still alive and responsive.
+    mgr.resize(&opened.shell_id, 40, 6).unwrap();
+    mgr.write_input(&opened.shell_id, b"echo still-alive-$((6*7))\r").unwrap();
+    read_until(&a, "still-alive-42");
+
+    mgr.terminate(&opened.shell_id).unwrap();
+}
+
 #[test]
 fn shell_and_attachment_limits_are_enforced() {
     let mgr = ShellManager::new(SessionCoreConfig {
