@@ -45,14 +45,18 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
 - `hf` signs SSH challenges with an OpenSSH key (`hf --user alice --key
   ~/.ssh/id_ed25519 open`) and reuses the issued grant for later reconnects.
 - Hardening in place: parser fuzz/robustness harnesses, Origin allowlist, a
-  cargo-audit/npm-audit CI gate, and browser terminal-escape/clipboard
-  defenses (title sanitization, paste-injection guard, inert OSC-52/OSC-8 —
-  `web/src/client/terminal-safety.ts`, run `cd web && npm test`), and Unix
-  account authorization (per-user allowlist enforced on shell open, ADR 0007).
+  cargo-audit/npm-audit CI gate, browser terminal-escape/clipboard defenses
+  (title sanitization, paste-injection guard incl. Trojan-Source bidi/
+  zero-width/line-separator characters, inert OSC-52/OSC-8 —
+  `web/src/client/terminal-safety.ts`, run `cd web && npm test`), a hostile
+  server-side escape/fuzz/resize corpus that also fixed an `avt` 0/1-column
+  resize DoS (`crates/terminal-model/tests/hostile.rs`), the netem
+  adverse-network suite over real QUIC (`tests/packet-loss/run.sh` — latency/
+  jitter/loss/reorder masking plus blackhole-then-resume), and Unix account
+  authorization (per-user allowlist enforced on shell open, ADR 0007).
   Still open before non-loopback use: the uid/gid-drop *mechanism* (needs a
-  rooted multi-user host — ADR 0007), the netem adverse-network suite, broader
-  escape corpora, and a manual security review. See ADR 0006/0007 and the
-  coverage map in `protocol/threat-model.md`.
+  rooted multi-user host — ADR 0007) and a manual security review. See
+  ADR 0006/0007 and the coverage map in `protocol/threat-model.md`.
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the
 admin-overlay project per the plan addendum.)
