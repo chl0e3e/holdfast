@@ -1,6 +1,11 @@
 # ADR 0007: Account authorization now; uid/gid drop as a deployment integration
 
-Date: 2026-07-16 · Status: accepted (authorization tested) · Relates to threat model T12
+Date: 2026-07-16 · Status: accepted; **mechanism now implemented and tested**
+(2026-07-16) · Relates to threat model T12
+
+> **Update (2026-07-16):** the mechanism deferred below has since been built and
+> verified — see "The mechanism" section's closing note. The original decision
+> is retained for the record.
 
 ## Context
 
@@ -56,6 +61,34 @@ Either way the daemon must run with just enough privilege to switch to the
 allowed accounts (a narrow, auditable boundary — never "the whole gateway as
 root", per the plan), and this must be verified on a real multi-user host with
 integration tests before any multi-user deployment.
+
+### Implemented (2026-07-16)
+
+The **preferred** `setpriv` approach is now built:
+
+- `crates/session-core/src/launch.rs` resolves the account (`getpwnam` via
+  `nix`) and builds `setpriv --reuid <uid> --regid <gid> --init-groups
+  --reset-env -- <shell> [args]` (absolute `/usr/bin/setpriv`, so a hostile
+  `PATH` cannot substitute it). `--init-groups` gives the child exactly the
+  target account's supplementary groups and none of the daemon's.
+- It is gated behind `SessionCoreConfig::privilege_drop` (daemon flag
+  `--drop-privileges`), default off. When off, or when the resolved account is
+  the daemon's own user, the shell launches directly — the single-user path is
+  untouched. When on and a switch is required but impossible (account missing,
+  insufficient privilege, `setpriv` absent), **opening fails** rather than
+  running under the wrong account — there is no unprivileged fallback.
+- Tests: pure argv-construction and resolver unit tests in `launch.rs` (always
+  run); the real uid switch is verified end-to-end over a PTY in
+  `crates/session-core/tests/privilege_drop.rs` (a shell requesting `nobody`
+  reports uid 65534; a no-account shell stays as the daemon's uid). That test
+  needs root + a secondary account, so it is `#[ignore]`d and run via
+  `tests/authorization/run.sh`.
+
+Still deferred: the daemon does not itself acquire/relinquish privilege
+(systemd `AmbientCapabilities`/`User=` and the exact capability set for a
+production unit remain a deployment-hardening task), and the switch has been
+verified on this single host — a broader multi-user/multi-account soak is still
+worthwhile before wide deployment.
 
 ## Consequences
 

@@ -64,8 +64,14 @@ async fn main() -> anyhow::Result<()> {
                     args.next().ok_or_else(|| anyhow::anyhow!("--allowed-origin needs a value"))?;
                 config.allowed_origins.get_or_insert_with(Vec::new).push(origin);
             }
+            "--drop-privileges" => {
+                // Launch each shell under its resolved Unix account (ADR 0007).
+                // The daemon must run with enough privilege to switch (root);
+                // pair with --ssh-auth + an account policy.
+                config.session.privilege_drop = true;
+            }
             other => anyhow::bail!(
-                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --allowed-origin <origin>, --wt-bind, --no-webtransport)"
+                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --allowed-origin <origin>, --drop-privileges, --wt-bind, --no-webtransport)"
             ),
         }
     }

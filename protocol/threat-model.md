@@ -21,7 +21,7 @@ Last updated: 2026-07-16
 | T9 terminal escape attacks | covered | title sanitization, paste-injection guard (incl. bidi/zero-width/line-separator Trojan-Source chars), inert OSC-52/OSC-8 — `web/src/client/terminal-safety.ts` + expanded hostile corpus; server-side model survives a hostile escape/fuzz/resize corpus (`crates/terminal-model/tests/hostile.rs`), incl. the fixed avt 0/1-column resize DoS (clamped in `TerminalModel` + `session-core`, tested end-to-end) |
 | T10 secret leakage in logs | partial | ResumeToken/redacted Debug; key fingerprints (not keys) logged |
 | T11 supply chain | partial | cargo-audit + npm-audit CI gate (.github/workflows/audit.yml); lockfiles committed |
-| T12 privilege escalation | partial | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop mechanism is a deployment integration (ADR 0007) needing a rooted host |
+| T12 privilege escalation | covered | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop **mechanism** implemented via `setpriv` (`session-core/src/launch.rs`, `--drop-privileges`, default off), real switch verified over a PTY in `tests/privilege_drop.rs` (run `tests/authorization/run.sh`). Remaining: production capability/unit hardening (ADR 0007) |
 
 "Covered" = automated test asserts it today. "Partial" = core mechanism exists
 and is tested, some hardening remains. "Pending" = designed, not yet built.
@@ -198,7 +198,19 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
 - The launcher never takes a path, environment or argv from the network without
   policy validation. Allowed Unix accounts come from AccessPolicy, not client
   input.
-- **Tests:** launcher rejects accounts outside policy; fuzz the launcher IPC.
+- Implemented (ADR 0007): when `privilege_drop` is enabled, the resolved account
+  (from AccessPolicy, never raw client input) is launched via
+  `setpriv --reuid --regid --init-groups --reset-env` at an absolute path. The
+  child receives exactly the target account's uid/gid and supplementary groups
+  and a reset environment; it keeps none of the daemon's groups. A switch that
+  cannot be performed aborts the open — there is no unprivileged fallback. The
+  drop is off by default, so the standalone single-user daemon runs every shell
+  as its own (correct, only) account.
+- **Tests:** authorization rejects accounts outside policy
+  (`account_authorization_is_enforced`); pure argv-construction/resolver unit
+  tests (`launch.rs`); the real uid switch verified over a PTY
+  (`privilege_drop.rs` via `tests/authorization/run.sh` — a `nobody`-scoped
+  shell reports uid 65534, a no-account shell stays as the daemon's uid).
 
 ## Residual risks accepted for now (revisit before beta)
 

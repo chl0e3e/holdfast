@@ -15,6 +15,7 @@
 //! Not yet here (Phase 2+): per-user scoping (arrives with authentication)
 //! and the idle-shell expiry reaper.
 
+mod launch;
 mod policy;
 mod token;
 
@@ -68,6 +69,14 @@ pub struct SessionCoreConfig {
     pub max_queued_chunks: usize,
     pub scrollback_max_lines: usize,
     pub scrollback_max_bytes: usize,
+    /// Enforce the uid/gid-drop *mechanism* (ADR 0007, threat model T12): when
+    /// `true`, a shell whose resolved account differs from the daemon's own
+    /// user is launched under that account via `setpriv`. Requires the daemon
+    /// to run with enough privilege to switch (typically root) and the accounts
+    /// to exist; when it cannot switch, opening fails rather than running under
+    /// the wrong account. Default `false` — the standalone single-user case
+    /// runs every shell as the daemon's own user (the correct, only account).
+    pub privilege_drop: bool,
 }
 
 impl Default for SessionCoreConfig {
@@ -79,6 +88,7 @@ impl Default for SessionCoreConfig {
             max_queued_chunks: 128,
             scrollback_max_lines: tm.max_history_lines,
             scrollback_max_bytes: tm.max_history_bytes,
+            privilege_drop: false,
         }
     }
 }
@@ -234,6 +244,17 @@ impl ShellManager {
             return Err(SessionError::LimitExceeded("max_shells"));
         }
 
+        // Resolve how to launch: when privilege drop is enabled and the
+        // account differs from the daemon's own user, this wraps the command
+        // in `setpriv` (ADR 0007). Errors here (missing account, cannot switch)
+        // abort the open — never a silent unprivileged fallback.
+        let launch = launch::build_launch(
+            self.config.privilege_drop,
+            account.as_deref(),
+            req.command.as_deref(),
+            &req.args,
+        )?;
+
         // 0 means "client didn't say"; fall back to the conventional 80x24,
         // then clamp to the model's safe floor.
         let (cols, rows) = clamp_dims(
@@ -241,8 +262,8 @@ impl ShellManager {
             if req.rows == 0 { 24 } else { req.rows },
         );
         let mut pty = PtyProcess::spawn(&PtyConfig {
-            program: req.command.clone(),
-            args: req.args.clone(),
+            program: launch.program,
+            args: launch.args,
             env: vec![],
             cwd: None,
             cols,

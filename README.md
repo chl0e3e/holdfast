@@ -52,10 +52,14 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
   server-side escape/fuzz/resize corpus that also fixed an `avt` 0/1-column
   resize DoS (`crates/terminal-model/tests/hostile.rs`), the netem
   adverse-network suite over real QUIC (`tests/packet-loss/run.sh` — latency/
-  jitter/loss/reorder masking plus blackhole-then-resume), and Unix account
-  authorization (per-user allowlist enforced on shell open, ADR 0007).
-  Still open before non-loopback use: the uid/gid-drop *mechanism* (needs a
-  rooted multi-user host — ADR 0007) and a manual security review. See
+  jitter/loss/reorder masking plus blackhole-then-resume), Unix account
+  authorization (per-user allowlist enforced on shell open, ADR 0007), and the
+  uid/gid-drop *mechanism* — shells launch under their resolved account via
+  `setpriv` (`--drop-privileges`, off by default; `session-core/src/launch.rs`),
+  the real switch verified over a PTY in
+  `crates/session-core/tests/privilege_drop.rs` (run `tests/authorization/run.sh`).
+  Still open before non-loopback use: production capability/systemd-unit
+  hardening for the drop (ADR 0007) and a manual security review. See
   ADR 0006/0007 and the coverage map in `protocol/threat-model.md`.
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the

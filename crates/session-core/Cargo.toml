@@ -13,3 +13,4 @@ hf-terminal-model = { path = "../terminal-model" }
 thiserror.workspace = true
 rand.workspace = true
 sha2.workspace = true
+nix = { workspace = true, features = ["user"] }

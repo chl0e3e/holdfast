@@ -821,6 +821,7 @@ dependencies = [
  "hf-protocol",
  "hf-pty",
  "hf-terminal-model",
+ "nix 0.31.3",
  "rand 0.9.5",
  "sha2 0.10.9",
  "thiserror 2.0.18",
