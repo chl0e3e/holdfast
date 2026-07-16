@@ -22,6 +22,9 @@ pub const PROTOCOL_MINOR: u32 = 1;
 pub const FRAME_BYTES_CEILING: u32 = 1024 * 1024;
 /// Default negotiated maximum frame payload size.
 pub const FRAME_BYTES_DEFAULT: u32 = 256 * 1024;
-/// Smallest maximum a peer may propose; below this the protocol cannot carry
-/// a useful snapshot or history chunk.
-pub const FRAME_BYTES_FLOOR: u32 = 4096;
+/// Smallest maximum a peer may propose. Must exceed a single PTY output chunk
+/// (8 KiB, `hf-pty`) plus envelope/protobuf overhead, so that a live
+/// `TerminalOutput` frame always fits within any negotiated limit — otherwise a
+/// peer that negotiated a tiny frame would treat ordinary shell output as an
+/// oversized (fatal) frame. 16 KiB leaves comfortable headroom.
+pub const FRAME_BYTES_FLOOR: u32 = 16 * 1024;

@@ -436,7 +436,10 @@ impl Conn {
                     &b.shell_id,
                     req.before_line_id,
                     req.maximum_lines.min(10_000),
-                    req.maximum_bytes.min(FRAME_BYTES_DEFAULT / 2),
+                    // Cap to half the *negotiated* frame size (not the default),
+                    // so the HistoryChunk always fits within what this client
+                    // agreed to receive, leaving room for envelope overhead.
+                    req.maximum_bytes.min(self.max_frame_bytes() / 2),
                 ) {
                     Ok(range) => {
                         let chunk = respond(
