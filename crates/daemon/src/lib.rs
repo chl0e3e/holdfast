@@ -64,6 +64,11 @@ pub struct DaemonConfig {
     /// first account listed for a user is their default. The uid/gid switch
     /// itself is a deployment concern (ADR 0007).
     pub account_policy: Option<BTreeMap<String, Vec<String>>>,
+    /// ed25519 seed for the connection-grant signing key. `None` generates a
+    /// fresh random key on every start, which invalidates all previously issued
+    /// grants across a restart; set this (from a persisted secret) so grants —
+    /// and therefore client reconnects — survive a daemon restart.
+    pub grant_signing_key: Option<[u8; 32]>,
     pub session: SessionCoreConfig,
 }
 
@@ -76,6 +81,7 @@ impl Default for DaemonConfig {
             auth: AuthConfig::DevInsecure,
             allowed_origins: None,
             account_policy: None,
+            grant_signing_key: None,
             session: SessionCoreConfig::default(),
         }
     }
@@ -143,7 +149,7 @@ impl Daemon {
                 AuthMode::SshKeys { users: verifiers }
             }
         };
-        let auth = AuthState::new(auth_mode, audience);
+        let auth = AuthState::new(auth_mode, audience, config.grant_signing_key);
 
         let wt_listener = config
             .webtransport_bind

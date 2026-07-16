@@ -397,3 +397,73 @@ async fn users_cannot_see_or_terminate_each_others_shells() {
 
     daemon.abort();
 }
+
+/// A connection grant with a restricted `ops` scope must be honored, not
+/// silently upgraded to full access (threat model T4). A list-only grant can
+/// list but cannot open, attach, or terminate.
+#[tokio::test]
+async fn scoped_grant_ops_are_enforced() {
+    use hf_auth::{GrantClaims, GrantSigner};
+
+    // Pin the grant signing key so the test can mint a scoped grant the daemon
+    // will accept. Empty SSH user set: we authenticate purely via the grant.
+    let grant_key = [7u8; 32];
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        webtransport_bind: None,
+        auth: AuthConfig::SshKeys { users: BTreeMap::new() },
+        grant_signing_key: Some(grant_key),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Mint a list-only grant bound to this daemon's audience (its server id).
+    let signer = GrantSigner::from_bytes(&grant_key);
+    let grant = signer.issue(&GrantClaims {
+        sub: "alice".into(),
+        aud: daemon.server_id.to_string(),
+        servers: vec![],
+        ops: vec!["list".into()],
+        iat_ms: 0,
+        exp_ms: 4_102_444_800_000, // year 2100
+        jti: "test-jti".into(),
+    });
+
+    let mut ws = connect(&daemon).await;
+    send(&mut ws, plain(Msg::Authenticate(pb::Authenticate {
+        method: Some(pb::authenticate::Method::ConnectionGrant(grant.as_bytes().to_vec())),
+    })))
+    .await;
+    let ok = loop {
+        if let Some(Msg::AuthenticationResult(r)) = recv(&mut ws).await.message {
+            break r.ok;
+        }
+    };
+    assert!(ok, "valid scoped grant must authenticate");
+
+    // Permitted op: list works.
+    send(&mut ws, plain(Msg::ListShells(pb::ListShells {}))).await;
+    assert!(matches!(recv(&mut ws).await.message, Some(Msg::ShellList(_))), "list is permitted");
+
+    // Forbidden ops: open and terminate are rejected with ERR_FORBIDDEN.
+    send(&mut ws, open_shell_env("")).await;
+    let open_reply = recv(&mut ws).await;
+    assert!(
+        matches!(&open_reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrForbidden as i32),
+        "open must be forbidden for a list-only grant, got {:?}",
+        open_reply.message
+    );
+
+    let mut term = plain(Msg::TerminateShell(pb::TerminateShell {}));
+    term.shell_id = vec![9u8; 16];
+    send(&mut ws, term).await;
+    let term_reply = recv(&mut ws).await;
+    assert!(
+        matches!(&term_reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrForbidden as i32),
+        "terminate must be forbidden for a list-only grant, got {:?}",
+        term_reply.message
+    );
+
+    daemon.abort();
+}

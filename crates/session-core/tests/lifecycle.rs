@@ -198,6 +198,46 @@ fn detach_does_not_kill_and_terminate_does() {
     ));
 }
 
+/// Per-owner fairness cap: one user cannot exhaust the global shell pool and
+/// starve others (threat model T1/T5).
+#[test]
+fn per_user_shell_cap_is_enforced_and_isolated() {
+    let mgr = ShellManager::new(SessionCoreConfig {
+        max_shells: 100,
+        max_shells_per_user: 2,
+        ..Default::default()
+    });
+    let open = |user: &str, key: u8| {
+        mgr.open_shell(&OpenShellRequest {
+            user: user.into(),
+            command: Some("bash".into()),
+            args: vec!["--norc".into()],
+            cols: 40,
+            rows: 6,
+            idempotency_key: [key; 16],
+            ..Default::default()
+        })
+    };
+
+    let a1 = open("alice", 1).unwrap();
+    let _a2 = open("alice", 2).unwrap();
+    // Alice's 3rd exceeds her per-user cap even though the global pool is free.
+    assert!(matches!(
+        open("alice", 3),
+        Err(SessionError::LimitExceeded("max_shells_per_user"))
+    ));
+    // Bob is unaffected by Alice's usage.
+    let _b1 = open("bob", 4).unwrap();
+    let _b2 = open("bob", 5).unwrap();
+    assert!(matches!(open("bob", 6), Err(SessionError::LimitExceeded("max_shells_per_user"))));
+
+    // Freeing one of Alice's shells lets her open again.
+    mgr.terminate(&a1.shell_id).unwrap();
+    mgr.remove_exited(&a1.shell_id).unwrap();
+    let a3 = open("alice", 7).unwrap();
+    mgr.terminate(&a3.shell_id).unwrap();
+}
+
 /// A malicious or buggy client can drive the shell to hostile terminal
 /// dimensions. avt 0.18 hangs at 0 columns and panics at 1 column (wide-glyph
 /// split) or 0 rows; the manager must clamp every open/attach/resize so those

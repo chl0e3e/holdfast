@@ -10,7 +10,7 @@ Last updated: 2026-07-16
 
 | Threat | Status | Where |
 |---|---|---|
-| T1 stolen token/grant | partial | resume-token rotation + hash storage (session-core lifecycle tests); rate limiting (daemon auth tests); grant expiry/audience (hf-auth grant tests); `authorized_keys` entries carrying options (`command=`/`restrict`/`from=`/`expiry-time`) are skipped, not silently granted full access (hf-auth `keys_with_options_are_skipped_*`). Still open: rate-limiter map eviction, SSH-challenge channel binding, grant `ops` scope enforcement |
+| T1 stolen token/grant | partial | resume-token rotation + hash storage; rate limiting **with bounded/evicting bucket map** (daemon auth tests); grant expiry/audience; grant `ops` scope enforced end to end (`scoped_grant_ops_are_enforced`); per-user shell cap (`per_user_shell_cap_is_enforced_and_isolated`); `authorized_keys` option-bearing entries skipped, not granted full access. Grant signing key is persistable so grants survive restart. Still open: SSH-challenge channel binding (ADR 0008 — needs a cross-client change; documented limitation until then) |
 | T2 cross-user attachment | covered | session-core `rotated_token_rejects_replay`; auth rejects unknown key with generic error; per-user isolation on list/terminate/idempotency (daemon `users_cannot_see_or_terminate_each_others_shells`, session-core `idempotency_reuse_is_scoped_to_owner`) |
 | T3 malicious server/agent | pending | agent mode is Phase 6; VT parser fuzzing pending |
 | T4 compromised gateway | n/a (core) | gateway is the overlay project; grant verify-key split in place |

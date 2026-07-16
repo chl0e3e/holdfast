@@ -33,6 +33,11 @@ pub(crate) struct Conn {
     /// Authenticated user id, set on successful auth; the account authorizer
     /// keys on this (threat model T12). Empty in dev mode.
     user_id: String,
+    /// Operations this connection may perform. `None` = unrestricted (dev, SSH
+    /// key auth, or a grant with empty `ops`); `Some(list)` restricts to the
+    /// grant's scoped operations (threat model T4 — a scoped grant must not be
+    /// silently upgraded to full access).
+    op_scope: Option<Vec<String>>,
     /// Username + pending SSH challenge nonce, set after a challenge request
     /// and consumed by the matching response (spec §5).
     pending_challenge: Option<(String, Vec<u8>)>,
@@ -62,6 +67,7 @@ impl Conn {
             negotiated: None,
             authenticated: false,
             user_id: String::new(),
+            op_scope: None,
             pending_challenge: None,
             transport_datagrams,
             attachments: HashMap::new(),
@@ -71,6 +77,12 @@ impl Conn {
 
     pub(crate) fn max_frame_bytes(&self) -> u32 {
         self.negotiated.as_ref().map(|n| n.max_frame_bytes).unwrap_or(FRAME_BYTES_DEFAULT)
+    }
+
+    /// Whether this connection's grant scope permits `op` ("open", "attach",
+    /// "terminate", "list"). Unrestricted connections permit everything.
+    fn permits(&self, op: &str) -> bool {
+        self.op_scope.as_ref().map_or(true, |ops| ops.iter().any(|o| o == op))
     }
 
     /// The transport saw a channel/stream close: drop its attachment, if any.
@@ -130,6 +142,9 @@ impl Conn {
                     Ok(claims) => {
                         self.authenticated = true;
                         self.user_id = claims.sub.clone();
+                        // Honor the grant's operation scope (empty = all).
+                        self.op_scope =
+                            (!claims.ops.is_empty()).then(|| claims.ops.clone());
                         self.state.auth.rate_limiter.record_success(self.peer_ip);
                         self.send(0, auth_ok(request_id, &claims.sub, claims.exp_ms)).await
                     }
@@ -277,6 +292,11 @@ impl Conn {
                 self.send(0, respond(request_id, Msg::ServerList(list))).await
             }
             (0, Msg::ListShells(_)) => {
+                if !self.permits("list") {
+                    return self
+                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit list", false))
+                        .await;
+                }
                 let shells = self
                     .state
                     .manager
@@ -299,6 +319,11 @@ impl Conn {
                 self.send(0, respond(request_id, Msg::ShellList(pb::ShellList { shells }))).await
             }
             (0, Msg::OpenShell(open)) => {
+                if !self.permits("open") {
+                    return self
+                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit open", false))
+                        .await;
+                }
                 let Ok(idempotency_key) = <[u8; 16]>::try_from(open.idempotency_key.as_slice())
                 else {
                     return self
@@ -337,6 +362,11 @@ impl Conn {
                 }
             }
             (0, Msg::TerminateShell(_)) => {
+                if !self.permits("terminate") {
+                    return self
+                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit terminate", false))
+                        .await;
+                }
                 let Ok(shell_id) = ShellId::from_wire(&envelope.shell_id) else {
                     return self
                         .send(0, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "bad shell id", false))
@@ -452,6 +482,11 @@ impl Conn {
 
     async fn attach(&mut self, channel: u64, envelope: &Envelope, attach: pb::AttachShell) -> bool {
         let request_id = envelope.request_id;
+        if !self.permits("attach") {
+            return self
+                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit attach", false))
+                .await;
+        }
         if self.attachments.contains_key(&channel) {
             return self
                 .send(channel, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "channel already attached", false))

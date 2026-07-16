@@ -63,8 +63,12 @@ pub enum SessionError {
 
 #[derive(Debug, Clone)]
 pub struct SessionCoreConfig {
-    /// Spec §8 default: 16. Per-manager until per-user auth lands.
+    /// Spec §8 default: 16. Global ceiling across all users.
     pub max_shells: usize,
+    /// Per-owner live-shell cap (threat model T1/T5 fairness): one authenticated
+    /// user cannot consume the whole global `max_shells` and starve others.
+    /// `0` disables the per-user cap (only the global one applies).
+    pub max_shells_per_user: usize,
     /// Spec §8 default: 4 (multi-client attach — open question O6).
     pub max_attachments_per_shell: usize,
     /// Bound of each attachment's event queue in messages; PTY chunks are
@@ -87,6 +91,7 @@ impl Default for SessionCoreConfig {
         let tm = TerminalModelConfig::default();
         SessionCoreConfig {
             max_shells: 16,
+            max_shells_per_user: 8,
             max_attachments_per_shell: 4,
             max_queued_chunks: 128,
             scrollback_max_lines: tm.max_history_lines,
@@ -246,13 +251,20 @@ impl ShellManager {
             .resolve(&req.user, req.requested_account.as_deref())
             .map_err(|_| SessionError::Forbidden)?;
 
-        let live = inner
+        let live_shells: Vec<&Arc<ShellEntry>> = inner
             .shells
             .values()
             .filter(|e| e.runtime.lock().unwrap().state != ShellState::Exited)
-            .count();
-        if live >= self.config.max_shells {
+            .collect();
+        if live_shells.len() >= self.config.max_shells {
             return Err(SessionError::LimitExceeded("max_shells"));
+        }
+        // Per-owner fairness cap: one user must not exhaust the global pool.
+        if self.config.max_shells_per_user > 0 {
+            let owned = live_shells.iter().filter(|e| e.owner == req.user).count();
+            if owned >= self.config.max_shells_per_user {
+                return Err(SessionError::LimitExceeded("max_shells_per_user"));
+            }
         }
 
         // Resolve how to launch: when privilege drop is enabled and the
