@@ -53,14 +53,19 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
   resize DoS (`crates/terminal-model/tests/hostile.rs`), the netem
   adverse-network suite over real QUIC (`tests/packet-loss/run.sh` — latency/
   jitter/loss/reorder masking plus blackhole-then-resume), Unix account
-  authorization (per-user allowlist enforced on shell open, ADR 0007), and the
+  authorization (per-user allowlist enforced on shell open, ADR 0007), the
   uid/gid-drop *mechanism* — shells launch under their resolved account via
-  `setpriv` (`--drop-privileges`, off by default; `session-core/src/launch.rs`),
-  the real switch verified over a PTY in
-  `crates/session-core/tests/privilege_drop.rs` (run `tests/authorization/run.sh`).
-  Still open before non-loopback use: production capability/systemd-unit
-  hardening for the drop (ADR 0007) and a manual security review. See
-  ADR 0006/0007 and the coverage map in `protocol/threat-model.md`.
+  `setpriv` (`--drop-privileges` + `--account`, off by default;
+  `session-core/src/launch.rs`), verified over a PTY in
+  `crates/session-core/tests/privilege_drop.rs` (run `tests/authorization/run.sh`),
+  with production `deploy/systemd/` units running the daemon unprivileged
+  (ambient `CAP_SETUID`/`CAP_SETGID`, capabilities cleared before the shell),
+  and per-user shell isolation (list/terminate/idempotency scoped to the owner).
+  A security review has been run; its high-severity findings (per-user
+  isolation, `authorized_keys` options fail-closed) are fixed. Still open before
+  non-loopback use: the deferred medium findings (rate-limiter map eviction,
+  SSH-challenge channel binding, grant `ops` enforcement, per-user shell quota)
+  and a multi-user soak. See ADR 0006/0007 and `protocol/threat-model.md`.
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the
 admin-overlay project per the plan addendum.)
