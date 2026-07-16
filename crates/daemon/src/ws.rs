@@ -30,7 +30,10 @@ pub(crate) async fn handle_connection(socket: WebSocket, state: Arc<AppState>, p
         let _ = ws_tx.close().await;
     });
 
-    let mut conn = Conn::new(state, peer_ip, out_tx, false);
+    // No TLS channel binding on the WebSocket path (nginx terminates TLS; the
+    // daemon cannot see the client's certificate) — ADR 0008 documents this as
+    // relying on the operator's TLS/PKI. Empty binding = unbound signature.
+    let mut conn = Conn::new(state, peer_ip, out_tx, false, Vec::new());
 
     while let Some(Ok(message)) = ws_rx.next().await {
         let data = match message {

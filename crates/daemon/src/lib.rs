@@ -94,6 +94,9 @@ pub struct AppState {
     pub allowed_origins: Option<Vec<String>>,
     /// (UDP port, cert hash base64) when WebTransport is enabled.
     pub webtransport_info: Option<(u16, String)>,
+    /// Raw certificate SHA-256, the SSH-auth channel binding for WebTransport
+    /// connections (ADR 0008). `None` when WebTransport is disabled.
+    pub webtransport_cert_hash: Option<[u8; 32]>,
 }
 
 impl AppState {
@@ -158,6 +161,7 @@ impl Daemon {
         let webtransport_info = wt_listener
             .as_ref()
             .map(|l| (l.local_addr.port(), l.cert_hash_base64.clone()));
+        let webtransport_cert_hash = wt_listener.as_ref().map(|l| l.cert_hash);
 
         let manager = match &config.account_policy {
             Some(map) => {
@@ -176,6 +180,7 @@ impl Daemon {
             auth,
             allowed_origins: config.allowed_origins.clone(),
             webtransport_info: webtransport_info.clone(),
+            webtransport_cert_hash,
         });
 
         if let Some(listener) = &wt_listener {

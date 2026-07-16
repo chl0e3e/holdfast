@@ -89,11 +89,20 @@ impl SshVerifier {
         }
     }
 
-    /// Step 5: verify a signature over `challenge`. Confirms (a) the SshSig's
-    /// embedded key is authorized, (b) the SshSig namespace is ours, and
-    /// (c) the signature is valid over exactly the challenge bytes.
+    /// Step 5: verify a signature over the channel-bound challenge. Confirms
+    /// (a) the SshSig's embedded key is authorized, (b) the SshSig namespace is
+    /// ours, and (c) the signature is valid over exactly
+    /// [`channel_bound_message(channel_binding, challenge)`].
+    ///
+    /// `channel_binding` binds the signature to the TLS channel the client
+    /// authenticated over (the server's WebTransport certificate hash), so a
+    /// relayed signature — produced against the attacker's channel — fails here
+    /// (ADR 0008). Pass an empty slice for transports without a usable binding
+    /// (e.g. the nginx-terminated WebSocket path), which reproduces the
+    /// unbound behavior.
     pub fn verify_response(
         &self,
+        channel_binding: &[u8],
         challenge: &[u8],
         signature_pem: &[u8],
     ) -> Result<VerifiedIdentity, SshError> {
@@ -110,12 +119,26 @@ impl SshVerifier {
             .find(|k| k.key_data() == signer_key)
             .ok_or(SshError::KeyNotAuthorized)?;
 
+        let message = channel_bound_message(channel_binding, challenge);
         authorized_match
-            .verify(SSH_NAMESPACE, challenge, &sig)
+            .verify(SSH_NAMESPACE, &message, &sig)
             .map_err(|_| SshError::BadSignature)?;
 
         Ok(VerifiedIdentity { fingerprint: authorized_match.fingerprint(HashAlg::Sha256).to_string() })
     }
+}
+
+/// The exact bytes a client signs and the server verifies: the TLS channel
+/// binding followed by the server nonce (ADR 0008). Both sides compute this
+/// identically; the client uses the certificate hash it pinned, the server its
+/// own certificate hash. A relay sees the two diverge and the signature fails.
+/// The binding is fixed-length per transport (a 32-byte cert hash, or empty),
+/// so the plain concatenation is unambiguous.
+pub fn channel_bound_message(channel_binding: &[u8], challenge: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(channel_binding.len() + challenge.len());
+    message.extend_from_slice(channel_binding);
+    message.extend_from_slice(challenge);
+    message
 }
 
 /// Successful verification; the SHA-256 key fingerprint identifies which
@@ -154,7 +177,7 @@ mod tests {
         let sig = private.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
 
-        let identity = verifier.verify_response(&challenge, pem.as_bytes()).unwrap();
+        let identity = verifier.verify_response(b"", &challenge, pem.as_bytes()).unwrap();
         assert!(identity.fingerprint.starts_with("SHA256:"));
     }
 
@@ -172,9 +195,37 @@ mod tests {
         let sig = attacker.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
         assert!(matches!(
-            verifier.verify_response(&challenge, pem.as_bytes()),
+            verifier.verify_response(b"", &challenge, pem.as_bytes()),
             Err(SshError::KeyNotAuthorized)
         ));
+    }
+
+    #[test]
+    fn channel_binding_defeats_a_relayed_signature() {
+        // The client signs over its channel binding + the nonce. A verifier
+        // presenting a *different* binding (a relay forwarding to the real
+        // server R while the client signed against attacker M's channel) must
+        // reject, even though the key is authorized and the nonce matches.
+        let (private, authorized_line) = keypair();
+        let verifier = SshVerifier::from_authorized_keys(&authorized_line).unwrap();
+
+        let challenge = new_challenge();
+        let attacker_binding = [0xAAu8; 32]; // M's cert hash, what the client saw
+        let real_binding = [0xBBu8; 32]; // R's cert hash, what R verifies against
+
+        let signed = channel_bound_message(&attacker_binding, &challenge);
+        let sig = private.sign(SSH_NAMESPACE, HashAlg::Sha512, &signed).unwrap();
+        let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
+
+        // R (real binding) rejects the relayed signature.
+        assert!(matches!(
+            verifier.verify_response(&real_binding, &challenge, pem.as_bytes()),
+            Err(SshError::BadSignature)
+        ));
+        // The same signature verifies against the binding it was made for.
+        assert!(verifier
+            .verify_response(&attacker_binding, &challenge, pem.as_bytes())
+            .is_ok());
     }
 
     #[test]
@@ -188,7 +239,7 @@ mod tests {
 
         let server_challenge = new_challenge(); // different nonce
         assert!(matches!(
-            verifier.verify_response(&server_challenge, pem.as_bytes()),
+            verifier.verify_response(b"", &server_challenge, pem.as_bytes()),
             Err(SshError::BadSignature)
         ));
     }
@@ -201,7 +252,7 @@ mod tests {
         let sig = private.sign("some-other-namespace", HashAlg::Sha512, &challenge).unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
         assert!(matches!(
-            verifier.verify_response(&challenge, pem.as_bytes()),
+            verifier.verify_response(b"", &challenge, pem.as_bytes()),
             Err(SshError::BadSignature)
         ));
     }
@@ -215,7 +266,7 @@ mod tests {
         let challenge = new_challenge();
         let sig = p1.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
-        assert!(verifier.verify_response(&challenge, pem.as_bytes()).is_ok());
+        assert!(verifier.verify_response(b"", &challenge, pem.as_bytes()).is_ok());
     }
 
     #[test]

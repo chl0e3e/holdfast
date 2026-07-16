@@ -38,6 +38,11 @@ pub(crate) struct Conn {
     /// grant's scoped operations (threat model T4 — a scoped grant must not be
     /// silently upgraded to full access).
     op_scope: Option<Vec<String>>,
+    /// TLS channel binding for SSH auth (ADR 0008): the server's WebTransport
+    /// certificate hash on that transport, empty on WebSocket (nginx-terminated,
+    /// no binding available). Mixed into the signed challenge so a relayed
+    /// signature — made against a different server's channel — fails.
+    channel_binding: Vec<u8>,
     /// Username + pending SSH challenge nonce, set after a challenge request
     /// and consumed by the matching response (spec §5).
     pending_challenge: Option<(String, Vec<u8>)>,
@@ -60,6 +65,7 @@ impl Conn {
         peer_ip: IpAddr,
         out: tokio::sync::mpsc::Sender<(u64, Envelope)>,
         transport_datagrams: bool,
+        channel_binding: Vec<u8>,
     ) -> Conn {
         Conn {
             state,
@@ -68,6 +74,7 @@ impl Conn {
             authenticated: false,
             user_id: String::new(),
             op_scope: None,
+            channel_binding,
             pending_challenge: None,
             transport_datagrams,
             attachments: HashMap::new(),
@@ -191,7 +198,9 @@ impl Conn {
                     .state
                     .auth
                     .ssh_verifier(&username)
-                    .and_then(|v| v.verify_response(&expected, &resp.signature).ok());
+                    .and_then(|v| {
+                        v.verify_response(&self.channel_binding, &expected, &resp.signature).ok()
+                    });
                 match verified {
                     Some(identity) => {
                         tracing::info!(user = %username, key = %identity.fingerprint, "authenticated");

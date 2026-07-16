@@ -66,7 +66,9 @@ impl Chan {
     }
 }
 
-async fn wt_connect(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan) {
+/// Connection + hello only (no auth), returning the pinned cert hash so a test
+/// can drive the auth exchange itself (e.g. SSH with a channel binding).
+async fn wt_hello(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan, [u8; 32]) {
     let hash_bytes: [u8; 32] = {
         let b64 = daemon.webtransport_cert_hash_base64.as_ref().unwrap();
         let mut decoded = Vec::new();
@@ -125,6 +127,11 @@ async fn wt_connect(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan) {
     control
         .recv_until(|env| matches!(&env.message, Some(Msg::ServerHello(_))).then_some(()))
         .await;
+    (endpoint, connection, control, hash_bytes)
+}
+
+async fn wt_connect(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan) {
+    let (endpoint, connection, mut control, _hash) = wt_hello(daemon).await;
     control
         .send_env(plain(Msg::Authenticate(pb::Authenticate {
             method: Some(pb::authenticate::Method::ConnectionGrant(vec![])),
@@ -405,6 +412,81 @@ async fn concurrent_bidi_streams_are_capped() {
     // it. Assert it is genuinely bounded and not pathologically tight.
     assert!(held.len() <= 64, "concurrent bidi streams must be capped, got {}", held.len());
     assert!(held.len() >= 32, "cap unexpectedly tight, got {}", held.len());
+
+    daemon.abort();
+}
+
+/// SSH auth over WebTransport binds the signature to the server's certificate
+/// hash (ADR 0008). A signature made against a *different* channel binding — as
+/// a relay forwarding to the real server would produce — is rejected, while the
+/// correct binding authenticates.
+#[tokio::test]
+async fn ssh_channel_binding_is_enforced_over_webtransport() {
+    use ssh_key::rand_core::OsRng;
+    use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_line = key.public_key().to_openssh().unwrap();
+    let mut users = std::collections::BTreeMap::new();
+    users.insert("alice".to_string(), format!("{public_line}\n"));
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        auth: hf_daemon::AuthConfig::SshKeys { users },
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // The real channel binding is the certificate hash the client pins.
+    let (_e, _c, _ctrl, cert_hash) = wt_hello(&daemon).await;
+
+    // Over a fresh connection, run the SSH exchange signing `binding || nonce`;
+    // return whether the daemon accepted.
+    async fn attempt(daemon: &Daemon, key: &PrivateKey, binding: &[u8]) -> bool {
+        let (_ep, _conn, mut control, _hash) = wt_hello(daemon).await;
+        let public_line = key.public_key().to_openssh().unwrap();
+        control
+            .send_env(plain(Msg::Authenticate(pb::Authenticate {
+                method: Some(pb::authenticate::Method::SshChallengeRequest(pb::SshChallengeRequest {
+                    username: "alice".into(),
+                    public_key: public_line.into_bytes(),
+                })),
+            })))
+            .await;
+        let challenge = control
+            .recv_until(|env| match &env.message {
+                Some(Msg::AuthenticationResult(r)) => Some(r.challenge.clone()),
+                _ => None,
+            })
+            .await;
+        assert!(!challenge.is_empty(), "authorized key must receive a challenge");
+        let message = hf_auth::ssh::channel_bound_message(binding, &challenge);
+        let sig = key.sign(hf_auth::SSH_NAMESPACE, HashAlg::Sha512, &message).unwrap();
+        let pem = sig.to_pem(LineEnding::LF).unwrap();
+        control
+            .send_env(plain(Msg::Authenticate(pb::Authenticate {
+                method: Some(pb::authenticate::Method::SshChallengeResponse(pb::SshChallengeResponse {
+                    challenge,
+                    signature: pem.into_bytes(),
+                })),
+            })))
+            .await;
+        control
+            .recv_until(|env| match &env.message {
+                Some(Msg::AuthenticationResult(r)) => Some(r.ok),
+                _ => None,
+            })
+            .await
+    }
+
+    assert!(
+        attempt(&daemon, &key, &cert_hash).await,
+        "the correct channel binding must authenticate"
+    );
+    assert!(
+        !attempt(&daemon, &key, &[0u8; 32]).await,
+        "a relayed signature (wrong channel binding) must be rejected"
+    );
 
     daemon.abort();
 }

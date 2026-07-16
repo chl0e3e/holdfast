@@ -1,6 +1,11 @@
-# ADR 0008: SSH challenge channel binding (deferred, with design)
+# ADR 0008: SSH challenge channel binding
 
-Date: 2026-07-16 · Status: accepted (deferral) · Relates to threat model T1/T4
+Date: 2026-07-16 · Status: **accepted and implemented for WebTransport** (the
+WebSocket path remains a documented limitation) · Relates to threat model T1/T4
+
+> **Update (2026-07-16):** the WebTransport cert-hash binding designed below has
+> since been implemented. The original deferral rationale is kept for the
+> record; see "Implemented" at the end.
 
 ## Context
 
@@ -72,3 +77,31 @@ relay-exposed.
   cross-client change.
 - Operators fronting the WebSocket path with nginx must treat their TLS/PKI as
   the trust anchor for that transport (already an operational requirement).
+
+## Implemented (2026-07-16)
+
+The WebTransport cert-hash binding is now in place:
+
+- `hf_auth::ssh::channel_bound_message(binding, nonce)` defines the exact signed
+  bytes (`binding ‖ nonce`), used identically by signer and verifier.
+  `SshVerifier::verify_response` takes the binding and verifies over it.
+- The daemon threads a per-connection channel binding into `Conn`: the server's
+  raw certificate SHA-256 for WebTransport connections, empty for WebSocket
+  (`AppState::webtransport_cert_hash` → `webtransport.rs`/`ws.rs`).
+- The native client signs `pinned_cert_hash ‖ nonce`
+  (`crates/native-client/src/lib.rs`), the same hash it pins for
+  `serverCertificateHashes`.
+- The browser client is unaffected — it does not perform SSH-key signing.
+
+Tests: `hf-auth` `channel_binding_defeats_a_relayed_signature` (a signature over
+one binding fails against another); end-to-end over real WebTransport in
+`crates/daemon/tests/webtransport.rs`
+`ssh_channel_binding_is_enforced_over_webtransport` (correct binding
+authenticates, a relayed/wrong binding is rejected); the existing native-client
+WebTransport SSH test and the WebSocket SSH tests (empty binding) continue to
+pass, confirming both transports behave correctly.
+
+Still a documented limitation: the WebSocket path carries an empty binding
+(nginx terminates TLS, so the daemon cannot see the client's channel) and thus
+relies on the operator's TLS/PKI — `Host` binding for it remains possible future
+work but was not needed to close the WebTransport attack.

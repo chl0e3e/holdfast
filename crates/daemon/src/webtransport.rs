@@ -36,6 +36,9 @@ pub struct WtListener {
     pub local_addr: SocketAddr,
     /// SHA-256 of the certificate, base64 (for serverCertificateHashes).
     pub cert_hash_base64: String,
+    /// Raw SHA-256 of the certificate — the channel-binding value for SSH auth
+    /// over this transport (ADR 0008).
+    pub cert_hash: [u8; 32],
     endpoint: Arc<Endpoint<Server>>,
 }
 
@@ -50,6 +53,7 @@ impl WtListener {
             .hash();
         // Standard (padded) base64 of the raw digest bytes.
         let cert_hash_base64 = base64_encode(hash.as_ref());
+        let cert_hash: [u8; 32] = *hash.as_ref();
 
         let mut transport = QuicTransportConfig::default();
         // Bound concurrent bidirectional streams (our channels) — and thus
@@ -64,7 +68,7 @@ impl WtListener {
             .build();
         let endpoint = Arc::new(Endpoint::server(config)?);
         let local_addr = endpoint.local_addr()?;
-        Ok(WtListener { local_addr, cert_hash_base64, endpoint })
+        Ok(WtListener { local_addr, cert_hash_base64, cert_hash, endpoint })
     }
 
     pub fn spawn_accept_loop(&self, state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
@@ -133,8 +137,16 @@ async fn handle_session(incoming: IncomingSession, state: Arc<AppState>) -> anyh
     });
 
     let peer_ip = connection.remote_address().ip();
-    let conn =
-        Arc::new(tokio::sync::Mutex::new(Conn::new(Arc::clone(&state), peer_ip, out_tx, true)));
+    // SSH-auth channel binding for this transport: our certificate hash, which
+    // the client independently pinned (ADR 0008).
+    let channel_binding = state.webtransport_cert_hash.map(|h| h.to_vec()).unwrap_or_default();
+    let conn = Arc::new(tokio::sync::Mutex::new(Conn::new(
+        Arc::clone(&state),
+        peer_ip,
+        out_tx,
+        true,
+        channel_binding,
+    )));
     let mut next_channel: u64 = 0;
 
     loop {

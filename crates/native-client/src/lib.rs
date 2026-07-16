@@ -181,13 +181,17 @@ pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerCon
         .recv_until(|env| matches!(&env.message, Some(Msg::ServerHello(_))).then_some(()))
         .await?;
 
-    let grant = authenticate(&mut control, auth).await?;
+    // SSH-auth channel binding (ADR 0008): the certificate hash we pinned above.
+    // Mixed into the signed challenge so a relay forwarding to a different
+    // server — whose certificate differs — cannot reuse our signature.
+    let grant = authenticate(&mut control, auth, &hash).await?;
     Ok(ServerConn { connection, control, grant, next_request: 1 })
 }
 
 /// Run the authentication exchange; returns the grant the daemon issues
-/// (empty in dev mode).
-async fn authenticate(control: &mut Chan, auth: AuthMethod) -> Result<Vec<u8>> {
+/// (empty in dev mode). `channel_binding` is the pinned server certificate hash
+/// (ADR 0008), folded into the SSH challenge signature.
+async fn authenticate(control: &mut Chan, auth: AuthMethod, channel_binding: &[u8]) -> Result<Vec<u8>> {
     match auth {
         AuthMethod::Dev => {
             let result = send_auth(control, pb::authenticate::Method::ConnectionGrant(vec![])).await?;
@@ -224,9 +228,13 @@ async fn authenticate(control: &mut Chan, auth: AuthMethod) -> Result<Vec<u8>> {
                 bail!("authentication failed (key not authorized)");
             }
 
-            // Step 4–5: sign the challenge and prove possession.
+            // Step 4–5: sign the channel-bound challenge and prove possession.
+            let message = hf_auth::ssh::channel_bound_message(
+                channel_binding,
+                &challenge_result.challenge,
+            );
             let sig = key
-                .sign(hf_auth::SSH_NAMESPACE, ssh_key::HashAlg::Sha512, &challenge_result.challenge)
+                .sign(hf_auth::SSH_NAMESPACE, ssh_key::HashAlg::Sha512, &message)
                 .context("sign challenge")?;
             let pem = sig.to_pem(ssh_key::LineEnding::LF).context("encode signature")?;
             let result = send_auth(
