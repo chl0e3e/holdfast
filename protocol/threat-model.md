@@ -14,7 +14,7 @@ Last updated: 2026-07-16
 | T2 cross-user attachment | covered | session-core `rotated_token_rejects_replay`; auth rejects unknown key with generic error; per-user isolation on list/terminate/idempotency (daemon `users_cannot_see_or_terminate_each_others_shells`, session-core `idempotency_reuse_is_scoped_to_owner`) |
 | T3 malicious server/agent | pending | agent mode is Phase 6; VT parser fuzzing pending |
 | T4 compromised gateway | n/a (core) | gateway is the overlay project; grant verify-key split in place |
-| T5 memory exhaustion | covered | framing rejects oversized pre-alloc; bounded queues (session-core); parser fuzz harnesses (protocol/daemon) |
+| T5 memory exhaustion | covered | framing rejects oversized pre-alloc; bounded queues (session-core); rate-limiter map bounded/evicting; concurrent WebTransport streams per connection explicitly capped (`concurrent_bidi_streams_are_capped`); parser fuzz harnesses (protocol/daemon) |
 | T6 fork bombs / PTY exhaustion | partial | per-user shell/attachment limits enforced; cgroup/rlimit launcher pending |
 | T7 origin confusion | covered | Origin allowlist on the WS endpoint (daemon `origin.rs` tests); dev auth refuses non-loopback |
 | T8 replay of open/terminate | covered | idempotency keys + idempotent terminate (session-core) |
