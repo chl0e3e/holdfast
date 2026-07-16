@@ -12,8 +12,11 @@
 //! attachment (the wire layer maps this to `ERR_TOO_SLOW`), never blocking
 //! the shell or other attachments.
 //!
-//! Not yet here (Phase 2+): per-user scoping (arrives with authentication)
-//! and the idle-shell expiry reaper.
+//! Per-user isolation (threat model T12): shells carry an immutable `owner`;
+//! listing, termination and idempotency reuse are scoped to it, so one
+//! authenticated user cannot see, kill, or hijack another's shells. Still not
+//! here: a per-user shell/resource quota (the `max_shells` cap is global) and
+//! the idle-shell expiry reaper.
 
 mod launch;
 mod policy;
@@ -200,7 +203,10 @@ pub struct ShellManager {
 #[derive(Default)]
 struct Inner {
     shells: HashMap<ShellId, Arc<ShellEntry>>,
-    idempotency: HashMap<[u8; 16], ShellId>,
+    /// Keyed by (owner, idempotency_key) so one user's retry never resolves to
+    /// — or overwrites — another user's shell (threat model T12). In dev/
+    /// single-user mode the owner is constant, so this is the plain per-key map.
+    idempotency: HashMap<(String, [u8; 16]), ShellId>,
 }
 
 impl ShellManager {
@@ -219,7 +225,12 @@ impl ShellManager {
     pub fn open_shell(&self, req: &OpenShellRequest) -> Result<OpenedShell, SessionError> {
         let mut inner = self.inner.lock().unwrap();
 
-        if let Some(existing) = inner.idempotency.get(&req.idempotency_key) {
+        // Idempotency is scoped to (owner, key): a repeated key from the same
+        // user returns their existing shell with a freshly rotated token; the
+        // same key from a *different* user cannot resolve to — nor, below,
+        // overwrite — this shell (threat model T12).
+        let idem_key = (req.user.clone(), req.idempotency_key);
+        if let Some(existing) = inner.idempotency.get(&idem_key) {
             if let Some(entry) = inner.shells.get(existing) {
                 let mut rt = entry.runtime.lock().unwrap();
                 let token = ResumeToken::generate();
@@ -305,7 +316,7 @@ impl ShellManager {
             .map_err(|e| SessionError::Internal(format!("spawn pump thread: {e}")))?;
 
         inner.shells.insert(shell_id, entry);
-        inner.idempotency.insert(req.idempotency_key, shell_id);
+        inner.idempotency.insert(idem_key, shell_id);
         Ok(OpenedShell { shell_id, resume_token: token, reused: false })
     }
 

@@ -190,7 +190,7 @@ impl Conn {
                             servers: vec![],
                             ops: vec![],
                             iat_ms: now_ms(),
-                            exp_ms: now_ms() + 12 * 3600 * 1000,
+                            exp_ms: now_ms().saturating_add(12 * 3600 * 1000),
                             jti: hex16(&rand::random::<[u8; 16]>()),
                         };
                         let grant = self.state.auth.grant_signer.issue(&claims);
@@ -282,6 +282,11 @@ impl Conn {
                     .manager
                     .list_shells()
                     .into_iter()
+                    // Per-user isolation (threat model T12): a client only sees
+                    // shells it owns, so it cannot enumerate or act on other
+                    // users' shell ids. In dev/single-user mode every shell
+                    // shares the one user id, so this is a no-op there.
+                    .filter(|info| info.owner == self.user_id)
                     .map(|info| pb::ShellInfo {
                         server_id: self.state.server_id.to_wire(),
                         shell_id: info.shell_id.to_wire(),
@@ -337,6 +342,19 @@ impl Conn {
                         .send(0, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "bad shell id", false))
                         .await;
                 };
+                // Per-user isolation (threat model T12): only the shell's owner
+                // may terminate it. A shell owned by someone else is reported as
+                // not-found, so a client cannot even probe for the existence of
+                // another user's shell by id. Owner is immutable (set at open),
+                // so there is no check/act race.
+                match self.state.manager.shell_info(&shell_id) {
+                    Ok(info) if info.owner == self.user_id => {}
+                    _ => {
+                        return self
+                            .send(0, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "no such shell", false))
+                            .await
+                    }
+                }
                 let manager_state = Arc::clone(&self.state);
                 let result =
                     tokio::task::spawn_blocking(move || manager_state.manager.terminate(&shell_id))

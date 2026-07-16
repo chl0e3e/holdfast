@@ -9,10 +9,17 @@
 //! well-audited drop sequence — with no PAM and no password.
 //!
 //! The drop is only attempted when [`SessionCoreConfig::privilege_drop`] is
-//! enabled *and* the resolved account differs from the daemon's own user. When
-//! enabled but the switch cannot be performed (account missing, or the daemon
-//! lacks the privilege to switch), launching is a hard error — the shell is
-//! never silently run under the wrong (more-privileged) account.
+//! enabled *and* the resolved account differs from the daemon's own user. It is
+//! fail-closed in two layers, so the shell is never silently run under the
+//! wrong (more-privileged) account:
+//!
+//! - **At build time** (here): a missing account or absent `setpriv` binary is
+//!   an error that aborts the open before any process is spawned.
+//! - **At exec time** (`setpriv` itself): if the daemon lacks the privilege to
+//!   switch, `setpriv` performs the uid/gid change *before* exec'ing the shell
+//!   and aborts with a non-zero status when it fails — it never execs the shell
+//!   under the daemon's identity. The shell therefore fails to start rather
+//!   than running unprivileged-fallback as the daemon's user.
 //!
 //! [`SessionCoreConfig::privilege_drop`]: crate::SessionCoreConfig::privilege_drop
 

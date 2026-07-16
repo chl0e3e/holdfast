@@ -10,8 +10,8 @@ Last updated: 2026-07-16
 
 | Threat | Status | Where |
 |---|---|---|
-| T1 stolen token/grant | partial | resume-token rotation + hash storage (session-core lifecycle tests); rate limiting (daemon auth tests); grant expiry/audience (hf-auth grant tests) |
-| T2 cross-user attachment | covered | session-core `rotated_token_rejects_replay`; auth rejects unknown key with generic error |
+| T1 stolen token/grant | partial | resume-token rotation + hash storage (session-core lifecycle tests); rate limiting (daemon auth tests); grant expiry/audience (hf-auth grant tests); `authorized_keys` entries carrying options (`command=`/`restrict`/`from=`/`expiry-time`) are skipped, not silently granted full access (hf-auth `keys_with_options_are_skipped_*`). Still open: rate-limiter map eviction, SSH-challenge channel binding, grant `ops` scope enforcement |
+| T2 cross-user attachment | covered | session-core `rotated_token_rejects_replay`; auth rejects unknown key with generic error; per-user isolation on list/terminate/idempotency (daemon `users_cannot_see_or_terminate_each_others_shells`, session-core `idempotency_reuse_is_scoped_to_owner`) |
 | T3 malicious server/agent | pending | agent mode is Phase 6; VT parser fuzzing pending |
 | T4 compromised gateway | n/a (core) | gateway is the overlay project; grant verify-key split in place |
 | T5 memory exhaustion | covered | framing rejects oversized pre-alloc; bounded queues (session-core); parser fuzz harnesses (protocol/daemon) |
@@ -202,10 +202,13 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
   (from AccessPolicy, never raw client input) is launched via
   `setpriv --reuid --regid --init-groups --reset-env` at an absolute path. The
   child receives exactly the target account's uid/gid and supplementary groups
-  and a reset environment; it keeps none of the daemon's groups. A switch that
-  cannot be performed aborts the open — there is no unprivileged fallback. The
-  drop is off by default, so the standalone single-user daemon runs every shell
-  as its own (correct, only) account.
+  and a reset environment; it keeps none of the daemon's groups. It is
+  fail-closed: a missing account or absent `setpriv` aborts the open, and if the
+  daemon lacks the privilege to switch, `setpriv` changes uid/gid *before*
+  exec'ing the shell and aborts on failure — so the shell fails to start rather
+  than ever running under the daemon's (more-privileged) identity. There is no
+  unprivileged fallback. The drop is off by default, so the standalone
+  single-user daemon runs every shell as its own (correct, only) account.
 - **Tests:** authorization rejects accounts outside policy
   (`account_authorization_is_enforced`); pure argv-construction/resolver unit
   tests (`launch.rs`); the real uid switch verified over a PTY

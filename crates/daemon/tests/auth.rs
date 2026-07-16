@@ -325,3 +325,75 @@ async fn repeated_failures_trigger_rate_limit_lockout() {
 
     daemon.abort();
 }
+
+/// Per-user isolation (threat model T12): one authenticated user must not be
+/// able to enumerate or terminate another user's shells. Regression test for
+/// the missing owner checks on ListShells / TerminateShell.
+#[tokio::test]
+async fn users_cannot_see_or_terminate_each_others_shells() {
+    let alice_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let bob_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let mut users = BTreeMap::new();
+    users.insert("alice".to_string(), format!("{}\n", alice_key.public_key().to_openssh().unwrap()));
+    users.insert("bob".to_string(), format!("{}\n", bob_key.public_key().to_openssh().unwrap()));
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        webtransport_bind: None,
+        auth: AuthConfig::SshKeys { users },
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Alice opens a shell and learns its id.
+    let mut alice = connect(&daemon).await;
+    assert!(ssh_authenticate(&mut alice, "alice", &alice_key).await.ok);
+    send(&mut alice, open_shell_env("")).await;
+    let alice_shell = loop {
+        let env = recv(&mut alice).await;
+        if matches!(env.message, Some(Msg::ShellOpened(_))) {
+            break env.shell_id;
+        }
+    };
+    assert!(!alice_shell.is_empty());
+
+    // Bob authenticates on his own connection.
+    let mut bob = connect(&daemon).await;
+    assert!(ssh_authenticate(&mut bob, "bob", &bob_key).await.ok);
+
+    // Bob's ListShells must not reveal Alice's shell.
+    send(&mut bob, plain(Msg::ListShells(pb::ListShells {}))).await;
+    let list = loop {
+        if let Some(Msg::ShellList(l)) = recv(&mut bob).await.message {
+            break l;
+        }
+    };
+    assert!(list.shells.is_empty(), "bob must not see alice's shells: {:?}", list.shells);
+
+    // Bob tries to terminate Alice's shell by id → not-found, not honored.
+    let mut term = plain(Msg::TerminateShell(pb::TerminateShell {}));
+    term.shell_id = alice_shell.clone();
+    send(&mut bob, term).await;
+    let reply = loop {
+        let env = recv(&mut bob).await;
+        if matches!(env.message, Some(Msg::Error(_)) | Some(Msg::ShellExited(_))) {
+            break env;
+        }
+    };
+    assert!(
+        matches!(&reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrNotFound as i32),
+        "bob terminating alice's shell must be ErrNotFound, got {:?}",
+        reply.message
+    );
+
+    // Alice's shell is still alive and visible to her.
+    send(&mut alice, plain(Msg::ListShells(pb::ListShells {}))).await;
+    let alice_list = loop {
+        if let Some(Msg::ShellList(l)) = recv(&mut alice).await.message {
+            break l;
+        }
+    };
+    assert_eq!(alice_list.shells.len(), 1, "alice still sees her own running shell");
+
+    daemon.abort();
+}

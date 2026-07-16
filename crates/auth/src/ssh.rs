@@ -43,11 +43,21 @@ pub struct SshVerifier {
 }
 
 impl SshVerifier {
-    /// Build from OpenSSH `authorized_keys` text (comments/options ignored;
-    /// only the key material is used).
+    /// Build from OpenSSH `authorized_keys` text.
+    ///
+    /// Comments are ignored. Any entry that carries **options**
+    /// (`command="..."`, `restrict`, `from="..."`, `expiry-time="..."`,
+    /// `no-pty`, …) is **skipped, not honored**: Holdfast does not implement
+    /// OpenSSH's per-key restrictions, and silently treating a restricted key
+    /// as full-access would be a privilege escalation. Skipping fails closed —
+    /// a key an admin deliberately constrained cannot authenticate here at all,
+    /// rather than authenticating with more access than intended. If every
+    /// entry is skipped (or the file is empty), this returns
+    /// [`SshError::NoAuthorizedKeys`].
     pub fn from_authorized_keys(text: &str) -> Result<SshVerifier, SshError> {
         let authorized: Vec<PublicKey> = AuthorizedKeys::new(text)
             .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.config_opts().is_empty())
             .map(|entry| entry.public_key().clone())
             .collect();
         if authorized.is_empty() {
@@ -214,5 +224,39 @@ mod tests {
             SshVerifier::from_authorized_keys("# only a comment\n"),
             Err(SshError::NoAuthorizedKeys)
         ));
+    }
+
+    #[test]
+    fn keys_with_options_are_skipped_not_granted_full_access() {
+        // A key an admin deliberately restricted must not authenticate with
+        // full access. Holdfast can't honor the restriction, so it fails closed.
+        let (private, line) = keypair();
+        for opts in ["command=\"/usr/bin/backup\"", "restrict", "from=\"10.0.0.0/8\"", "no-pty"] {
+            let restricted = format!("{opts} {line}");
+            // The only entry is restricted → nothing authorizable remains.
+            assert!(
+                matches!(
+                    SshVerifier::from_authorized_keys(&restricted),
+                    Err(SshError::NoAuthorizedKeys)
+                ),
+                "restricted-only file must yield no authorized keys ({opts})"
+            );
+            // And the restricted key genuinely cannot authenticate.
+            if let Ok(v) = SshVerifier::from_authorized_keys(&restricted) {
+                let offered = private.public_key().to_openssh().unwrap();
+                assert!(v.is_authorized(&offered).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn unrestricted_key_alongside_a_restricted_one_still_works() {
+        // A plain key is honored; a restricted sibling is ignored, not fatal.
+        let (plain_priv, plain_line) = keypair();
+        let (_restricted_priv, restricted_line) = keypair();
+        let text = format!("command=\"/x\" {restricted_line}\n{plain_line}\n");
+        let verifier = SshVerifier::from_authorized_keys(&text).unwrap();
+        let offered = plain_priv.public_key().to_openssh().unwrap();
+        assert!(verifier.is_authorized(&offered).is_ok(), "the unrestricted key authenticates");
     }
 }

@@ -120,6 +120,38 @@ fn open_shell_is_idempotent_per_key() {
     mgr.terminate(&first.shell_id).unwrap();
 }
 
+/// Idempotency reuse is scoped to the original owner (threat model T12): the
+/// same key from a different user must not mint a token for someone else's
+/// shell — it opens a distinct shell instead.
+#[test]
+fn idempotency_reuse_is_scoped_to_owner() {
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+    let alice = OpenShellRequest {
+        user: "alice".into(),
+        command: Some("bash".into()),
+        args: vec!["--norc".into()],
+        cols: 40,
+        rows: 6,
+        idempotency_key: [42; 16],
+        ..Default::default()
+    };
+    let bob = OpenShellRequest { user: "bob".into(), ..alice.clone() };
+
+    let a = mgr.open_shell(&alice).unwrap();
+    // Bob reuses the *same* idempotency key: must NOT get Alice's shell.
+    let b = mgr.open_shell(&bob).unwrap();
+    assert_ne!(a.shell_id, b.shell_id, "bob must not receive alice's shell via a shared key");
+    assert!(!b.reused, "cross-owner key collision must open a fresh shell, not reuse");
+
+    // Alice reusing her own key is still idempotent.
+    let a2 = mgr.open_shell(&alice).unwrap();
+    assert_eq!(a.shell_id, a2.shell_id);
+    assert!(a2.reused);
+
+    mgr.terminate(&a.shell_id).unwrap();
+    mgr.terminate(&b.shell_id).unwrap();
+}
+
 #[test]
 fn rotated_token_rejects_replay() {
     let mgr = ShellManager::new(SessionCoreConfig::default());

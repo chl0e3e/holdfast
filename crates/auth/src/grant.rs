@@ -125,8 +125,9 @@ impl GrantVerifier {
         if now_ms >= claims.exp_ms {
             return Err(GrantError::Expired { expires_at_ms: claims.exp_ms, now_ms });
         }
-        // Small clock-skew tolerance.
-        if now_ms + 60_000 < claims.iat_ms {
+        // Small clock-skew tolerance. Saturating so a near-i64::MAX host clock
+        // wraps to a rejection, never a debug-build panic.
+        if now_ms.saturating_add(60_000) < claims.iat_ms {
             return Err(GrantError::NotYetValid { issued_at_ms: claims.iat_ms, now_ms });
         }
         Ok(claims)
