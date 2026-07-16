@@ -64,11 +64,12 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
   A security review has been run and its backlog cleared: per-user isolation,
   `authorized_keys` options fail-closed, rate-limiter map eviction, grant `ops`
   enforcement, per-user shell quota, restart-surviving grant key, and
-  negotiated-frame-size compliance are all fixed and tested. SSH-challenge
-  channel binding is deferred with a full design in ADR 0008 (needs a
-  cross-client wire change). Still open before non-loopback use: that
-  channel-binding work and a real multi-user soak. See ADR 0006/0007/0008 and
-  `protocol/threat-model.md`.
+  negotiated-frame-size compliance, and a per-connection WebTransport stream cap
+  are all fixed and tested. SSH-challenge channel binding is implemented for
+  WebTransport (signature bound to the pinned server cert hash — ADR 0008),
+  defeating relay/MITM there; the nginx-fronted WebSocket path relies on the
+  operator's TLS/PKI. Still open before non-loopback use: a real multi-user soak
+  of the privilege drop. See ADR 0006/0007/0008 and `protocol/threat-model.md`.
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the
 admin-overlay project per the plan addendum.)
