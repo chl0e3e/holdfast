@@ -1,0 +1,27 @@
+{
+  "name": "holdfast-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Browser terminal client (TypeScript + xterm.js). Phase 0: package skeleton and encoding spike only.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "proto:generate": "buf generate ../protocol",
+    "spike:encoding": "tsx src/spike/encoding-spike.ts",
+    "build": "npm run proto:generate && esbuild src/client/app.ts --bundle --outdir=dist --format=esm --sourcemap && cp public/index.html dist/ && cp node_modules/@xterm/xterm/css/xterm.css dist/",
+    "test": "tsx src/spike/terminal-safety.test.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.6.0",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.55.0",
+    "@bufbuild/protoc-gen-es": "^2.6.0",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "esbuild": "^0.25.0"
+  }
+}

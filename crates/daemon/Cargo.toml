@@ -1,0 +1,35 @@
+[package]
+name = "hf-daemon"
+description = "holdfastd: standalone Holdfast terminal daemon (WebSocket listener in Phase 2; WebTransport/QUIC arrive in Phase 3)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "holdfastd"
+path = "src/main.rs"
+
+[lib]
+name = "hf_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+hf-protocol = { path = "../protocol" }
+hf-session-core = { path = "../session-core" }
+axum.workspace = true
+wtransport.workspace = true
+hf-auth = { path = "../auth" }
+tower-http.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+prost.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }

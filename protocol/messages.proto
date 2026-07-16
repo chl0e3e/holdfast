@@ -1,0 +1,290 @@
+// Holdfast wire schema — version 0 DRAFT.
+//
+// protocol/specification.md is the authority on semantics; this file is the
+// authority on encoding. Field numbers are permanent once released.
+
+syntax = "proto3";
+
+package holdfast.v0;
+
+// Every reliable frame carries exactly one Envelope (spec §3).
+message Envelope {
+  // Correlates responses/errors with requests; 0 when not a request.
+  uint64 request_id = 1;
+  // Shell-scoped messages carry the persistent identity (spec §1); opaque
+  // 128-bit IDs, empty when not applicable.
+  bytes server_id = 2;
+  bytes shell_id = 3;
+
+  oneof message {
+    ClientHello client_hello = 10;
+    ServerHello server_hello = 11;
+    TerminalInput terminal_input = 12;
+    TerminalOutput terminal_output = 13;
+    TerminalResize terminal_resize = 14;
+    Error error = 15;
+    Authenticate authenticate = 16;
+    AuthenticationResult authentication_result = 17;
+    ListServers list_servers = 18;
+    ServerList server_list = 19;
+    ListShells list_shells = 20;
+    ShellList shell_list = 21;
+    OpenShell open_shell = 22;
+    ShellOpened shell_opened = 23;
+    AttachShell attach_shell = 24;
+    ShellAttached shell_attached = 25;
+    DetachShell detach_shell = 26;
+    TerminateShell terminate_shell = 27;
+    ShellExited shell_exited = 28;
+    RequestHistory request_history = 29;
+    HistoryChunk history_chunk = 30;
+    HistoryEnd history_end = 31;
+    ScreenSnapshot screen_snapshot = 32;
+    ScreenDelta screen_delta = 33;
+    AckScreenRevision ack_screen_revision = 34;
+    Ping ping = 35;
+    Pong pong = 36;
+    Close close = 37;
+  }
+}
+
+// Datagrams carry exactly one DatagramEnvelope, no length prefix (spec §3).
+message DatagramEnvelope {
+  bytes server_id = 1;
+  bytes shell_id = 2;
+  oneof message {
+    ScreenSnapshot screen_snapshot = 10;
+    ScreenDelta screen_delta = 11;
+    AckScreenRevision ack_screen_revision = 12;
+  }
+}
+
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  CLIENT_KIND_BROWSER_WEBTRANSPORT = 1;
+  CLIENT_KIND_BROWSER_WEBSOCKET = 2;
+  CLIENT_KIND_NATIVE_QUIC = 3;
+  CLIENT_KIND_ADAPTER = 4;
+}
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_DATAGRAMS = 1;
+  CAPABILITY_CLIPBOARD = 2;
+  CAPABILITY_FILE_TRANSFER = 3;
+}
+
+enum Encoding {
+  ENCODING_UNSPECIFIED = 0;
+  ENCODING_UTF8 = 1;
+}
+
+enum ShellState {
+  SHELL_STATE_UNSPECIFIED = 0;
+  SHELL_STATE_CREATING = 1;
+  SHELL_STATE_RUNNING = 2;
+  SHELL_STATE_EXITED = 3;
+  SHELL_STATE_TERMINATING = 4;
+  SHELL_STATE_UNAVAILABLE = 5;
+}
+
+// Spec §13 code space. Wire values are permanent.
+enum ErrorCode {
+  ERR_UNSPECIFIED = 0;
+  ERR_VERSION = 1;
+  ERR_UNAUTHENTICATED = 2;
+  ERR_FORBIDDEN = 3;
+  ERR_NOT_FOUND = 4;
+  ERR_FRAME_TOO_LARGE = 5;
+  ERR_UNKNOWN_MESSAGE = 6;
+  ERR_INPUT_OVERFLOW = 7;
+  ERR_TOO_SLOW = 8;
+  ERR_NOT_READY = 9;
+  ERR_TOKEN_EXPIRED = 10;
+  ERR_TOKEN_REPLAYED = 11;
+  ERR_LIMIT_EXCEEDED = 12;
+  ERR_SERVER_UNAVAILABLE = 13;
+  ERR_INTERNAL = 14;
+}
+
+message ClientHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  ClientKind client_kind = 3;
+  string client_build = 4;
+  repeated Capability capabilities = 5;
+  uint32 max_frame_bytes = 6;
+  uint32 max_datagram_bytes = 7;
+  repeated Encoding encodings = 8;
+}
+
+message ServerHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  repeated Capability capabilities = 3;
+  uint32 max_frame_bytes = 4;
+  uint32 max_datagram_bytes = 5;
+  uint32 keepalive_interval_ms = 6;
+}
+
+message TerminalInput {
+  bytes data = 1; // raw bytes destined for the PTY; never re-encoded
+}
+
+message TerminalOutput {
+  bytes data = 1; // raw PTY output bytes
+}
+
+message TerminalResize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string human_message = 2;
+  bool retryable = 3;
+}
+
+// Authentication (spec §5). The grant path serves both issuers; the SSH
+// challenge sub-negotiation implements the local issuer. Draft — refined when
+// auth lands (Phase 2 of the core plan).
+message Authenticate {
+  oneof method {
+    bytes connection_grant = 1;
+    SshChallengeRequest ssh_challenge_request = 2;
+    SshChallengeResponse ssh_challenge_response = 3;
+  }
+}
+
+message SshChallengeRequest {
+  string username = 1;
+  // OpenSSH one-line public key text, e.g. "ssh-ed25519 AAAA... comment".
+  bytes public_key = 2;
+}
+
+message SshChallengeResponse {
+  bytes challenge = 1; // echoed server nonce
+  bytes signature = 2; // signature over the challenge with the offered key
+}
+
+message AuthenticationResult {
+  bool ok = 1;
+  string user_id = 2;
+  int64 expires_at_ms = 3;
+  ErrorCode error_code = 4;
+  string error_message = 5;
+  // Non-empty means: sign this nonce and resend as SshChallengeResponse.
+  bytes challenge = 6;
+}
+
+message ListServers {}
+
+message ServerInfo {
+  bytes server_id = 1;
+  string display_name = 2;
+  bool healthy = 3;
+}
+
+message ServerList {
+  repeated ServerInfo servers = 1;
+}
+
+// Filter by envelope server_id when non-empty.
+message ListShells {}
+
+message ShellInfo {
+  bytes server_id = 1;
+  bytes shell_id = 2;
+  ShellState state = 3;
+  string title = 4;
+  int64 created_at_ms = 5;
+  int64 last_attached_at_ms = 6;
+}
+
+message ShellList {
+  repeated ShellInfo shells = 1;
+}
+
+message OpenShell {
+  string unix_account = 1; // empty = daemon's default policy account
+  string command = 2;      // empty = login shell
+  uint32 initial_cols = 3;
+  uint32 initial_rows = 4;
+  bytes idempotency_key = 5; // client-generated, 16 bytes (spec §9)
+}
+
+message ShellOpened {
+  bytes resume_token = 1;
+  int64 expires_at_ms = 2; // shell expiry when detached; 0 = policy default
+}
+
+message AttachShell {
+  bytes resume_token = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  uint64 last_seen_revision = 4;    // 0 = none (spec §1)
+  uint64 last_history_line_id = 5;  // 0 = none
+}
+
+message ShellAttached {
+  bytes screen_snapshot = 1; // redraw byte sequence for the emulator
+  uint64 screen_revision = 2;
+  bytes rotated_resume_token = 3;
+  uint64 oldest_history_line_id = 4; // 0 = no history retained
+  uint64 newest_history_line_id = 5;
+}
+
+message DetachShell {}
+
+message TerminateShell {}
+
+message ShellExited {
+  sint32 exit_code = 1;  // -1 when terminated by signal
+  bool signaled = 2;
+  string signal = 3;     // e.g. "SIGKILL", empty when !signaled
+}
+
+message RequestHistory {
+  uint64 before_line_id = 1; // exclusive upper bound; 0 = newest
+  uint32 maximum_lines = 2;
+  uint32 maximum_bytes = 3;
+}
+
+message HistoryChunk {
+  uint64 first_line_id = 1;
+  repeated string lines = 2;
+  bool truncated_by_eviction = 3; // requested range partially evicted
+}
+
+message HistoryEnd {
+  uint64 oldest_available_line_id = 1;
+}
+
+message ScreenSnapshot {
+  uint64 revision = 1;
+  bytes packed_screen = 2;
+}
+
+message ScreenDelta {
+  uint64 revision = 1;
+  uint64 base_revision = 2;
+  bytes ops = 3;
+}
+
+message AckScreenRevision {
+  uint64 revision = 1;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+message Pong {
+  uint64 nonce = 1;
+}
+
+message Close {
+  ErrorCode code = 1;
+  string reason = 2;
+}

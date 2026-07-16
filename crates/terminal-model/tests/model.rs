@@ -1,0 +1,102 @@
+//! hf-terminal-model integration tests. Reproduce with:
+//! `cargo test -p hf-terminal-model`
+
+use hf_terminal_model::{TerminalModel, TerminalModelConfig};
+
+fn small(max_lines: usize, max_bytes: usize) -> TerminalModel {
+    TerminalModel::new(TerminalModelConfig {
+        cols: 20,
+        rows: 4,
+        max_history_lines: max_lines,
+        max_history_bytes: max_bytes,
+    })
+}
+
+#[test]
+fn scrolled_lines_commit_to_history_with_stable_ids() {
+    let mut m = small(1000, 1 << 20);
+    for i in 1..=10 {
+        m.feed(format!("line-{i}\r\n").as_bytes());
+    }
+    // 4-row screen: line-8..line-10 + prompt row visible; 1..=7 in history.
+    assert_eq!((m.oldest_line_id(), m.newest_line_id()), (1, 7));
+    let range = m.history_range(0, 100, 1 << 20);
+    assert_eq!(range.lines, (1..=7).map(|i| format!("line-{i}")).collect::<Vec<_>>());
+    assert!(!range.truncated_by_eviction);
+}
+
+#[test]
+fn history_eviction_is_reported() {
+    let mut m = small(5, 1 << 20);
+    for i in 1..=20 {
+        m.feed(format!("line-{i}\r\n").as_bytes());
+    }
+    assert_eq!(m.history_range(0, 100, 1 << 20).lines.len(), 5);
+    assert!(m.oldest_line_id() > 1);
+    assert!(m.history_range(0, 100, 1 << 20).truncated_by_eviction);
+}
+
+#[test]
+fn alternate_screen_does_not_pollute_history() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"before-alt\r\n");
+    let history_before = m.newest_line_id();
+
+    m.feed(b"\x1b[?1049h"); // smcup
+    for i in 0..50 {
+        m.feed(format!("alt-noise-{i}\r\n").as_bytes());
+    }
+    m.feed(b"\x1b[?1049l"); // rmcup
+
+    assert_eq!(m.newest_line_id(), history_before, "alt screen must not add history");
+    assert!(m.visible_lines()[0].starts_with("before-alt"), "primary screen restored");
+}
+
+#[test]
+fn snapshot_reconstructs_screen_in_fresh_emulator() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"hello \x1b[1;31mred\x1b[0m\r\nsecond\r\n");
+
+    let mut replica = small(1000, 1 << 20);
+    replica.feed(&m.snapshot());
+    assert_eq!(m.visible_lines(), replica.visible_lines());
+}
+
+#[test]
+fn resize_updates_size_and_bumps_revision_once() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"resize-me\r\n");
+    let r0 = m.revision();
+
+    let r1 = m.resize(40, 10);
+    assert_eq!(m.size(), (40, 10));
+    assert_eq!(r1, r0 + 1);
+    // No-op resize does not bump.
+    assert_eq!(m.resize(40, 10), r1);
+    assert!(m.visible_lines().iter().any(|l| l.starts_with("resize-me")));
+}
+
+#[test]
+fn revision_is_monotonic_and_starts_above_reserved_zero() {
+    let mut m = small(1000, 1 << 20);
+    assert!(m.revision() >= 1, "revision 0 is reserved (spec §1)");
+    let r1 = m.feed(b"a");
+    let r2 = m.feed(b"b");
+    assert!(r2 > r1);
+    assert_eq!(m.feed(b""), r2, "empty feed does not bump");
+}
+
+#[test]
+fn utf8_split_across_feeds_renders_correctly() {
+    let mut m = small(1000, 1 << 20);
+    let text = "wide: 🦀émoji".as_bytes();
+    // Split mid-emoji (🦀 is 4 bytes starting at "wide: ".len()).
+    let split = "wide: ".len() + 2;
+    m.feed(&text[..split]);
+    m.feed(&text[split..]);
+    assert!(
+        m.visible_lines()[0].starts_with("wide: 🦀émoji"),
+        "got {:?}",
+        m.visible_lines()[0]
+    );
+}

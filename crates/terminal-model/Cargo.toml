@@ -1,0 +1,11 @@
+[package]
+name = "hf-terminal-model"
+description = "Server-side VT state, screen revisions and bounded scrollback."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+avt.workspace = true
+thiserror.workspace = true

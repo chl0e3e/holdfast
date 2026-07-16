@@ -1,0 +1,33 @@
+[package]
+name = "hf-native-client"
+description = "Native terminal client (hf): WebTransport sessions in your real terminal."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hf"
+path = "src/main.rs"
+
+[lib]
+name = "hf_native_client"
+path = "src/lib.rs"
+
+[dependencies]
+hf-protocol = { path = "../protocol" }
+wtransport.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+nix.workspace = true
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std"] }
+hf-auth = { path = "../auth" }
+libc.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+hf-daemon = { path = "../daemon" }
+ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }

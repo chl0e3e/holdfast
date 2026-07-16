@@ -1,0 +1,11 @@
+[package]
+name = "hf-pty"
+description = "Linux PTY process management."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+portable-pty.workspace = true
+thiserror.workspace = true

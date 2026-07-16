@@ -1,0 +1,11 @@
+[package]
+name = "spike-terminal-model"
+description = "Phase 1 spike: compare VT/terminal-model crates against spec §10 requirements."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+avt = "0.18"
+vt100 = "0.16"
+anyhow.workspace = true

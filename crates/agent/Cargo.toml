@@ -1,0 +1,7 @@
+[package]
+name = "hf-agent"
+description = "Managed-server agent with outbound mTLS registration."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true

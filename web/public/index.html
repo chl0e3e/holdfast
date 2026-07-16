@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Holdfast</title>
+<link rel="stylesheet" href="xterm.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #0d1117; color: #e6edf3;
+    font-family: system-ui, sans-serif; font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .4rem .6rem; background: #161b22; border-bottom: 1px solid #30363d;
+  }
+  header h1 { font-size: 1rem; margin: 0 .6rem 0 0; font-weight: 600; }
+  #tabs { display: flex; gap: .3rem; flex: 1; overflow-x: auto; }
+  #tabs button {
+    background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: .25rem .6rem; cursor: pointer; white-space: nowrap;
+  }
+  #tabs button.active { background: #1f6feb33; border-color: #1f6feb; }
+  #tabs button[data-state="exited"] { color: #f85149; }
+  #tabs button[data-state="detached"],
+  #tabs button[data-state="reconnecting"] { color: #d29922; }
+  .actions button {
+    background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: .25rem .6rem; cursor: pointer;
+  }
+  #terminate { color: #f85149; }
+  #status { font-size: .8rem; padding: .15rem .5rem; border-radius: 6px; }
+  #status[data-kind="ok"] { color: #3fb950; }
+  #status[data-kind="warn"] { color: #d29922; }
+  #status[data-kind="err"] { color: #f85149; }
+  #panels { flex: 1; min-height: 0; }
+  .panel { height: 100%; padding: .4rem; display: none; }
+  .panel .xterm { height: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Holdfast</h1>
+  <div id="tabs"><button id="new-shell" title="Open a new shell">+</button></div>
+  <div class="actions">
+    <button id="detach" title="Detach: shell keeps running">Detach</button>
+    <button id="terminate" title="Terminate: kills the shell">Terminate</button>
+  </div>
+  <span id="status" data-kind="warn">starting…</span>
+</header>
+<div id="panels"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

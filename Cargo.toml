@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/daemon",
+    "crates/transport",
+    "crates/terminal-model",
+    "crates/session-core",
+    "crates/pty",
+    "crates/gateway",
+    "crates/control-plane",
+    "crates/ssh-backend",
+    "crates/auth",
+    "crates/agent",
+    "crates/native-client",
+    "crates/ssh-adapter",
+    "spikes/webtransport-echo",
+    "spikes/pty-spike",
+    "spikes/encoding-spike",
+    "spikes/terminal-model-spike",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+tokio = { version = "1.52", features = ["full"] }
+wtransport = "0.7"
+quinn = "0.11"
+prost = "0.14"
+prost-build = "0.14"
+protox = "0.9"
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+portable-pty = "0.9"
+nix = { version = "0.31", features = ["process", "signal", "term"] }
+rustls = "0.23"
+rcgen = "0.13"
+avt = "0.18"
+rand = "0.9"
+sha2 = "0.10"
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+libc = "0.2"
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# Crate dependency direction (enforced by review until tooling exists):
+#   protocol, terminal-model, pty        -> no HTTP/QUIC imports
+#   transport                            -> protocol only
+#   session-core                         -> protocol, terminal-model, pty
+#   gateway, control-plane, agent, ...   -> may depend on the above
+#   control-plane                        -> must never parse terminal bytes
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,8 @@
+/target
+node_modules/
+web/dist/
+*.pem
+*.key
+*.crt
+!deploy/example-config/*.example.*
+.env

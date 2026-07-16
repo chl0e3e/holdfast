@@ -1,0 +1,10 @@
+[package]
+name = "spike-pty"
+description = "Phase 0 spike: Linux PTY creation, resize and clean child termination."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+portable-pty.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "spike-webtransport-echo"
+description = "Phase 0 spike: secure WebTransport echo server and client test."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+wtransport.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

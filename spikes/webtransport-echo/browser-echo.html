@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebTransport echo spike</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  textarea, input { width: 100%; font-family: monospace; }
+  #log { white-space: pre-wrap; background: #111; color: #9f9; padding: 1rem; min-height: 10rem; }
+</style>
+</head>
+<body>
+<h1>WebTransport echo spike</h1>
+<p>Start the server (<code>cargo run -p spike-webtransport-echo</code>), serve this
+file from <code>http://localhost</code> (secure context), paste the printed
+certificate hash below, then connect. Verifies stream and datagram echo from a
+real browser.</p>
+
+<label>URL <input id="url" value="https://127.0.0.1:4433/echo"></label>
+<label>Certificate hash (JS byte array printed by the server)
+<textarea id="hash" rows="3" placeholder="[171, 44, ...]"></textarea></label>
+<p>
+  <button id="connect">Connect</button>
+  <button id="sendStream" disabled>Send on stream</button>
+  <button id="sendDatagram" disabled>Send datagram</button>
+</p>
+<div id="log"></div>
+
+<script>
+const log = (m) => { document.getElementById('log').textContent += m + "\n"; };
+let transport, writer, reader, dgWriter, dgReader;
+
+document.getElementById('connect').onclick = async () => {
+  try {
+    const hash = new Uint8Array(JSON.parse(document.getElementById('hash').value));
+    transport = new WebTransport(document.getElementById('url').value, {
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hash.buffer }],
+    });
+    await transport.ready;
+    log('connected: WebTransport session ready');
+
+    const stream = await transport.createBidirectionalStream();
+    writer = stream.writable.getWriter();
+    reader = stream.readable.getReader();
+    dgWriter = transport.datagrams.writable.getWriter();
+    dgReader = transport.datagrams.readable.getReader();
+
+    (async () => { for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      log('stream echo: ' + new TextDecoder().decode(value));
+    }})();
+    (async () => { for (;;) {
+      const { value, done } = await dgReader.read();
+      if (done) break;
+      log('datagram echo: ' + new TextDecoder().decode(value));
+    }})();
+
+    document.getElementById('sendStream').disabled = false;
+    document.getElementById('sendDatagram').disabled = false;
+  } catch (e) {
+    log('FAILED: ' + e);
+  }
+};
+
+document.getElementById('sendStream').onclick = () =>
+  writer.write(new TextEncoder().encode('hello over reliable stream @ ' + new Date().toISOString()));
+document.getElementById('sendDatagram').onclick = () =>
+  dgWriter.write(new TextEncoder().encode('hello over datagram @ ' + new Date().toISOString()));
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+[package]
+name = "hf-session-core"
+description = "Shell and attachment lifecycle, independent of any transport."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hf-protocol = { path = "../protocol" }
+hf-pty = { path = "../pty" }
+hf-terminal-model = { path = "../terminal-model" }
+thiserror.workspace = true
+rand.workspace = true
+sha2.workspace = true
