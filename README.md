@@ -61,11 +61,14 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
   with production `deploy/systemd/` units running the daemon unprivileged
   (ambient `CAP_SETUID`/`CAP_SETGID`, capabilities cleared before the shell),
   and per-user shell isolation (list/terminate/idempotency scoped to the owner).
-  A security review has been run; its high-severity findings (per-user
-  isolation, `authorized_keys` options fail-closed) are fixed. Still open before
-  non-loopback use: the deferred medium findings (rate-limiter map eviction,
-  SSH-challenge channel binding, grant `ops` enforcement, per-user shell quota)
-  and a multi-user soak. See ADR 0006/0007 and `protocol/threat-model.md`.
+  A security review has been run and its backlog cleared: per-user isolation,
+  `authorized_keys` options fail-closed, rate-limiter map eviction, grant `ops`
+  enforcement, per-user shell quota, restart-surviving grant key, and
+  negotiated-frame-size compliance are all fixed and tested. SSH-challenge
+  channel binding is deferred with a full design in ADR 0008 (needs a
+  cross-client wire change). Still open before non-loopback use: that
+  channel-binding work and a real multi-user soak. See ADR 0006/0007/0008 and
+  `protocol/threat-model.md`.
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the
 admin-overlay project per the plan addendum.)
