@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # hf-auth links against PAM (ADR 0015/0016); runners don't ship the dev lib.
+      - run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - run: cargo test --workspace --locked
       - run: cargo install cargo-audit --locked
       - run: cargo audit
