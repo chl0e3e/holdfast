@@ -11,6 +11,7 @@ import {
   subscribe,
   type ServerStatus,
   type ServerView,
+  type ShellRow,
 } from "./ipc.js";
 import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
@@ -31,6 +32,9 @@ class App implements TabDelegate {
   active: Tab | null = null;
   status = document.getElementById("status")!;
   resizeTimers = new Map<Tab, ReturnType<typeof setTimeout>>();
+  /** Running shells on a server we hold no resume token for (opened by
+   *  another client): server key → shell hex → its dim button. */
+  elsewhere = new Map<string, Map<string, HTMLButtonElement>>();
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();
@@ -81,10 +85,7 @@ class App implements TabDelegate {
             break;
         }
       },
-      shellsUpdated: () => {
-        // Shells opened by other clients (web, CLI) could be surfaced here;
-        // milestone 2 UI work.
-      },
+      shellsUpdated: (e) => this.reconcileShells(e.server, e.shells),
       storeWarning: (e) => this.setStatus(e.message, "warn"),
     });
 
@@ -139,6 +140,68 @@ class App implements TabDelegate {
     this.tabs.push(tab);
     if (!this.active) this.select(tab);
     return tab;
+  }
+
+  /** Reconcile the server's authoritative shell list (sent on every
+   *  connect) with our tabs: adopt running shells we hold a token for,
+   *  surface the rest as dim "elsewhere" entries (terminate-only — without
+   *  a resume token there is no attach path, spec section 12). */
+  reconcileShells(server: string, rows: ShellRow[]): void {
+    const group = this.groups.get(server);
+    if (!group) return;
+    const running = new Set<string>();
+    for (const row of rows) {
+      if (row.state !== "running") {
+        const tab = this.findTab(server, row.shell);
+        if (tab && tab.state !== "exited") this.markExited(tab, "exited while away");
+        continue;
+      }
+      running.add(row.shell);
+      if (this.findTab(server, row.shell)) continue;
+      if (row.hasToken) {
+        // e.g. imported from the CLI's state, or opened by a previous run.
+        const tab = this.ensureTab(server, row.shell, row.name ?? `shell ${row.shell.slice(0, 8)}`);
+        void this.attach(tab);
+      } else {
+        this.ensureElsewhere(group, server, row);
+      }
+    }
+    // Prune entries that exited, were terminated, or got adopted as tabs.
+    const map = this.elsewhere.get(server);
+    if (map) {
+      for (const [shell, button] of [...map]) {
+        if (!running.has(shell) || this.findTab(server, shell)) {
+          button.remove();
+          map.delete(shell);
+        }
+      }
+    }
+  }
+
+  ensureElsewhere(group: ServerGroup, server: string, row: ShellRow): void {
+    let map = this.elsewhere.get(server);
+    if (!map) {
+      map = new Map();
+      this.elsewhere.set(server, map);
+    }
+    if (map.has(row.shell)) return;
+    const button = document.createElement("button");
+    button.className = "elsewhere";
+    const label = row.name ?? row.shell.slice(0, 8);
+    button.textContent = `${label} · elsewhere`;
+    button.title = "Running on the server, opened by another client — no resume token here.";
+    button.onclick = () => {
+      if (!confirm(`"${label}" was opened by another client; you cannot attach it from here. Terminate it?`)) return;
+      void ipc.terminateShell(server, row.shell).then(
+        () => {
+          button.remove();
+          this.elsewhere.get(server)?.delete(row.shell);
+        },
+        (error) => this.setStatus(`terminate failed: ${error}`, "err"),
+      );
+    };
+    group.slot.appendChild(button);
+    map.set(row.shell, button);
   }
 
   async attach(tab: Tab): Promise<void> {

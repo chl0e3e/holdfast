@@ -263,11 +263,24 @@ client-facing gateway and agentless SSH backend remain a separate overlay
 project; the manual real-browser Phase 0 echo check and a broader multi-user
 soak are still deployment gates before wide production use.
 
+**Desktop client (2026-07-25, ADRs 0017–0020).** A multi-session,
+multi-server tabbed client (Tauri 2 + xterm.js, Windows-first) built on the
+new GUI-free `hf-client-core` crate: shells survive client disconnects and
+client-machine restarts via persisted grants, rotating resume tokens with
+idempotency-key recovery, and reattach-all on launch. Groundwork landed
+with it: stable standalone server identity (grants survive daemon restarts,
+ADR 0017), `ERR_TOKEN_REPLAYED` detection with audit event, a typed
+client-side retry policy that never drops a resume token on transient
+failures (ADR 0018), and client keepalive (ADR 0020). See
+`desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
+Linux container lacks a webview toolchain).
+
 ## Layout
 
 ```
 crates/          Rust workspace (hf-* crates; hf-daemon builds holdfastd)
 web/             TypeScript/xterm.js browser client
+desktop/         Desktop client: Tauri 2 shell + xterm.js frontend (ADR 0019)
 protocol/        Protocol specification, threat model, message schemas
 spikes/          Phase 0 disposable proof-of-concept code
 deploy/          systemd units, nginx snippets, example config (later phases)
