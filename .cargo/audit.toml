@@ -1,0 +1,15 @@
+# cargo-audit policy (threat model T11). Every ignore needs a rationale and
+# a revisit condition — never ignore silently.
+
+[advisories]
+ignore = [
+    # RSA "Marvin" timing side channel; no fixed upstream release exists.
+    # Holdfast pulls `rsa` in via ssh-key/russh solely for RSA SSH keys:
+    # servers do signature *verification* (public-key math — not affected),
+    # and clients perform one local signing operation per authentication,
+    # which gives a network attacker no usable timing oracle. There is no
+    # RSA decryption anywhere. Ed25519 remains the recommended key type.
+    # Revisit when `rsa` ships a constant-time release (tracked upstream in
+    # RustCrypto/RSA#19).
+    "RUSTSEC-2023-0071",
+]
