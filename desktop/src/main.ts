@@ -22,6 +22,7 @@ type ServerGroup = {
   key: string;
   displayName: string;
   status: ServerStatus;
+  container: HTMLElement;
   label: HTMLElement;
   slot: HTMLElement; // where this server's tab buttons live
 };
@@ -120,11 +121,65 @@ class App implements TabDelegate {
     newShell.textContent = "+";
     newShell.title = `New shell on ${server.displayName}`;
     newShell.onclick = () => void this.newShell(server.key);
-    container.append(label, slot, newShell);
+    const remove = document.createElement("button");
+    remove.textContent = "×";
+    remove.className = "remove-server";
+    remove.title = `Remove ${server.displayName} (shells keep running on the server)`;
+    remove.onclick = () => void this.removeServer(server.key);
+    container.append(label, slot, newShell, remove);
     document.getElementById("tabs")!.appendChild(container);
-    group = { key: server.key, displayName: server.displayName, status: "connecting", label, slot };
+    group = {
+      key: server.key,
+      displayName: server.displayName,
+      status: "connecting",
+      container,
+      label,
+      slot,
+    };
     this.groups.set(server.key, group);
     return group;
+  }
+
+  async removeServer(server: string): Promise<void> {
+    const group = this.groups.get(server);
+    if (!group) return;
+    if (
+      !confirm(
+        `Remove ${group.displayName}?\n\nShells keep running on the server, but the stored ` +
+          `resume tokens and grant for it are deleted — reattaching later needs fresh auth.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await ipc.removeServer(server);
+    } catch (error) {
+      this.setStatus(`remove failed: ${error}`, "err");
+      return;
+    }
+    for (const tab of this.tabs.filter((t) => t.server === server)) {
+      if (tab === this.active) this.active = null;
+      tab.dispose();
+    }
+    this.tabs = this.tabs.filter((t) => t.server !== server);
+    this.elsewhere.delete(server);
+    group.container.remove();
+    this.groups.delete(server);
+    const next = this.tabs[0];
+    if (!this.active && next) this.select(next);
+    this.refreshStatusLine();
+  }
+
+  renameTab(tab: Tab): void {
+    const name = prompt("Rename shell", tab.name)?.trim();
+    if (!name || name === tab.name) return;
+    void ipc.renameShell(tab.server, tab.shell, name).then(
+      () => {
+        tab.name = name;
+        tab.refreshLabel();
+      },
+      (error) => this.setStatus(`rename failed: ${error}`, "err"),
+    );
   }
 
   findTab(server: string, shell: string): Tab | undefined {

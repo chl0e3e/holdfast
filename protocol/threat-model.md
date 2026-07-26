@@ -130,7 +130,10 @@ The gateway is the highest-value network target (bastion in agentless mode).
   open-file and core-dump ceilings before optional `setpriv`; invalid limits or
   a missing wrapper fail shell open. Reference systemd units cap aggregate tasks
   and resident memory for the daemon plus every child shell.
-- Shell expiry policy reclaims abandoned shells.
+- Shell expiry policy reclaims abandoned shells: implemented as the opt-in
+  idle reaper (`--shell-idle-ttl`, ADR 0021) — off by default because clients
+  are designed to hold shells across long absences; reaped shells raise a
+  distinct `ShellExpired` audit event and `shells_expired` metric.
 - **Tests:** opening shells beyond the logical limit fails with
   `ERR_LIMIT_EXCEEDED`; ordinary and uid-dropped PTYs observe the configured
   hard ceilings; both reference cgroup units pass `systemd-analyze verify`.

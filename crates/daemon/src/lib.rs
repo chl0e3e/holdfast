@@ -322,6 +322,40 @@ impl Daemon {
             handles.push(listener.spawn_accept_loop(Arc::clone(&state)));
         }
 
+        // Idle-shell expiry reaper (ADR 0021): operator opt-in — reclaims
+        // shells left Running with zero attachments past the TTL, with a
+        // distinct audit event so expiry is never mistaken for a terminate.
+        if let Some(ttl) = config.session.idle_shell_ttl {
+            let reaper_state = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                let period = (ttl / 4).clamp(
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(60),
+                );
+                let mut ticker = tokio::time::interval(period);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    let scan_state = Arc::clone(&reaper_state);
+                    // reap_idle blocks on child reaping (condvar); keep it
+                    // off the async workers.
+                    let reaped =
+                        tokio::task::spawn_blocking(move || scan_state.manager.reap_idle(ttl))
+                            .await
+                            .unwrap_or_default();
+                    for (user, shell_id, exit) in reaped {
+                        reaper_state.observability.record(
+                            crate::observability::AuditEvent::ShellExpired {
+                                user,
+                                shell_id,
+                                exit_code: exit.exit_code,
+                            },
+                        );
+                    }
+                }
+            }));
+        }
+
         // QUIC-first bootstrap (ADR 0014): with an operator certificate, the
         // TCP side serves only an interstitial that waits for the browser to
         // upgrade to HTTP/3 (via Alt-Svc) and states that QUIC is required —

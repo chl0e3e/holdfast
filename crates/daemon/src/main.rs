@@ -180,6 +180,19 @@ async fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("--shell-max-core-bytes needs a value"))?
                     .parse()?;
             }
+            "--shell-idle-ttl" => {
+                // Opt-in expiry (ADR 0021): reap shells left detached this
+                // many seconds. Off when absent — clients are designed to
+                // keep shells alive across long absences.
+                let seconds: u64 = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--shell-idle-ttl needs seconds"))?
+                    .parse()?;
+                if seconds == 0 {
+                    anyhow::bail!("--shell-idle-ttl must be > 0 (omit the flag to disable)");
+                }
+                config.session.idle_shell_ttl = Some(std::time::Duration::from_secs(seconds));
+            }
             #[cfg(feature = "agent-mode")]
             "--agent" => agent.enabled = true,
             #[cfg(not(feature = "agent-mode"))]
@@ -251,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             other => anyhow::bail!(
-                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --grant-key <path>, --server-id <srv_hex>)"
+                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --shell-idle-ttl <seconds>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --grant-key <path>, --server-id <srv_hex>)"
             ),
         }
     }

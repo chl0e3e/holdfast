@@ -505,3 +505,55 @@ fn natural_exit_is_observed_without_terminate() {
     // Terminating an already-exited shell returns the recorded status.
     assert_eq!(mgr.terminate(&opened.shell_id).unwrap().exit_code, 7);
 }
+
+#[test]
+fn idle_reaper_reclaims_only_detached_expired_shells() {
+    // ADR 0021: expiry targets shells with zero attachments past the TTL;
+    // attached shells and fresh detaches survive.
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+
+    // Shell A: attached the whole time — must survive any TTL.
+    let a = mgr.open_shell(&bash_request(40)).unwrap();
+    let a_attach = mgr.attach("", &a.shell_id, &a.resume_token, 40, 6).unwrap();
+
+    // Shell B: attached once, then detached — idles from last_attached_at.
+    let b = mgr.open_shell(&bash_request(41)).unwrap();
+    let b_attach = mgr.attach("", &b.shell_id, &b.resume_token, 40, 6).unwrap();
+    mgr.detach(&b.shell_id, b_attach.attachment_id).unwrap();
+
+    // Shell C: never attached — idles from creation.
+    let c = mgr.open_shell(&bash_request(42)).unwrap();
+
+    // Nothing is older than a generous TTL.
+    assert!(mgr.reap_idle(Duration::from_secs(3600)).is_empty());
+
+    std::thread::sleep(Duration::from_millis(250));
+    let reaped = mgr.reap_idle(Duration::from_millis(200));
+    let reaped_ids: Vec<_> = reaped.iter().map(|(_, id, _)| *id).collect();
+    assert!(
+        reaped_ids.contains(&b.shell_id),
+        "detached B must be reaped"
+    );
+    assert!(
+        reaped_ids.contains(&c.shell_id),
+        "never-attached C must be reaped"
+    );
+    assert!(
+        !reaped_ids.contains(&a.shell_id),
+        "attached A must never be reaped"
+    );
+    assert_eq!(
+        mgr.shell_info(&a.shell_id).unwrap().state,
+        ShellState::Running
+    );
+    assert_eq!(
+        mgr.shell_info(&b.shell_id).unwrap().state,
+        ShellState::Exited
+    );
+
+    // Reaping is idempotent: a second pass finds nothing new.
+    assert!(mgr.reap_idle(Duration::from_millis(200)).is_empty());
+
+    drop(a_attach);
+    mgr.terminate(&a.shell_id).unwrap();
+}

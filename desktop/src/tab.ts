@@ -23,6 +23,7 @@ export interface TabDelegate {
   sendResize(tab: Tab, cols: number, rows: number): void;
   fetchOlderHistory(tab: Tab): Promise<void>;
   handlePaste(tab: Tab, event: ClipboardEvent): void;
+  renameTab(tab: Tab): void;
 }
 
 export class Tab {
@@ -68,6 +69,7 @@ export class Tab {
     this.button = document.createElement("button");
     tabSlot.appendChild(this.button);
     this.button.onclick = () => app.select(this);
+    this.button.ondblclick = () => app.renameTab(this);
 
     // Safe defaults (threat model T9): no clipboard/web-links/image addons,
     // so OSC 52 writes and OSC 8 auto-hyperlinks are inert. The window title

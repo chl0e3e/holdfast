@@ -330,6 +330,9 @@ authorizing → synchronizing → live → { detached | closed }
   is rejected with `ERR_NOT_READY`.
 - Detach (stream closes, `DetachShell`, network loss) NEVER kills the shell.
   Only `TerminateShell`, process exit, expiry policy, or admin action ends it.
+- Expiry policy: an operator-configured idle TTL may reap shells that sit
+  with zero attachments past the TTL (ADR 0021). Disabled by default; when a
+  shell is reaped the server records a distinct expiry audit event.
 
 ## 12. Resume tokens
 

@@ -109,6 +109,12 @@ pub struct SessionCoreConfig {
     /// Always-on hard limits applied by the launch wrapper before the shell is
     /// exec'd. Defaults are deliberately finite; see ADR 0009.
     pub shell_resource_limits: ShellResourceLimits,
+    /// Reclaim shells that sit `Running` with zero attachments for longer
+    /// than this (spec §11 "expiry policy"; threat model T6; ADR 0021).
+    /// `None` (the default) disables reaping: clients are *designed* to keep
+    /// shells alive across long absences, so expiry is an operator opt-in.
+    /// The owner of the manager drives the cadence via [`ShellManager::reap_idle`].
+    pub idle_shell_ttl: Option<Duration>,
 }
 
 impl Default for SessionCoreConfig {
@@ -123,6 +129,7 @@ impl Default for SessionCoreConfig {
             scrollback_max_bytes: tm.max_history_bytes,
             privilege_drop: false,
             shell_resource_limits: ShellResourceLimits::default(),
+            idle_shell_ttl: None,
         }
     }
 }
@@ -505,6 +512,53 @@ impl ShellManager {
         }
         rt.state = ShellState::Exited;
         Ok(rt.exit.expect("exit recorded"))
+    }
+
+    /// Terminate shells that have sat `Running` with zero attachments for
+    /// longer than `idle_ttl` (spec §11 "expiry policy"; ADR 0021). The
+    /// caller owns the cadence and the TTL — typically the daemon's reaper
+    /// task with `SessionCoreConfig::idle_shell_ttl`. Returns the reaped
+    /// `(owner, shell_id, exit)` triples for auditing.
+    pub fn reap_idle(&self, idle_ttl: Duration) -> Vec<(String, ShellId, ExitSummary)> {
+        fn idle_anchor_ms(entry: &ShellEntry, rt: &Runtime) -> i64 {
+            // Never-attached shells idle from creation.
+            if rt.last_attached_at_ms > 0 {
+                rt.last_attached_at_ms
+            } else {
+                entry.created_at_ms
+            }
+        }
+        let cutoff = now_ms().saturating_sub(idle_ttl.as_millis() as i64);
+        let expired = |entry: &ShellEntry, rt: &Runtime| {
+            rt.state == ShellState::Running
+                && rt.attachments.is_empty()
+                && idle_anchor_ms(entry, rt) <= cutoff
+        };
+        // Collect candidates without holding the manager lock across kills
+        // (terminate blocks on the pump reaping the child).
+        let candidates: Vec<Arc<ShellEntry>> = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .shells
+                .values()
+                .filter(|entry| expired(entry, &entry.runtime.lock().unwrap()))
+                .cloned()
+                .collect()
+        };
+        let mut reaped = Vec::new();
+        for entry in candidates {
+            // Re-check right before killing: an attach may have landed since
+            // the scan. The remaining window between this check and
+            // terminate() re-locking is the same race a manual terminate has
+            // with a concurrent attach — the attacher observes ShellExited.
+            if !expired(&entry, &entry.runtime.lock().unwrap()) {
+                continue;
+            }
+            if let Ok(exit) = self.terminate(&entry.id) {
+                reaped.push((entry.owner.clone(), entry.id, exit));
+            }
+        }
+        reaped
     }
 
     /// Range read of retained scrollback (spec §10).

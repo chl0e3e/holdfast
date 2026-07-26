@@ -86,6 +86,13 @@ pub enum AuditEvent {
         shell_id: ShellId,
         exit_code: u32,
     },
+    /// The idle-expiry reaper reclaimed an abandoned shell (ADR 0021) —
+    /// distinct from a user/admin `TerminateShell`.
+    ShellExpired {
+        user: String,
+        shell_id: ShellId,
+        exit_code: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +115,7 @@ pub struct MetricsSnapshot {
     pub shells_terminated: u64,
     pub limit_hits: u64,
     pub token_replays_detected: u64,
+    pub shells_expired: u64,
 }
 
 #[derive(Default)]
@@ -123,6 +131,7 @@ struct Counters {
     shells_terminated: AtomicU64,
     limit_hits: AtomicU64,
     token_replays_detected: AtomicU64,
+    shells_expired: AtomicU64,
 }
 
 struct AuditRing {
@@ -201,6 +210,7 @@ impl Observability {
             shells_terminated: c.shells_terminated.load(Ordering::Relaxed),
             limit_hits: c.limit_hits.load(Ordering::Relaxed),
             token_replays_detected: c.token_replays_detected.load(Ordering::Relaxed),
+            shells_expired: c.shells_expired.load(Ordering::Relaxed),
         }
     }
 
@@ -241,6 +251,9 @@ impl Observability {
             }
             AuditEvent::ShellTerminated { .. } => {
                 c.shells_terminated.fetch_add(1, Ordering::Relaxed);
+            }
+            AuditEvent::ShellExpired { .. } => {
+                c.shells_expired.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -292,6 +305,15 @@ fn sanitize_event(event: AuditEvent) -> AuditEvent {
             shell_id,
             exit_code,
         } => AuditEvent::ShellTerminated {
+            user: safe_metadata(&user),
+            shell_id,
+            exit_code,
+        },
+        AuditEvent::ShellExpired {
+            user,
+            shell_id,
+            exit_code,
+        } => AuditEvent::ShellExpired {
             user: safe_metadata(&user),
             shell_id,
             exit_code,

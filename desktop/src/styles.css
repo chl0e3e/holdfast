@@ -80,6 +80,8 @@ button.active { background: var(--accent); color: #0b0d10; border-color: var(--a
 #tabs button[data-state="exited"] { opacity: 0.4; text-decoration: line-through; }
 #tabs button[data-state="orphaned"] { border-color: var(--err); }
 #tabs button.elsewhere { opacity: 0.5; border-style: dashed; }
+#tabs button.remove-server { border: none; color: var(--dim); padding: 3px 4px; }
+#tabs button.remove-server:hover { color: var(--err); }
 
 #status { color: var(--dim); white-space: nowrap; }
 #status[data-kind="ok"] { color: var(--ok); }
