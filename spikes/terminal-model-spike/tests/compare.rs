@@ -41,11 +41,17 @@ fn avt_alternate_screen_produces_no_history() {
     // Enter alt screen (smcup), spew many lines, leave (rmcup).
     evicted += vt.feed_str("\x1b[?1049h").scrollback.count();
     for i in 0..50 {
-        evicted += vt.feed_str(&format!("alt-noise-{i}\r\n")).scrollback.count();
+        evicted += vt
+            .feed_str(&format!("alt-noise-{i}\r\n"))
+            .scrollback
+            .count();
     }
     evicted += vt.feed_str("\x1b[?1049l").scrollback.count();
 
-    assert_eq!(evicted, 0, "alt-screen output must not generate history lines");
+    assert_eq!(
+        evicted, 0,
+        "alt-screen output must not generate history lines"
+    );
     let visible: Vec<String> = vt.view().map(|l| l.text()).collect();
     assert!(
         visible[0].starts_with("before-alt"),

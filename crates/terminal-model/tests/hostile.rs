@@ -34,14 +34,24 @@ fn assert_survives(name: &str, payload: &[u8]) {
         .lines
         .iter()
         .any(|l| l.contains("MARKER-ALIVE"));
-    assert!(on_screen || in_history, "{name}: model unusable after payload");
+    assert!(
+        on_screen || in_history,
+        "{name}: model unusable after payload"
+    );
 
     let range = m.history_range(0, 10_000, 10 << 20);
-    assert!(range.lines.len() <= 200, "{name}: history line bound violated");
+    assert!(
+        range.lines.len() <= 200,
+        "{name}: history line bound violated"
+    );
 
     let mut replica = model(40, 6);
     replica.feed(&m.snapshot());
-    assert_eq!(m.visible_lines(), replica.visible_lines(), "{name}: snapshot replay diverged");
+    assert_eq!(
+        m.visible_lines(),
+        replica.visible_lines(),
+        "{name}: snapshot replay diverged"
+    );
 }
 
 /// Named corpus of hostile sequences. Kept as (name, bytes) so a failure
@@ -108,6 +118,21 @@ fn corpus() -> Vec<(&'static str, Vec<u8>)> {
             v
         }),
         ("mode-soup", b"\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[?7l\x1b[?6h".to_vec()),
+        ("decset-param-kilometre", {
+            // Mode tracker must stay bounded: one DECSET with a 1 MiB param.
+            let mut v = b"\x1b[?".to_vec();
+            v.extend(std::iter::repeat(b'9').take(1 << 20));
+            v.extend_from_slice(b"h");
+            v
+        }),
+        ("decset-flood", {
+            let mut v = Vec::new();
+            for i in 0..50_000u32 {
+                v.extend_from_slice(format!("\x1b[?{}h", i % 3000).as_bytes());
+            }
+            v
+        }),
+        ("decset-aborted-mid-sequence", b"\x1b[?1000\x18\x1b[?10\x1b[?1002;\x1b]0;t\x07ok".to_vec()),
         ("full-reset-mid-line", b"half-a-line\x1bc\x1b[2J\x1b[3J".to_vec()),
         // --- Answerback / query sequences (model must swallow, never reply) ---
         ("query-soup", b"\x05\x1b[c\x1b[>c\x1b[=c\x1b[6n\x1b[?6n\x1b[5n\x1b]21;?\x07\x1bP$qm\x1b\\\x1b[14t\x1b[18t\x1b[21t".to_vec()),
@@ -177,7 +202,10 @@ fn corpus_survives_byte_at_a_time_feeding() {
         }
         m.feed(b"\x18\x1b\\\x1b[?1049l\r\nMARKER-ALIVE\r\n");
         let alive = m.visible_lines().iter().any(|l| l.contains("MARKER-ALIVE"))
-            || m.history_range(0, 1000, 1 << 20).lines.iter().any(|l| l.contains("MARKER-ALIVE"));
+            || m.history_range(0, 1000, 1 << 20)
+                .lines
+                .iter()
+                .any(|l| l.contains("MARKER-ALIVE"));
         assert!(alive, "{name}: model unusable after byte-at-a-time feed");
     }
 }
@@ -187,7 +215,9 @@ fn deterministic_fuzz_random_bytes() {
     // Seeded LCG so failures reproduce; no Date/random dependency.
     let mut state: u64 = 0x5DEECE66D;
     let mut next = move || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u8
     };
     let mut m = model(80, 24);
@@ -200,7 +230,10 @@ fn deterministic_fuzz_random_bytes() {
     }
     m.feed(b"\x18\x1b\\\x1b[?1049l\r\nMARKER-ALIVE\r\n");
     let alive = m.visible_lines().iter().any(|l| l.contains("MARKER-ALIVE"))
-        || m.history_range(0, 1000, 1 << 20).lines.iter().any(|l| l.contains("MARKER-ALIVE"));
+        || m.history_range(0, 1000, 1 << 20)
+            .lines
+            .iter()
+            .any(|l| l.contains("MARKER-ALIVE"));
     assert!(alive, "model unusable after random fuzz");
 }
 
@@ -210,7 +243,9 @@ fn deterministic_fuzz_escape_biased() {
     // reaches far deeper into the parser than uniform noise.
     let mut state: u64 = 0xB5297A4D;
     let mut next = move || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     let structural: &[u8] = b"\x1b[]P;?0123456789hlmHJKrcnqt\x07\x9b\\_^X";
@@ -231,7 +266,10 @@ fn deterministic_fuzz_escape_biased() {
     }
     m.feed(b"\x18\x1b\\\x1b[?1049l\r\nMARKER-ALIVE\r\n");
     let alive = m.visible_lines().iter().any(|l| l.contains("MARKER-ALIVE"))
-        || m.history_range(0, 1000, 1 << 20).lines.iter().any(|l| l.contains("MARKER-ALIVE"));
+        || m.history_range(0, 1000, 1 << 20)
+            .lines
+            .iter()
+            .any(|l| l.contains("MARKER-ALIVE"));
     assert!(alive, "model unusable after escape-biased fuzz");
 }
 
@@ -247,7 +285,10 @@ fn resize_storm_during_hostile_input() {
     m.resize(80, 24);
     m.feed(b"\x18\x1b\\\x1b[?1049l\r\nMARKER-ALIVE\r\n");
     let alive = m.visible_lines().iter().any(|l| l.contains("MARKER-ALIVE"))
-        || m.history_range(0, 1000, 1 << 20).lines.iter().any(|l| l.contains("MARKER-ALIVE"));
+        || m.history_range(0, 1000, 1 << 20)
+            .lines
+            .iter()
+            .any(|l| l.contains("MARKER-ALIVE"));
     assert!(alive, "model unusable after resize storm");
 }
 
@@ -260,7 +301,10 @@ fn degenerate_resize_dimensions_are_clamped_not_fatal() {
     for &(c, r) in &[(0u16, 6u16), (1, 6), (40, 0), (0, 0), (1, 1), (2, 1)] {
         m.resize(c, r);
         let (gc, gr) = m.size();
-        assert!(gc >= 2 && gr >= 1, "resize({c},{r}) left unsafe size ({gc},{gr})");
+        assert!(
+            gc >= 2 && gr >= 1,
+            "resize({c},{r}) left unsafe size ({gc},{gr})"
+        );
         // Still usable after each degenerate resize.
         m.feed(b"ok\r\n");
     }
@@ -278,14 +322,20 @@ fn construction_with_zero_dimensions_is_clamped() {
         max_history_bytes: 4096,
     });
     let (c, r) = m.size();
-    assert!(c >= 2 && r >= 1, "zero-dim construction left unsafe size ({c},{r})");
+    assert!(
+        c >= 2 && r >= 1,
+        "zero-dim construction left unsafe size ({c},{r})"
+    );
     // Feeding a wide glyph into the clamped emulator must not panic; then a
     // resize to a normal size leaves it fully usable.
     m.feed("🦀🦀🦀".as_bytes());
     m.resize(40, 6);
     m.feed(b"\r\nMARKER-ALIVE\r\n");
     let alive = m.visible_lines().iter().any(|l| l.contains("MARKER-ALIVE"))
-        || m.history_range(0, 100, 1 << 20).lines.iter().any(|l| l.contains("MARKER-ALIVE"));
+        || m.history_range(0, 100, 1 << 20)
+            .lines
+            .iter()
+            .any(|l| l.contains("MARKER-ALIVE"));
     assert!(alive);
 }
 
@@ -301,7 +351,11 @@ fn history_bounds_hold_under_line_flood() {
         m.feed(format!("flood-line-{i}\r\n").as_bytes());
     }
     let range = m.history_range(0, 10_000, 10 << 20);
-    assert!(range.lines.len() <= 50, "line bound violated: {}", range.lines.len());
+    assert!(
+        range.lines.len() <= 50,
+        "line bound violated: {}",
+        range.lines.len()
+    );
     let total: usize = range.lines.iter().map(|l| l.len()).sum();
     assert!(total <= 2048, "byte bound violated: {total}");
     assert!(range.truncated_by_eviction);

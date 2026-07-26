@@ -18,7 +18,12 @@ use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 const T: Duration = Duration::from_secs(10);
 
 fn plain(message: Msg) -> Envelope {
-    Envelope { request_id: 0, server_id: vec![], shell_id: vec![], message: Some(message) }
+    Envelope {
+        request_id: 0,
+        server_id: vec![],
+        shell_id: vec![],
+        message: Some(message),
+    }
 }
 
 struct Chan {
@@ -31,7 +36,12 @@ struct Chan {
 impl Chan {
     async fn open(connection: &Connection) -> Chan {
         let (send, recv) = connection.open_bi().await.unwrap().await.unwrap();
-        Chan { send, recv, decoder: FrameDecoder::new(FRAME_BYTES_DEFAULT), buf: vec![0; 16 * 1024] }
+        Chan {
+            send,
+            recv,
+            decoder: FrameDecoder::new(FRAME_BYTES_DEFAULT),
+            buf: vec![0; 16 * 1024],
+        }
     }
 
     async fn send_env(&mut self, envelope: Envelope) {
@@ -80,8 +90,11 @@ async fn wt_hello(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan, [u8; 
                     .unwrap_or(-1)
             })
             .collect();
-        let chars: Vec<i32> =
-            b64.bytes().filter(|b| *b != b'=').map(|b| table[b as usize]).collect();
+        let chars: Vec<i32> = b64
+            .bytes()
+            .filter(|b| *b != b'=')
+            .map(|b| table[b as usize])
+            .collect();
         for chunk in chars.chunks(4) {
             let mut n = 0u32;
             for (i, c) in chunk.iter().enumerate() {
@@ -106,7 +119,10 @@ async fn wt_hello(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan, [u8; 
     )
     .unwrap();
     let connection = endpoint
-        .connect(format!("https://127.0.0.1:{}/", daemon.webtransport_addr.unwrap().port()))
+        .connect(format!(
+            "https://127.0.0.1:{}/",
+            daemon.webtransport_addr.unwrap().port()
+        ))
         .await
         .expect("webtransport session");
     let mut control = Chan::open(&connection).await;
@@ -198,7 +214,9 @@ async fn wait_output(chan: &mut Chan, needle: &str) {
     chan.recv_until(|env| match &env.message {
         Some(Msg::TerminalOutput(out)) => {
             collected.extend_from_slice(&out.data);
-            String::from_utf8_lossy(&collected).contains(needle).then_some(())
+            String::from_utf8_lossy(&collected)
+                .contains(needle)
+                .then_some(())
         }
         _ => None,
     })
@@ -271,8 +289,9 @@ async fn address_change_resume_over_webtransport() {
     daemon.abort();
 }
 
-/// A shell opened over WebTransport must be reattachable over the WebSocket
-/// fallback — same protocol semantics on both transports (spec §2).
+/// A shell opened over WebTransport must be reattachable over the (test-only,
+/// config-gated) WebSocket transport — the session layer is transport-neutral
+/// (spec §2), even though the product itself is HTTP/3-only (ADR 0014).
 #[tokio::test]
 async fn webtransport_shell_reattaches_over_websocket() {
     use futures_util::{SinkExt, StreamExt};
@@ -280,6 +299,7 @@ async fn webtransport_shell_reattaches_over_websocket() {
 
     let daemon = Daemon::start(DaemonConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
+        enable_websocket: true,
         ..Default::default()
     })
     .await
@@ -312,13 +332,18 @@ async fn webtransport_shell_reattaches_over_websocket() {
     }
     async fn ws_recv_until<R>(
         ws: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
-              + Unpin),
+                  + Unpin),
         mut pred: impl FnMut(u64, &Envelope) -> Option<R>,
     ) -> R {
         loop {
-            let msg = tokio::time::timeout(T, ws.next()).await.unwrap().unwrap().unwrap();
+            let msg = tokio::time::timeout(T, ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             if let WsMessage::Binary(data) = msg {
-                let (ch, env) = hf_daemon::wire::decode_message(&data, FRAME_BYTES_DEFAULT).unwrap();
+                let (ch, env) =
+                    hf_daemon::wire::decode_message(&data, FRAME_BYTES_DEFAULT).unwrap();
                 if let Some(r) = pred(ch, &env) {
                     return r;
                 }
@@ -326,24 +351,32 @@ async fn webtransport_shell_reattaches_over_websocket() {
         }
     }
 
-    ws_send(&mut ws, 0, plain(Msg::ClientHello(pb::ClientHello {
-        protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
-        client_kind: pb::ClientKind::BrowserWebsocket as i32,
-        client_build: "cross-test".into(),
-        capabilities: vec![],
-        max_frame_bytes: FRAME_BYTES_DEFAULT,
-        max_datagram_bytes: 0,
-        encodings: vec![pb::Encoding::Utf8 as i32],
-    })))
+    ws_send(
+        &mut ws,
+        0,
+        plain(Msg::ClientHello(pb::ClientHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            client_kind: pb::ClientKind::BrowserWebsocket as i32,
+            client_build: "cross-test".into(),
+            capabilities: vec![],
+            max_frame_bytes: FRAME_BYTES_DEFAULT,
+            max_datagram_bytes: 0,
+            encodings: vec![pb::Encoding::Utf8 as i32],
+        })),
+    )
     .await;
     ws_recv_until(&mut ws, |ch, env| {
         matches!((ch, &env.message), (0, Some(Msg::ServerHello(_)))).then_some(())
     })
     .await;
-    ws_send(&mut ws, 0, plain(Msg::Authenticate(pb::Authenticate {
-        method: Some(pb::authenticate::Method::ConnectionGrant(vec![])),
-    })))
+    ws_send(
+        &mut ws,
+        0,
+        plain(Msg::Authenticate(pb::Authenticate {
+            method: Some(pb::authenticate::Method::ConnectionGrant(vec![])),
+        })),
+    )
     .await;
     ws_recv_until(&mut ws, |ch, env| match (ch, &env.message) {
         (0, Some(Msg::AuthenticationResult(r))) => Some(assert!(r.ok)),
@@ -410,8 +443,16 @@ async fn concurrent_bidi_streams_are_capped() {
     // The daemon sets max_concurrent_bidi_streams = 64; the WebTransport session
     // consumes a little of that, so the reachable app total is at or just below
     // it. Assert it is genuinely bounded and not pathologically tight.
-    assert!(held.len() <= 64, "concurrent bidi streams must be capped, got {}", held.len());
-    assert!(held.len() >= 32, "cap unexpectedly tight, got {}", held.len());
+    assert!(
+        held.len() <= 64,
+        "concurrent bidi streams must be capped, got {}",
+        held.len()
+    );
+    assert!(
+        held.len() >= 32,
+        "cap unexpectedly tight, got {}",
+        held.len()
+    );
 
     daemon.abort();
 }
@@ -447,10 +488,12 @@ async fn ssh_channel_binding_is_enforced_over_webtransport() {
         let public_line = key.public_key().to_openssh().unwrap();
         control
             .send_env(plain(Msg::Authenticate(pb::Authenticate {
-                method: Some(pb::authenticate::Method::SshChallengeRequest(pb::SshChallengeRequest {
-                    username: "alice".into(),
-                    public_key: public_line.into_bytes(),
-                })),
+                method: Some(pb::authenticate::Method::SshChallengeRequest(
+                    pb::SshChallengeRequest {
+                        username: "alice".into(),
+                        public_key: public_line.into_bytes(),
+                    },
+                )),
             })))
             .await;
         let challenge = control
@@ -459,16 +502,23 @@ async fn ssh_channel_binding_is_enforced_over_webtransport() {
                 _ => None,
             })
             .await;
-        assert!(!challenge.is_empty(), "authorized key must receive a challenge");
+        assert!(
+            !challenge.is_empty(),
+            "authorized key must receive a challenge"
+        );
         let message = hf_auth::ssh::channel_bound_message(binding, &challenge);
-        let sig = key.sign(hf_auth::SSH_NAMESPACE, HashAlg::Sha512, &message).unwrap();
+        let sig = key
+            .sign(hf_auth::SSH_NAMESPACE, HashAlg::Sha512, &message)
+            .unwrap();
         let pem = sig.to_pem(LineEnding::LF).unwrap();
         control
             .send_env(plain(Msg::Authenticate(pb::Authenticate {
-                method: Some(pb::authenticate::Method::SshChallengeResponse(pb::SshChallengeResponse {
-                    challenge,
-                    signature: pem.into_bytes(),
-                })),
+                method: Some(pb::authenticate::Method::SshChallengeResponse(
+                    pb::SshChallengeResponse {
+                        challenge,
+                        signature: pem.into_bytes(),
+                    },
+                )),
             })))
             .await;
         control

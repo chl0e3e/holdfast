@@ -29,12 +29,23 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ExecStart=/usr/local/bin/holdfastd \
     --bind 127.0.0.1:8080 \
     --wt-bind 0.0.0.0:443 \
+    --wt-cert /etc/holdfast/tls/fullchain.pem \
+    --wt-key /etc/holdfast/tls/privkey.pem \
     --web-root /var/lib/holdfast/web \
     --ssh-auth admin /var/lib/holdfast/authorized_keys \
-    --allowed-origin https://terminal.example.com
+    --allowed-origin https://terminal.example.com \
+    --grant-key /var/lib/holdfast/grant.key
 
 Restart=on-failure
 RestartSec=2s
+
+# Aggregate containment for the daemon and every shell in its cgroup (ADR
+# 0009). Per-shell prlimit ceilings are applied separately by holdfastd.
+# Percentages make the reference unit scale with host RAM; operators running
+# intentionally memory-heavy workloads should tune these values explicitly.
+TasksMax=2048
+MemoryHigh=50%
+MemoryMax=75%
 
 # --- Sandboxing ---
 # NOTE: this service's whole purpose is to run interactive shells as its own
@@ -47,6 +58,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/holdfast
+ReadOnlyPaths=/etc/holdfast/tls
 ProtectControlGroups=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

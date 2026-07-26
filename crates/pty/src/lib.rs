@@ -9,6 +9,11 @@ use std::sync::mpsc::Receiver;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+/// PTY reader → shell-model pump queue. Each chunk is at most 8 KiB, so the
+/// queue retains at most 512 KiB. Filling it backpressures this shell's PTY;
+/// slow network attachments are detached independently in session-core.
+const PTY_OUTPUT_QUEUE_CHUNKS: usize = 64;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
     #[error("failed to open PTY: {0}")]
@@ -36,7 +41,14 @@ pub struct PtyConfig {
 
 impl Default for PtyConfig {
     fn default() -> PtyConfig {
-        PtyConfig { program: None, args: vec![], env: vec![], cwd: None, cols: 80, rows: 24 }
+        PtyConfig {
+            program: None,
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            cols: 80,
+            rows: 24,
+        }
     }
 }
 
@@ -49,11 +61,10 @@ pub struct ExitSummary {
 
 /// A live PTY with its child process.
 ///
-/// Output arrives on the channel returned by [`PtyProcess::take_output`],
-/// in raw byte chunks, ending (channel disconnect) at PTY EOF. The channel is
-/// unbounded here by design: the consumer (session-core) applies the bounded
-/// queue policy from spec §8 and is required to drain promptly into the
-/// terminal model, which is itself bounded.
+/// Output arrives on the channel returned by [`PtyProcess::take_output`], in
+/// raw byte chunks, ending (channel disconnect) at PTY EOF. The channel has an
+/// explicit 64-chunk / 512-KiB bound; session-core drains it into the bounded
+/// terminal model and separately enforces each attachment's output bound.
 pub struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -94,11 +105,16 @@ impl PtyProcess {
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
         drop(pair.slave);
 
-        let writer = pair.master.take_writer().map_err(|e| PtyError::Open(e.to_string()))?;
-        let mut reader =
-            pair.master.try_clone_reader().map_err(|e| PtyError::Open(e.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| PtyError::Open(e.to_string()))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| PtyError::Open(e.to_string()))?;
 
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CHUNKS);
         std::thread::Builder::new()
             .name("hf-pty-reader".into())
             .spawn(move || {
@@ -111,7 +127,12 @@ impl PtyProcess {
             })
             .expect("spawn PTY reader thread");
 
-        Ok(PtyProcess { master: pair.master, child, writer, output: Some(rx) })
+        Ok(PtyProcess {
+            master: pair.master,
+            child,
+            writer,
+            output: Some(rx),
+        })
     }
 
     /// Take the output channel. Callable once; the channel disconnects at EOF.
@@ -129,7 +150,12 @@ impl PtyProcess {
     /// Resize the PTY; delivers SIGWINCH to the foreground process group.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), PtyError> {
         self.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| PtyError::Resize(e.to_string()))
     }
 
@@ -139,13 +165,19 @@ impl PtyProcess {
             .child
             .try_wait()
             .map_err(PtyError::Io)?
-            .map(|s| ExitSummary { success: s.success(), exit_code: s.exit_code() }))
+            .map(|s| ExitSummary {
+                success: s.success(),
+                exit_code: s.exit_code(),
+            }))
     }
 
     /// Block until the child exits and is reaped (no zombie remains).
     pub fn wait(&mut self) -> Result<ExitSummary, PtyError> {
         let status = self.child.wait().map_err(PtyError::Io)?;
-        Ok(ExitSummary { success: status.success(), exit_code: status.exit_code() })
+        Ok(ExitSummary {
+            success: status.success(),
+            exit_code: status.exit_code(),
+        })
     }
 
     /// Forcibly terminate the child. Idempotent; always follow with

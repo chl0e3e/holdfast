@@ -2,6 +2,8 @@
 //! a real OpenSSH private key (challenge/response), and the issued grant is
 //! reusable. Reproduce with: `cargo test -p hf-native-client --test ssh_auth`
 
+#![cfg(unix)] // these tests spawn a real daemon (pty/pam are unix-only)
+
 use std::collections::BTreeMap;
 
 use hf_daemon::{AuthConfig, Daemon, DaemonConfig};
@@ -36,7 +38,9 @@ async fn native_client_authenticates_with_ssh_key_and_reuses_grant() {
     std::fs::create_dir_all(&tmp).unwrap();
     let (key_path, public_line) = write_key(&tmp);
 
-    let daemon = Daemon::start(ssh_daemon_config(&public_line)).await.unwrap();
+    let daemon = Daemon::start(ssh_daemon_config(&public_line))
+        .await
+        .unwrap();
     let url = format!("http://{}", daemon.local_addr);
 
     // Authenticate by signing the challenge with the private key.
@@ -56,13 +60,18 @@ async fn native_client_authenticates_with_ssh_key_and_reuses_grant() {
     assert!(conn.list_shells().await.unwrap().is_empty());
 
     // The issued grant re-authenticates without signing again.
-    let conn2 = connect_with(&url, AuthMethod::Grant(grant)).await.expect("grant reuse");
+    let conn2 = connect_with(&url, AuthMethod::Grant(grant))
+        .await
+        .expect("grant reuse");
     assert!(!conn2.grant.is_empty());
 
     // A wrong username is rejected even with a valid key file.
     let bad = connect_with(
         &url,
-        AuthMethod::SshKey { username: "mallory".into(), private_key_path: key_path },
+        AuthMethod::SshKey {
+            username: "mallory".into(),
+            private_key_path: key_path,
+        },
     )
     .await;
     assert!(bad.is_err(), "unknown user must fail");

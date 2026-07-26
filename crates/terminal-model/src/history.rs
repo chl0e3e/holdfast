@@ -73,7 +73,12 @@ impl HistoryRing {
     /// at least one line when any line in range is retained, even if that
     /// line alone exceeds `maximum_bytes` — otherwise a client with a small
     /// budget could never make progress.
-    pub fn range(&self, before_line_id: u64, maximum_lines: u32, maximum_bytes: u32) -> HistoryRange {
+    pub fn range(
+        &self,
+        before_line_id: u64,
+        maximum_lines: u32,
+        maximum_bytes: u32,
+    ) -> HistoryRange {
         let newest = self.newest_id();
         let upper = if before_line_id == 0 {
             newest
@@ -207,7 +212,11 @@ mod tests {
     fn byte_budget_limits_a_page() {
         let r = ring_with(10); // each line 6-7 bytes
         let range = r.range(0, 100, 14);
-        assert_eq!(range.lines, vec!["line-9", "line-10"], "two lines fit in 14 bytes");
+        assert_eq!(
+            range.lines,
+            vec!["line-9", "line-10"],
+            "two lines fit in 14 bytes"
+        );
     }
 
     #[test]

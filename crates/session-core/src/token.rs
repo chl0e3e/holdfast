@@ -48,6 +48,9 @@ mod tests {
 
     #[test]
     fn debug_redacts_material() {
-        assert_eq!(format!("{:?}", ResumeToken::generate()), "ResumeToken(redacted)");
+        assert_eq!(
+            format!("{:?}", ResumeToken::generate()),
+            "ResumeToken(redacted)"
+        );
     }
 }

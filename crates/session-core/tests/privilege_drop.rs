@@ -107,28 +107,49 @@ fn shell_runs_under_the_resolved_account_uid() {
         eprintln!("SKIP: target account {TARGET_ACCOUNT:?} not present on this host");
         return;
     }
-    let target_uid =
-        account_uid(TARGET_ACCOUNT).expect("target account uid");
-    assert_ne!(target_uid, "0", "target account must not be root for a meaningful test");
+    let target_uid = account_uid(TARGET_ACCOUNT).expect("target account uid");
+    assert_ne!(
+        target_uid, "0",
+        "target account must not be root for a meaningful test"
+    );
 
-    let config = SessionCoreConfig { privilege_drop: true, ..Default::default() };
+    let config = SessionCoreConfig {
+        privilege_drop: true,
+        ..Default::default()
+    };
     let mgr = ShellManager::new(config);
 
     // The needle is synthesized by the shell (`$(id -u)`), so the number never
     // appears in the *typed* command line the PTY echoes back — matching the
     // echo instead of the command output is the trap here.
     // --- Dropped shell: runs as TARGET_ACCOUNT. ---
-    let dropped = mgr.open_shell(&drop_request(Some(TARGET_ACCOUNT), 1)).unwrap();
-    let a = mgr.attach(&dropped.shell_id, &dropped.resume_token, 40, 6).unwrap();
-    mgr.write_input(&dropped.shell_id, b"echo RID=$(id -u)RID\r").unwrap();
+    let dropped = mgr
+        .open_shell(&drop_request(Some(TARGET_ACCOUNT), 1))
+        .unwrap();
+    let a = mgr
+        .attach("", &dropped.shell_id, &dropped.resume_token, 40, 6)
+        .unwrap();
+    mgr.write_input(&dropped.shell_id, b"echo RID=$(id -u)RID\r")
+        .unwrap();
     read_until(&a, &format!("RID={target_uid}RID"));
+    // The prlimit wrapper runs outside setpriv; its hard ceilings must survive
+    // the uid/gid switch into the target account.
+    mgr.write_input(&dropped.shell_id, b"ulimit -Hu\r").unwrap();
+    read_until(&a, "512");
+    mgr.write_input(&dropped.shell_id, b"ulimit -Hn\r").unwrap();
+    read_until(&a, "1024");
+    mgr.write_input(&dropped.shell_id, b"ulimit -Hc\r").unwrap();
+    read_until(&a, "0");
     mgr.terminate(&dropped.shell_id).unwrap();
 
     // --- No account requested: still runs as the daemon's own (root) uid,
     // proving the drop is scoped to the resolved account, not blanket. ---
     let own = mgr.open_shell(&drop_request(None, 2)).unwrap();
-    let a2 = mgr.attach(&own.shell_id, &own.resume_token, 40, 6).unwrap();
-    mgr.write_input(&own.shell_id, b"echo RID=$(id -u)RID\r").unwrap();
+    let a2 = mgr
+        .attach("", &own.shell_id, &own.resume_token, 40, 6)
+        .unwrap();
+    mgr.write_input(&own.shell_id, b"echo RID=$(id -u)RID\r")
+        .unwrap();
     read_until(&a2, "RID=0RID");
     mgr.terminate(&own.shell_id).unwrap();
 }
@@ -138,12 +159,18 @@ fn shell_runs_under_the_resolved_account_uid() {
 /// too (no switch happens), so it is not ignored.
 #[test]
 fn privilege_drop_flag_is_inert_without_a_requested_account() {
-    let config = SessionCoreConfig { privilege_drop: true, ..Default::default() };
+    let config = SessionCoreConfig {
+        privilege_drop: true,
+        ..Default::default()
+    };
     let mgr = ShellManager::new(config);
     let opened = mgr.open_shell(&drop_request(None, 3)).unwrap();
-    let a = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
+    let a = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
     // Synthesized needle (see note above): "42" is computed, not typed.
-    mgr.write_input(&opened.shell_id, b"echo INERT=$((21*2))OK\r").unwrap();
+    mgr.write_input(&opened.shell_id, b"echo INERT=$((21*2))OK\r")
+        .unwrap();
     read_until(&a, "INERT=42OK");
     mgr.terminate(&opened.shell_id).unwrap();
 }

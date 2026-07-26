@@ -19,6 +19,8 @@
 //! Running them directly outside the namespace will skip with a message rather
 //! than fail, so a bare `cargo test -- --ignored` is safe.
 
+#![cfg(unix)] // these tests spawn a real daemon (pty/pam are unix-only)
+
 use std::process::Command;
 use std::time::Duration;
 
@@ -41,7 +43,9 @@ fn netem(args: &[&str]) -> bool {
 }
 
 fn netem_clear() {
-    let _ = Command::new(TC).args(["qdisc", "del", "dev", "lo", "root"]).output();
+    let _ = Command::new(TC)
+        .args(["qdisc", "del", "dev", "lo", "root"])
+        .output();
 }
 
 /// True when we can actually shape `lo` — i.e. we are inside the namespace
@@ -113,6 +117,7 @@ async fn wait_output(shell: &mut AttachedShell, needle: &str, budget: Duration) 
                 }
             }
             Ok(Ok(ShellEvent::Exited(code))) => panic!("shell exited early: {code}"),
+            Ok(Ok(ShellEvent::Ping(_))) => {}
             Ok(Err(_)) => return false, // transport error
             Err(_) => return false,     // timed out
         }
@@ -128,9 +133,14 @@ async fn ordered_delivery_under_shaping(profile: &[&str], budget: Duration) {
     let _shaper = Shaper::apply(profile);
 
     let mut conn = connect(&url).await.expect("connect under shaping");
-    let (shell_id, token) =
-        conn.open_shell(Some("bash"), 40, 6, rand::random()).await.expect("open under shaping");
-    let mut shell = conn.attach(&shell_id, &token, 40, 6).await.expect("attach under shaping");
+    let (shell_id, token) = conn
+        .open_shell(Some("bash"), 40, 6, rand::random())
+        .await
+        .expect("open under shaping");
+    let mut shell = conn
+        .attach(&shell_id, &token, 40, 6)
+        .await
+        .expect("attach under shaping");
 
     shell
         .input(b"for i in $(seq 1 200); do echo netem-line-$i; done\r")
@@ -146,7 +156,10 @@ async fn ordered_delivery_under_shaping(profile: &[&str], budget: Duration) {
     let lines = shell.history(0, 5000).await.expect("history under shaping");
     let joined = lines.join("\n");
     for probe in ["netem-line-1", "netem-line-99", "netem-line-150"] {
-        assert!(joined.contains(probe), "profile {profile:?}: history missing {probe}");
+        assert!(
+            joined.contains(probe),
+            "profile {profile:?}: history missing {probe}"
+        );
     }
 
     conn.terminate(&shell_id).await.ok();
@@ -158,7 +171,8 @@ async fn ordered_delivery_under_shaping(profile: &[&str], budget: Duration) {
 async fn latency_and_jitter_are_masked() {
     skip_unless_shaping!();
     // 40ms ± 15ms with correlation — round trips vary but delivery is reliable.
-    ordered_delivery_under_shaping(&["delay", "40ms", "15ms", "25%"], Duration::from_secs(30)).await;
+    ordered_delivery_under_shaping(&["delay", "40ms", "15ms", "25%"], Duration::from_secs(30))
+        .await;
 }
 
 #[tokio::test]
@@ -194,8 +208,10 @@ async fn blackhole_then_resume() {
     let _shaper = Shaper::apply(&["delay", "5ms"]);
 
     let mut conn = connect(&url).await.expect("initial connect");
-    let (shell_id, token) =
-        conn.open_shell(Some("bash"), 40, 6, rand::random()).await.expect("open");
+    let (shell_id, token) = conn
+        .open_shell(Some("bash"), 40, 6, rand::random())
+        .await
+        .expect("open");
     let mut shell = conn.attach(&shell_id, &token, 40, 6).await.expect("attach");
     let rotated = shell.rotated_token.clone();
 
@@ -239,9 +255,17 @@ async fn blackhole_then_resume() {
     );
 
     // Still interactive after resume.
-    shell2.input(b"echo resumed-after-blackhole\r").await.expect("input after resume");
+    shell2
+        .input(b"echo resumed-after-blackhole\r")
+        .await
+        .expect("input after resume");
     assert!(
-        wait_output(&mut shell2, "resumed-after-blackhole", Duration::from_secs(15)).await,
+        wait_output(
+            &mut shell2,
+            "resumed-after-blackhole",
+            Duration::from_secs(15)
+        )
+        .await,
         "shell must be interactive again after resume"
     );
 

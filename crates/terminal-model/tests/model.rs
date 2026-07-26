@@ -21,7 +21,10 @@ fn scrolled_lines_commit_to_history_with_stable_ids() {
     // 4-row screen: line-8..line-10 + prompt row visible; 1..=7 in history.
     assert_eq!((m.oldest_line_id(), m.newest_line_id()), (1, 7));
     let range = m.history_range(0, 100, 1 << 20);
-    assert_eq!(range.lines, (1..=7).map(|i| format!("line-{i}")).collect::<Vec<_>>());
+    assert_eq!(
+        range.lines,
+        (1..=7).map(|i| format!("line-{i}")).collect::<Vec<_>>()
+    );
     assert!(!range.truncated_by_eviction);
 }
 
@@ -48,8 +51,15 @@ fn alternate_screen_does_not_pollute_history() {
     }
     m.feed(b"\x1b[?1049l"); // rmcup
 
-    assert_eq!(m.newest_line_id(), history_before, "alt screen must not add history");
-    assert!(m.visible_lines()[0].starts_with("before-alt"), "primary screen restored");
+    assert_eq!(
+        m.newest_line_id(),
+        history_before,
+        "alt screen must not add history"
+    );
+    assert!(
+        m.visible_lines()[0].starts_with("before-alt"),
+        "primary screen restored"
+    );
 }
 
 #[test]
@@ -60,6 +70,79 @@ fn snapshot_reconstructs_screen_in_fresh_emulator() {
     let mut replica = small(1000, 1 << 20);
     replica.feed(&m.snapshot());
     assert_eq!(m.visible_lines(), replica.visible_lines());
+}
+
+/// Snapshot as text, for asserting on the replayed mode sequences.
+fn snapshot_text(m: &TerminalModel) -> String {
+    String::from_utf8(m.snapshot()).unwrap()
+}
+
+#[test]
+fn snapshot_replays_mouse_tracking_modes() {
+    let mut m = small(1000, 1 << 20);
+    // weechat `/mouse enable`: button-event tracking + SGR encoding.
+    m.feed(b"\x1b[?1002h\x1b[?1006h");
+    let snap = snapshot_text(&m);
+    assert!(snap.contains("\x1b[?1002h"), "got {snap:?}");
+    assert!(snap.contains("\x1b[?1006h"), "got {snap:?}");
+
+    m.feed(b"\x1b[?1002l");
+    let snap = snapshot_text(&m);
+    assert!(!snap.contains("\x1b[?1002h"), "DECRST must clear: {snap:?}");
+    assert!(snap.contains("\x1b[?1006h"), "encoding stays: {snap:?}");
+}
+
+#[test]
+fn snapshot_replays_modes_from_combined_param_list() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[?1000;1006;2004h");
+    let snap = snapshot_text(&m);
+    for seq in ["\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h"] {
+        assert!(snap.contains(seq), "missing {seq:?} in {snap:?}");
+    }
+}
+
+#[test]
+fn mode_sequence_split_across_feeds_is_tracked() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[?10");
+    m.feed(b"06h");
+    assert!(snapshot_text(&m).contains("\x1b[?1006h"));
+}
+
+#[test]
+fn mouse_protocols_are_mutually_exclusive() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[?1000h\x1b[?1003h");
+    let snap = snapshot_text(&m);
+    assert!(!snap.contains("\x1b[?1000h"), "1003 replaces 1000: {snap:?}");
+    assert!(snap.contains("\x1b[?1003h"));
+}
+
+#[test]
+fn application_cursor_keys_survive_snapshot() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[?1h");
+    assert!(snapshot_text(&m).contains("\x1b[?1h"));
+    m.feed(b"\x1b[?1l");
+    assert!(!snapshot_text(&m).contains("\x1b[?1h"));
+}
+
+#[test]
+fn full_reset_clears_tracked_modes() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[?1002h\x1b[?1006h");
+    m.feed(b"\x1bc"); // RIS
+    let snap = snapshot_text(&m);
+    assert!(!snap.contains("\x1b[?1002h"), "got {snap:?}");
+    assert!(!snap.contains("\x1b[?1006h"), "got {snap:?}");
+}
+
+#[test]
+fn non_private_set_mode_is_not_replayed_as_private() {
+    let mut m = small(1000, 1 << 20);
+    m.feed(b"\x1b[4h"); // IRM insert mode: not ours
+    assert!(!snapshot_text(&m).contains("\x1b[?4h"));
 }
 
 #[test]

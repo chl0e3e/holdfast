@@ -39,8 +39,8 @@ fn random_messages_never_panic() {
 fn multibyte_varint_prefixes_are_handled() {
     // Exercise valid and truncated varint channel prefixes.
     let cases: Vec<Vec<u8>> = vec![
-        vec![0x00u8],         // channel 0, then a frame
-        vec![0x80],           // truncated varint
+        vec![0x00u8], // channel 0, then a frame
+        vec![0x80],   // truncated varint
         vec![0xff, 0xff, 0xff, 0x0f],
         vec![0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80], // overlong
     ];

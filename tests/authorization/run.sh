@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Privilege-drop mechanism test (threat model T12, ADR 0007).
+# Privilege-drop + resource-limit mechanism test (threat models T12/T6,
+# ADRs 0007/0009).
 #
 # Verifies the actual uid/gid switch: with privilege_drop enabled, a shell whose
-# resolved account differs from the daemon's runs under that account. This needs
-# root (to switch uid) and a secondary account, so the test is #[ignore]d and
-# run here under sudo.
+# resolved account differs from the daemon's runs under that account, with the
+# hard resource limits intact after the switch. This needs root (to switch uid)
+# and a secondary account, so the test is #[ignore]d and run here under sudo.
 #
 # The binary is built as the normal user (so target/ stays user-owned), then run
 # via sudo. If sudo is unavailable or the test is not root, it skips rather than

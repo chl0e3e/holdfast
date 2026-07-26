@@ -1,6 +1,7 @@
 # ADR 0005: One WebTransport endpoint for browser and native clients (v0)
 
-Date: 2026-07-16 · Status: accepted (partially resolves plan open question O5/#12)
+Date: 2026-07-16 · Status: accepted and implemented (updated 2026-07-18;
+partially resolves plan open question O5/#12)
 
 ## Decision
 
@@ -25,6 +26,21 @@ that opens a shell over WebTransport and reattaches it over WebSocket.
 - Production: publicly trusted ACME certificate on a DNS-only hostname,
   UDP 443 owned by the daemon/gateway (nginx keeps TCP 443; it cannot proxy
   WebTransport — verified against nginx docs/feature requests 2026-07).
+
+Production identity loading is implemented with the paired CLI flags
+`--wt-cert <fullchain.pem>` and `--wt-key <privkey.pem>`. The chain and key are
+read with pre-allocation ceilings (1 MiB/eight certificates and 64 KiB), the
+private key must be mode 0600 or stricter, and a non-loopback WebTransport bind
+refuses the generated self-signed development identity. `/webtransport-info`
+returns `certificateMode`: browsers use `serverCertificateHashes` only for
+`hash-pin` development identities and normal WebPKI for configured `webpki`
+identities. The SHA-256 remains available for native pinning and SSH challenge
+channel binding in both modes.
+
+Certificate/key pairing, permissions, non-loopback fail-closed behaviour, the
+discovery mode, and a real configured-certificate WebTransport handshake are
+covered by `crates/daemon/tests/webtransport_tls.rs`. Renewal currently requires
+an atomic file update followed by a daemon restart.
 
 ## Datagrams
 

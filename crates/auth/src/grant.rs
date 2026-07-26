@@ -59,15 +59,21 @@ pub struct GrantSigner {
 
 impl GrantSigner {
     pub fn generate() -> GrantSigner {
-        GrantSigner { signing: SigningKey::from_bytes(&rand::random()) }
+        GrantSigner {
+            signing: SigningKey::from_bytes(&rand::random()),
+        }
     }
 
     pub fn from_bytes(secret: &[u8; 32]) -> GrantSigner {
-        GrantSigner { signing: SigningKey::from_bytes(secret) }
+        GrantSigner {
+            signing: SigningKey::from_bytes(secret),
+        }
     }
 
     pub fn verifier(&self) -> GrantVerifier {
-        GrantVerifier { verifying: self.signing.verifying_key() }
+        GrantVerifier {
+            verifying: self.signing.verifying_key(),
+        }
     }
 
     pub fn issue(&self, claims: &GrantClaims) -> ConnectionGrant {
@@ -123,12 +129,18 @@ impl GrantVerifier {
             });
         }
         if now_ms >= claims.exp_ms {
-            return Err(GrantError::Expired { expires_at_ms: claims.exp_ms, now_ms });
+            return Err(GrantError::Expired {
+                expires_at_ms: claims.exp_ms,
+                now_ms,
+            });
         }
         // Small clock-skew tolerance. Saturating so a near-i64::MAX host clock
         // wraps to a rejection, never a debug-build panic.
         if now_ms.saturating_add(60_000) < claims.iat_ms {
-            return Err(GrantError::NotYetValid { issued_at_ms: claims.iat_ms, now_ms });
+            return Err(GrantError::NotYetValid {
+                issued_at_ms: claims.iat_ms,
+                now_ms,
+            });
         }
         Ok(claims)
     }
@@ -203,11 +215,7 @@ mod tests {
         let (payload, sig) = grant.0.split_once('.').unwrap();
         let mut bytes = payload.as_bytes().to_vec();
         bytes[0] ^= 0x01;
-        let tampered = ConnectionGrant(format!(
-            "{}.{}",
-            String::from_utf8_lossy(&bytes),
-            sig
-        ));
+        let tampered = ConnectionGrant(format!("{}.{}", String::from_utf8_lossy(&bytes), sig));
         assert!(matches!(
             signer.verifier().verify(&tampered, "srv_abc", 2000),
             Err(GrantError::BadSignature) | Err(GrantError::Malformed)

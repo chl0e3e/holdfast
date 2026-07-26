@@ -1,27 +1,38 @@
-// Client transports (spec §2). Both speak identical protocol semantics:
-// - WebTransport (primary): every bidirectional stream is a channel; the
-//   first client-opened stream is control (0). Frames are plain §3
-//   length-prefixed envelopes.
-// - WebSocket (fallback): one connection; binary message = varint channel
-//   prefix + one frame.
+// Client transport (spec §2, ADR 0014): WebTransport over HTTP/3, only.
+// Every bidirectional stream is a channel; the first client-opened stream is
+// control (0). Frames are plain §3 length-prefixed envelopes. There is no
+// TCP fallback — when QUIC is unreachable the app says so and retries.
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { Envelope } from "../gen/messages_pb.js";
 import { EnvelopeSchema } from "../gen/messages_pb.js";
-import { decodeVarint, encodeVarint } from "./varint.js";
 
 export const MAX_FRAME_BYTES = 256 * 1024;
 
 export type FrameHandler = (channel: number, envelope: Envelope) => void;
 
 export interface HfTransport {
-  readonly kind: "webtransport" | "websocket";
+  readonly kind: "webtransport";
   nextRequestId(): bigint;
   /** Allocate a fresh client-initiated channel (control channel 0 exists implicitly). */
   openChannel(): number;
   send(channel: number, envelope: Envelope): void;
   close(): void;
+}
+
+export function webTransportCertificateOptions(
+  certHashBase64: string | null,
+): WebTransportOptions | undefined {
+  if (!certHashBase64) return undefined;
+  return {
+    serverCertificateHashes: [
+      {
+        algorithm: "sha-256",
+        value: Uint8Array.from(atob(certHashBase64), (c) => c.charCodeAt(0)).buffer,
+      },
+    ],
+  };
 }
 
 export function envelope(init: MessageInitShape<typeof EnvelopeSchema>): Envelope {
@@ -60,66 +71,6 @@ class FrameParser {
   }
 }
 
-// ---------------------------------------------------------------- WebSocket
-
-export class WsTransport implements HfTransport {
-  readonly kind = "websocket";
-  private ws: WebSocket;
-  private nextRequestIdValue = 1n;
-  private nextChannelValue = 1; // WS mapping: client channels are odd
-
-  private constructor(ws: WebSocket, onFrame: FrameHandler, onClose: () => void) {
-    this.ws = ws;
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (event) => {
-      const data = new Uint8Array(event.data as ArrayBuffer);
-      const [channel, used] = decodeVarint(data);
-      const body = data.subarray(used);
-      if (body.length < 4) throw new Error("truncated frame");
-      const len = new DataView(body.buffer, body.byteOffset).getUint32(0);
-      if (len > MAX_FRAME_BYTES) throw new Error(`oversized frame: ${len}`);
-      onFrame(channel, fromBinary(EnvelopeSchema, body.subarray(4, 4 + len)));
-    };
-    ws.onclose = onClose;
-    ws.onerror = () => ws.close();
-  }
-
-  static connect(url: string, onFrame: FrameHandler, onClose: () => void): Promise<WsTransport> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      const transport = new WsTransport(ws, onFrame, onClose);
-      ws.addEventListener("open", () => resolve(transport), { once: true });
-      ws.addEventListener("error", () => reject(new Error("websocket connect failed")), {
-        once: true,
-      });
-    });
-  }
-
-  nextRequestId(): bigint {
-    return this.nextRequestIdValue++;
-  }
-
-  openChannel(): number {
-    const channel = this.nextChannelValue;
-    this.nextChannelValue += 2;
-    return channel;
-  }
-
-  send(channel: number, env: Envelope): void {
-    const frame = encodeFrame(env);
-    const prefix = encodeVarint(channel);
-    const out = new Uint8Array(prefix.length + frame.length);
-    out.set(prefix, 0);
-    out.set(frame, prefix.length);
-    this.ws.send(out);
-  }
-
-  close(): void {
-    this.ws.onclose = null;
-    this.ws.close();
-  }
-}
-
 // ------------------------------------------------------------- WebTransport
 
 type WtChannel = {
@@ -142,14 +93,12 @@ export class WtTransport implements HfTransport {
 
   static async connect(
     url: string,
-    certHashBase64: string,
+    certHashBase64: string | null,
     onFrame: FrameHandler,
     onClose: () => void,
   ): Promise<WtTransport> {
-    const hash = Uint8Array.from(atob(certHashBase64), (c) => c.charCodeAt(0));
-    const session = new WebTransport(url, {
-      serverCertificateHashes: [{ algorithm: "sha-256", value: hash.buffer }],
-    });
+    const options = webTransportCertificateOptions(certHashBase64);
+    const session = new WebTransport(url, options);
     await session.ready;
     session.closed.then(onClose, onClose);
     const transport = new WtTransport(session, onFrame);
@@ -214,28 +163,47 @@ export class WtTransport implements HfTransport {
 
 // ------------------------------------------------------------- negotiation
 
+/// QUIC (WebTransport) could not be reached. There is no fallback (ADR
+/// 0014): the app surfaces this as a "QUIC required" state and retries.
+export class QuicUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`QUIC (WebTransport) unavailable: ${reason}`);
+    this.name = "QuicUnavailableError";
+  }
+}
+
 export async function connectTransport(
   onFrame: FrameHandler,
   onClose: () => void,
 ): Promise<HfTransport> {
-  if ("WebTransport" in window) {
-    try {
-      const response = await fetch("/webtransport-info");
-      if (response.ok) {
-        const info = (await response.json()) as { port: number; certHashBase64: string };
-        const url = `https://${location.hostname}:${info.port}/`;
-        const wt = await withTimeout(
-          WtTransport.connect(url, info.certHashBase64, onFrame, onClose),
-          3000,
-        );
-        return wt;
-      }
-    } catch {
-      // Fall through to WebSocket — fallback is a product feature (spec §2).
-    }
+  if (!("WebTransport" in window)) {
+    throw new QuicUnavailableError("this browser does not support WebTransport");
   }
-  const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/terminal/ws`;
-  return WsTransport.connect(wsUrl, onFrame, onClose);
+  try {
+    const response = await fetch("/webtransport-info");
+    if (!response.ok) {
+      throw new Error(`webtransport-info: HTTP ${response.status}`);
+    }
+    const info = (await response.json()) as {
+      port: number;
+      certHashBase64: string;
+      certificateMode: "hash-pin" | "webpki";
+    };
+    const url = `https://${location.hostname}:${info.port}/`;
+    return await withTimeout(
+      WtTransport.connect(
+        url,
+        info.certificateMode === "hash-pin" ? info.certHashBase64 : null,
+        onFrame,
+        onClose,
+      ),
+      3000,
+    );
+  } catch (error) {
+    throw new QuicUnavailableError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {

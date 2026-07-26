@@ -6,3 +6,6 @@ web/dist/
 *.crt
 !deploy/example-config/*.example.*
 .env
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

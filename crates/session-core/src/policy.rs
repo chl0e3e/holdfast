@@ -69,19 +69,28 @@ mod tests {
         let p = AllowAll;
         assert_eq!(p.resolve("anyone", None), Ok(None));
         assert_eq!(p.resolve("anyone", Some("")), Ok(None));
-        assert_eq!(p.resolve("anyone", Some("deploy")), Ok(Some("deploy".into())));
+        assert_eq!(
+            p.resolve("anyone", Some("deploy")),
+            Ok(Some("deploy".into()))
+        );
     }
 
     #[test]
     fn static_policy_enforces_allowlist() {
         let mut allowed = HashMap::new();
-        allowed.insert("alice".to_string(), vec!["alice".to_string(), "deploy".to_string()]);
+        allowed.insert(
+            "alice".to_string(),
+            vec!["alice".to_string(), "deploy".to_string()],
+        );
         let p = StaticPolicy::new(allowed);
 
         // Default = first listed.
         assert_eq!(p.resolve("alice", None), Ok(Some("alice".into())));
         // Allowed explicit request.
-        assert_eq!(p.resolve("alice", Some("deploy")), Ok(Some("deploy".into())));
+        assert_eq!(
+            p.resolve("alice", Some("deploy")),
+            Ok(Some("deploy".into()))
+        );
         // Disallowed account.
         assert_eq!(p.resolve("alice", Some("root")), Err(Denied));
         // Unknown user.

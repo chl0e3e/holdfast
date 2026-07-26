@@ -22,7 +22,7 @@ mod launch;
 mod policy;
 mod token;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -30,10 +30,30 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use hf_protocol::ids::ShellId;
 use hf_pty::{ExitSummary, PtyConfig, PtyError, PtyProcess};
 
-pub use policy::{AccessPolicy, AllowAll, Denied, StaticPolicy};
 use hf_terminal_model::{HistoryRange, TerminalModel, TerminalModelConfig, MIN_COLS, MIN_ROWS};
+pub use policy::{AccessPolicy, AllowAll, Denied, StaticPolicy};
 
 pub use token::ResumeToken;
+
+/// Hard resource limits inherited by every shell process and its descendants
+/// (threat model T6, ADR 0009). `RLIMIT_NPROC` is accounted per real Unix uid
+/// on Linux; the systemd cgroup adds an aggregate service ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellResourceLimits {
+    pub max_processes: u64,
+    pub max_open_files: u64,
+    pub max_core_bytes: u64,
+}
+
+impl Default for ShellResourceLimits {
+    fn default() -> ShellResourceLimits {
+        ShellResourceLimits {
+            max_processes: 512,
+            max_open_files: 1_024,
+            max_core_bytes: 0,
+        }
+    }
+}
 
 /// Clamp client-supplied terminal dimensions to the safe floor the terminal
 /// model enforces, so the PTY winsize and the model never disagree and neither
@@ -55,6 +75,8 @@ pub enum SessionError {
     Forbidden,
     #[error("invalid, expired or rotated resume token")]
     InvalidToken,
+    #[error("resume token already superseded (possible replay)")]
+    TokenReplayed,
     #[error(transparent)]
     Pty(#[from] PtyError),
     #[error("internal error: {0}")]
@@ -84,6 +106,9 @@ pub struct SessionCoreConfig {
     /// the wrong account. Default `false` — the standalone single-user case
     /// runs every shell as the daemon's own user (the correct, only account).
     pub privilege_drop: bool,
+    /// Always-on hard limits applied by the launch wrapper before the shell is
+    /// exec'd. Defaults are deliberately finite; see ADR 0009.
+    pub shell_resource_limits: ShellResourceLimits,
 }
 
 impl Default for SessionCoreConfig {
@@ -97,6 +122,7 @@ impl Default for SessionCoreConfig {
             scrollback_max_lines: tm.max_history_lines,
             scrollback_max_bytes: tm.max_history_bytes,
             privilege_drop: false,
+            shell_resource_limits: ShellResourceLimits::default(),
         }
     }
 }
@@ -177,6 +203,12 @@ pub struct Attachment {
     pub events: Receiver<AttachmentEvent>,
 }
 
+/// How many superseded token hashes each shell remembers for replay
+/// detection (spec §12): presenting one of these yields the distinct
+/// `TokenReplayed` (possible theft) instead of the generic `InvalidToken`.
+/// Bounded per AGENTS rule 7; older rotations degrade to `InvalidToken`.
+const SUPERSEDED_TOKEN_HISTORY: usize = 64;
+
 struct Runtime {
     state: ShellState,
     model: TerminalModel,
@@ -184,8 +216,24 @@ struct Runtime {
     attachments: HashMap<u64, SyncSender<AttachmentEvent>>,
     next_attachment_id: u64,
     token_hash: [u8; 32],
+    /// Hashes of tokens this shell rotated away, newest last (bounded ring).
+    superseded_token_hashes: VecDeque<[u8; 32]>,
     exit: Option<ExitSummary>,
     last_attached_at_ms: i64,
+}
+
+impl Runtime {
+    /// Rotate the resume token, remembering the superseded hash for replay
+    /// detection. Every rotation site must go through here.
+    fn rotate_token(&mut self) -> ResumeToken {
+        let token = ResumeToken::generate();
+        if self.superseded_token_hashes.len() == SUPERSEDED_TOKEN_HISTORY {
+            self.superseded_token_hashes.pop_front();
+        }
+        self.superseded_token_hashes.push_back(self.token_hash);
+        self.token_hash = token.hash();
+        token
+    }
 }
 
 struct ShellEntry {
@@ -222,7 +270,11 @@ impl ShellManager {
 
     /// Enforce `policy` when resolving the Unix account for new shells.
     pub fn with_policy(config: SessionCoreConfig, policy: Arc<dyn AccessPolicy>) -> ShellManager {
-        ShellManager { config, policy, inner: Mutex::new(Inner::default()) }
+        ShellManager {
+            config,
+            policy,
+            inner: Mutex::new(Inner::default()),
+        }
     }
 
     /// Create a shell, or return the existing one for a repeated idempotency
@@ -238,9 +290,12 @@ impl ShellManager {
         if let Some(existing) = inner.idempotency.get(&idem_key) {
             if let Some(entry) = inner.shells.get(existing) {
                 let mut rt = entry.runtime.lock().unwrap();
-                let token = ResumeToken::generate();
-                rt.token_hash = token.hash();
-                return Ok(OpenedShell { shell_id: entry.id, resume_token: token, reused: true });
+                let token = rt.rotate_token();
+                return Ok(OpenedShell {
+                    shell_id: entry.id,
+                    resume_token: token,
+                    reused: true,
+                });
             }
         }
 
@@ -273,6 +328,7 @@ impl ShellManager {
         // abort the open — never a silent unprivileged fallback.
         let launch = launch::build_launch(
             self.config.privilege_drop,
+            self.config.shell_resource_limits,
             account.as_deref(),
             req.command.as_deref(),
             &req.args,
@@ -315,6 +371,7 @@ impl ShellManager {
                 attachments: HashMap::new(),
                 next_attachment_id: 1,
                 token_hash: token.hash(),
+                superseded_token_hashes: VecDeque::new(),
                 exit: None,
                 last_attached_at_ms: 0,
             }),
@@ -329,62 +386,59 @@ impl ShellManager {
 
         inner.shells.insert(shell_id, entry);
         inner.idempotency.insert(idem_key, shell_id);
-        Ok(OpenedShell { shell_id, resume_token: token, reused: false })
+        Ok(OpenedShell {
+            shell_id,
+            resume_token: token,
+            reused: false,
+        })
     }
 
     /// Attach to a running shell with a valid resume token. Rotates the token
     /// (spec §12) and resizes the shell to the client's dimensions.
     pub fn attach(
         &self,
+        owner: &str,
         shell_id: &ShellId,
         token: &ResumeToken,
         cols: u16,
         rows: u16,
     ) -> Result<Attachment, SessionError> {
         let entry = self.entry(shell_id)?;
-        let mut rt = entry.runtime.lock().unwrap();
-
-        if rt.state != ShellState::Running {
-            return Err(SessionError::NotRunning);
+        // Resume tokens are scoped to the authenticated owner as well as the
+        // shell (spec §12). Use the unknown-shell shape so this is not an
+        // ownership oracle, and reject before validating/rotating the token.
+        if entry.owner != owner {
+            return Err(SessionError::ShellNotFound);
         }
+        let mut rt = entry.runtime.lock().unwrap();
         if rt.token_hash != token.hash() {
+            // A superseded token is distinct from garbage: someone presented
+            // a credential that *was* valid — possible theft (spec §12).
+            if rt.superseded_token_hashes.contains(&token.hash()) {
+                return Err(SessionError::TokenReplayed);
+            }
             return Err(SessionError::InvalidToken);
         }
-        if rt.attachments.len() >= self.config.max_attachments_per_shell {
-            return Err(SessionError::LimitExceeded("max_attachments_per_shell"));
+        self.attach_runtime(*shell_id, &mut rt, cols, rows)
+    }
+
+    /// Attach after a transport boundary has independently authenticated the
+    /// owner and authorized the `attach` operation. Agent mode uses this so a
+    /// gateway never receives the daemon's local resume-token secret. Owner
+    /// mismatch deliberately has the same shape as an unknown shell.
+    pub fn attach_authorized(
+        &self,
+        owner: &str,
+        shell_id: &ShellId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Attachment, SessionError> {
+        let entry = self.entry(shell_id)?;
+        if entry.owner != owner {
+            return Err(SessionError::ShellNotFound);
         }
-
-        // 0 dimensions mean "keep the current size" on reattach; otherwise
-        // clamp to the model's safe floor before touching the PTY or model.
-        if cols != 0 && rows != 0 {
-            let (cols, rows) = clamp_dims(cols, rows);
-            if rt.model.size() != (cols, rows) {
-                if let Some(pty) = rt.pty.as_mut() {
-                    pty.resize(cols, rows)?;
-                }
-                rt.model.resize(cols, rows);
-            }
-        }
-
-        let rotated = ResumeToken::generate();
-        rt.token_hash = rotated.hash();
-        rt.last_attached_at_ms = now_ms();
-
-        let attachment_id = rt.next_attachment_id;
-        rt.next_attachment_id += 1;
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.config.max_queued_chunks);
-        rt.attachments.insert(attachment_id, tx);
-
-        Ok(Attachment {
-            attachment_id,
-            shell_id: *shell_id,
-            snapshot: rt.model.snapshot(),
-            screen_revision: rt.model.revision(),
-            rotated_resume_token: rotated,
-            oldest_history_line_id: rt.model.oldest_line_id(),
-            newest_history_line_id: rt.model.newest_line_id(),
-            events: rx,
-        })
+        let mut rt = entry.runtime.lock().unwrap();
+        self.attach_runtime(*shell_id, &mut rt, cols, rows)
     }
 
     /// Detach an attachment. The shell keeps running (spec §11).
@@ -445,7 +499,9 @@ impl ShellManager {
             .wait_timeout_while(rt, Duration::from_secs(10), |rt| rt.exit.is_none())
             .map_err(|e| SessionError::Internal(format!("poisoned: {e}")))?;
         if timeout.timed_out() {
-            return Err(SessionError::Internal("shell did not exit after kill".into()));
+            return Err(SessionError::Internal(
+                "shell did not exit after kill".into(),
+            ));
         }
         rt.state = ShellState::Exited;
         Ok(rt.exit.expect("exit recorded"))
@@ -461,7 +517,9 @@ impl ShellManager {
     ) -> Result<HistoryRange, SessionError> {
         let entry = self.entry(shell_id)?;
         let rt = entry.runtime.lock().unwrap();
-        Ok(rt.model.history_range(before_line_id, maximum_lines, maximum_bytes))
+        Ok(rt
+            .model
+            .history_range(before_line_id, maximum_lines, maximum_bytes))
     }
 
     /// (oldest retained, newest committed) history line IDs; 0 = none.
@@ -512,7 +570,10 @@ impl ShellManager {
     /// Drop an exited shell and its retained scrollback.
     pub fn remove_exited(&self, shell_id: &ShellId) -> Result<(), SessionError> {
         let mut inner = self.inner.lock().unwrap();
-        let entry = inner.shells.get(shell_id).ok_or(SessionError::ShellNotFound)?;
+        let entry = inner
+            .shells
+            .get(shell_id)
+            .ok_or(SessionError::ShellNotFound)?;
         if entry.runtime.lock().unwrap().state != ShellState::Exited {
             return Err(SessionError::NotRunning);
         }
@@ -529,6 +590,55 @@ impl ShellManager {
             .get(shell_id)
             .cloned()
             .ok_or(SessionError::ShellNotFound)
+    }
+
+    fn attach_runtime(
+        &self,
+        shell_id: ShellId,
+        rt: &mut Runtime,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Attachment, SessionError> {
+        if rt.state != ShellState::Running {
+            return Err(SessionError::NotRunning);
+        }
+        if rt.attachments.len() >= self.config.max_attachments_per_shell {
+            return Err(SessionError::LimitExceeded("max_attachments_per_shell"));
+        }
+
+        // 0 dimensions mean "keep the current size" on reattach; otherwise
+        // clamp to the model's safe floor before touching the PTY or model.
+        if cols != 0 && rows != 0 {
+            let (cols, rows) = clamp_dims(cols, rows);
+            if rt.model.size() != (cols, rows) {
+                if let Some(pty) = rt.pty.as_mut() {
+                    pty.resize(cols, rows)?;
+                }
+                rt.model.resize(cols, rows);
+            }
+        }
+
+        // Keep the core invariant that every successful attachment rotates
+        // the local token, even when the overlay deliberately does not expose
+        // that token outside the managed server.
+        let rotated = rt.rotate_token();
+        rt.last_attached_at_ms = now_ms();
+
+        let attachment_id = rt.next_attachment_id;
+        rt.next_attachment_id += 1;
+        let (tx, rx) = std::sync::mpsc::sync_channel(self.config.max_queued_chunks);
+        rt.attachments.insert(attachment_id, tx);
+
+        Ok(Attachment {
+            attachment_id,
+            shell_id,
+            snapshot: rt.model.snapshot(),
+            screen_revision: rt.model.revision(),
+            rotated_resume_token: rotated,
+            oldest_history_line_id: rt.model.oldest_line_id(),
+            newest_history_line_id: rt.model.newest_line_id(),
+            events: rx,
+        })
     }
 }
 
@@ -556,10 +666,14 @@ fn pump(entry: Arc<ShellEntry>, output: Receiver<Vec<u8>>) {
     // PTY EOF: reap the child and record the exit.
     let mut rt = entry.runtime.lock().unwrap();
     let exit = match rt.pty.take() {
-        Some(mut pty) => {
-            pty.wait().unwrap_or(ExitSummary { success: false, exit_code: 255 })
-        }
-        None => ExitSummary { success: false, exit_code: 255 },
+        Some(mut pty) => pty.wait().unwrap_or(ExitSummary {
+            success: false,
+            exit_code: 255,
+        }),
+        None => ExitSummary {
+            success: false,
+            exit_code: 255,
+        },
     };
     rt.state = ShellState::Exited;
     rt.exit = Some(exit);
@@ -571,5 +685,8 @@ fn pump(entry: Arc<ShellEntry>, output: Receiver<Vec<u8>>) {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }

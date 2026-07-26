@@ -1,0 +1,27 @@
+[package]
+name = "hf-client-core"
+description = "Desktop client core: multi-server connection supervision, shell attachment pumps and persisted state — GUI-free and headless-testable."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "hf_client_core"
+path = "src/lib.rs"
+
+[dependencies]
+hf-native-client = { path = "../native-client" }
+hf-protocol = { path = "../protocol" }
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+rand.workspace = true
+dirs.workspace = true
+
+# The integration tests spawn a real daemon, which is unix-only (pty, pam).
+[target.'cfg(unix)'.dev-dependencies]
+hf-daemon = { path = "../daemon" }

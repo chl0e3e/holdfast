@@ -5,3 +5,21 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[[bin]]
+name = "hf-ssh-adapter"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+hf-auth = { path = "../auth" }
+hf-native-client = { path = "../native-client" }
+rand-10.workspace = true
+russh.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+hf-daemon = { path = "../daemon" }
+ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }

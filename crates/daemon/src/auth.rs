@@ -5,12 +5,12 @@
 //! development and tests. `AuthMode::SshKeys` is the real local issuer: a
 //! per-user `authorized_keys` set plus a self-held ed25519 grant signing key.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hf_auth::{GrantSigner, GrantVerifier, SshVerifier};
+use hf_auth::{GrantSigner, GrantVerifier, PasswordVerifier, SshVerifier};
 
 /// How the daemon authenticates clients.
 pub enum AuthMode {
@@ -23,8 +23,17 @@ pub enum AuthMode {
     },
 }
 
+/// Opt-in local password login (ADR 0016): the allowlisted usernames and the
+/// verifier that checks their passwords (PAM in production, fakes in tests).
+pub struct PasswordAuth {
+    pub users: BTreeSet<String>,
+    pub verifier: Arc<dyn PasswordVerifier>,
+}
+
 pub struct AuthState {
     pub mode: AuthMode,
+    /// Password login for allowlisted users; `None` = key-only (the default).
+    pub password: Option<PasswordAuth>,
     /// Local grant issuer key (this daemon signs the grants it later accepts).
     pub grant_signer: GrantSigner,
     pub grant_verifier: GrantVerifier,
@@ -34,7 +43,12 @@ pub struct AuthState {
 }
 
 impl AuthState {
-    pub fn new(mode: AuthMode, audience: String, grant_key: Option<[u8; 32]>) -> AuthState {
+    pub fn new(
+        mode: AuthMode,
+        password: Option<PasswordAuth>,
+        audience: String,
+        grant_key: Option<[u8; 32]>,
+    ) -> AuthState {
         let grant_signer = match grant_key {
             Some(seed) => GrantSigner::from_bytes(&seed),
             None => GrantSigner::generate(),
@@ -42,6 +56,7 @@ impl AuthState {
         let grant_verifier = grant_signer.verifier();
         AuthState {
             mode,
+            password,
             grant_signer,
             grant_verifier,
             audience,
@@ -54,6 +69,14 @@ impl AuthState {
             AuthMode::SshKeys { users } => users.get(username),
             AuthMode::DevInsecure => None,
         }
+    }
+
+    /// The password verifier, only for usernames explicitly allowlisted.
+    pub fn password_verifier(&self, username: &str) -> Option<Arc<dyn PasswordVerifier>> {
+        self.password
+            .as_ref()
+            .filter(|p| p.users.contains(username))
+            .map(|p| p.verifier.clone())
     }
 }
 
@@ -92,7 +115,10 @@ impl Bucket {
     /// an absent entry, so it can be dropped.
     fn is_dead(&self, now: Instant, window: Duration) -> bool {
         let locked = self.locked_until.map_or(false, |until| now < until);
-        let has_recent_failure = self.failures.iter().any(|t| now.duration_since(*t) < window);
+        let has_recent_failure = self
+            .failures
+            .iter()
+            .any(|t| now.duration_since(*t) < window);
         !locked && !has_recent_failure
     }
 
@@ -127,7 +153,13 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(policy: RateLimitPolicy) -> RateLimiter {
-        RateLimiter { policy, inner: Mutex::new(Inner { map: HashMap::new(), last_sweep: None }) }
+        RateLimiter {
+            policy,
+            inner: Mutex::new(Inner {
+                map: HashMap::new(),
+                last_sweep: None,
+            }),
+        }
     }
 
     /// True if `ip` is currently allowed to attempt authentication.
@@ -173,7 +205,9 @@ impl RateLimiter {
     /// a hard-cap eviction of the soonest-to-expire buckets if still over.
     fn prune(&self, inner: &mut Inner, now: Instant) {
         let window = self.policy.window;
-        let due = inner.last_sweep.map_or(true, |t| now.duration_since(t) >= window);
+        let due = inner
+            .last_sweep
+            .map_or(true, |t| now.duration_since(t) >= window);
         // Sweep when the throttle is due, or unconditionally when over the cap
         // (so eviction below only ever sees live buckets).
         if due || inner.map.len() > self.policy.max_tracked {
@@ -182,8 +216,11 @@ impl RateLimiter {
         }
         if inner.map.len() > self.policy.max_tracked {
             let overflow = inner.map.len() - self.policy.max_tracked;
-            let mut by_expiry: Vec<(IpAddr, Instant)> =
-                inner.map.iter().map(|(ip, b)| (*ip, b.expires_at(now, window))).collect();
+            let mut by_expiry: Vec<(IpAddr, Instant)> = inner
+                .map
+                .iter()
+                .map(|(ip, b)| (*ip, b.expires_at(now, window)))
+                .collect();
             by_expiry.sort_by_key(|(_, exp)| *exp);
             for (ip, _) in by_expiry.into_iter().take(overflow) {
                 inner.map.remove(&ip);
@@ -218,8 +255,14 @@ mod tests {
             limiter.record_failure(ip, t0);
         }
         assert!(!limiter.check(ip, t0), "locked out after 3 failures");
-        assert!(!limiter.check(ip, t0 + Duration::from_secs(29)), "still locked");
-        assert!(limiter.check(ip, t0 + Duration::from_secs(31)), "recovers after lockout");
+        assert!(
+            !limiter.check(ip, t0 + Duration::from_secs(29)),
+            "still locked"
+        );
+        assert!(
+            limiter.check(ip, t0 + Duration::from_secs(31)),
+            "recovers after lockout"
+        );
     }
 
     #[test]
@@ -272,12 +315,20 @@ mod tests {
         for i in 0..1000 {
             limiter.record_failure(ip(i), t0);
         }
-        assert_eq!(limiter.tracked(), 1000, "all tracked while failures are fresh");
+        assert_eq!(
+            limiter.tracked(),
+            1000,
+            "all tracked while failures are fresh"
+        );
 
         // A later failure (past the window) triggers the throttled sweep: every
         // one-shot bucket is now dead and reclaimed.
         limiter.record_failure(ip(9_999), t0 + Duration::from_secs(61));
-        assert_eq!(limiter.tracked(), 1, "stale one-shot buckets swept, only the fresh one remains");
+        assert_eq!(
+            limiter.tracked(),
+            1,
+            "stale one-shot buckets swept, only the fresh one remains"
+        );
     }
 
     #[test]
@@ -294,7 +345,11 @@ mod tests {
         for i in 0..500 {
             limiter.record_failure(ip(i), t0 + Duration::from_millis(i as u64));
         }
-        assert!(limiter.tracked() <= 100, "map bounded to max_tracked, got {}", limiter.tracked());
+        assert!(
+            limiter.tracked() <= 100,
+            "map bounded to max_tracked, got {}",
+            limiter.tracked()
+        );
     }
 
     #[test]
@@ -319,6 +374,9 @@ mod tests {
         for k in 4..7 {
             limiter.record_failure(ip(2), t0 + Duration::from_secs(k));
         }
-        assert!(!limiter.check(ip(2), t0 + Duration::from_secs(6)), "ip(2) history survived eviction of others");
+        assert!(
+            !limiter.check(ip(2), t0 + Duration::from_secs(6)),
+            "ip(2) history survived eviction of others"
+        );
     }
 }

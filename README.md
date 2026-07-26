@@ -9,9 +9,11 @@ and multiple simultaneous shells per connection.
 The core product is a **standalone daemon** (`holdfastd`) you install on any
 server, exactly like `mosh-server`:
 
-- Browser clients connect directly over WebTransport (WebSocket fallback) and
-  log in against the daemon itself — no central infrastructure required.
-- Native clients connect over raw QUIC.
+- Browser clients connect directly over WebTransport — HTTP/3 only, no TCP
+  fallback (ADR 0014) — and log in against the daemon itself; no central
+  infrastructure required.
+- Native clients connect over the same QUIC/WebTransport endpoint (ADR 0005;
+  a distinct raw-QUIC ALPN remains deferred until it adds a real capability).
 - Authentication is local-first (SSH `authorized_keys` challenge/response), via
   a pluggable connection-grant issuer.
 - The daemon serves its own small browser client page, so any server is
@@ -32,7 +34,69 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
 
 ## Status
 
-**Phase 7 — authentication & hardening: in progress (2026-07-16).**
+**HTTP/3-only migration: complete (2026-07-19, ADR 0014).**
+
+The QUIC endpoint is now a real HTTP/3 server (hyperium `h3` replacing the
+`wtransport` server): the same UDP endpoint serves the browser client page
+over plain HTTP/3 GET *and* terminates WebTransport terminal sessions. There
+is **no fallback transport**: the browser client is WebTransport-only, and
+with an operator certificate the TCP listener serves only a "QUIC required /
+loading" interstitial that advertises `Alt-Svc: h3` — the app itself is never
+served over TCP in production. In development (hash-pinned self-signed cert)
+the TCP side still serves the page, because browsers only Alt-Svc-upgrade
+WebPKI origins; terminal traffic is QUIC either way. The legacy WebSocket
+endpoint survives only behind a test-only config gate (default off, no CLI
+flag) so the protocol suite can keep proving transport-neutral session
+semantics; the Origin allowlist (T7) is now enforced on the WebTransport
+CONNECT request. Earlier phase notes below that mention a "WebSocket
+fallback" describe superseded behavior.
+
+Reproduce: `cargo test -p hf-daemon --test http3_page` (page over HTTP/3,
+Alt-Svc + interstitial, dev parity), plus the whole existing real-QUIC suite
+which now runs against the h3 server.
+
+**Phase 6 — agent-based managed servers: complete (2026-07-18).**
+
+The registration and local shell-open slices are complete: `hf-agent`
+establishes an outbound raw-QUIC link using the dedicated `holdfast-agent/0`
+ALPN and mutual TLS;
+`hf-gateway` validates the agent CA, maps the presented leaf fingerprint to
+exactly one stable `server_id`, and accepts only a matching bounded protobuf
+registration. The registry has hard certificate/active-agent capacities and
+supports bounded old+next certificate overlap for rotation (ADR 0010). Real
+loopback QUIC tests cover trusted registration, wrong-ID rejection, an
+untrusted CA, rotation overlap, and reconnect under the unchanged identity.
+The feature-gated `holdfastd --agent` runtime is outbound-only and shares one
+local `ShellManager` across reconnects. Gateway shell-open requests are checked
+against a centrally signed, audience/server/operation/subject-scoped grant and
+then by the same local `AccessPolicy`, resource limits, and privileged launcher
+as standalone mode. A real-QUIC test rejects a forged grant and unauthorized
+account, launches an authorized PTY, forces gateway loss, and recovers the same
+still-running shell by its idempotency key (ADR 0011).
+The final agent-backend slice uses one separately bounded gateway-opened QUIC
+stream per temporary attachment. It independently verifies an `attach`-scoped
+central grant and local shell ownership, then carries reliable input/output,
+resize, detach, exit and paged history. Fixed limits cover frames, concurrent
+streams, QUIC flow-control windows, input frames, the output bridge and history
+pages. The real-QUIC test rejects forged and cross-user attachments, exercises
+a real PTY and resize, detaches, forces gateway reconnect, and retrieves the
+same retained history from the still-running shell (ADR 0012).
+
+This satisfies the core Phase 6 exit criterion. The default daemon build does
+not import or depend on the optional agent crate, and standalone operation is
+unchanged. The separate administration overlay still needs its client-facing
+gateway/control plane and agentless SSH backend.
+
+Phase 6 reproduction commands:
+
+```bash
+cargo test -p hf-protocol
+cargo test -p hf-gateway
+cargo test -p hf-agent
+cargo test -p hf-daemon --features agent-mode --test agent_mode
+```
+
+**Phase 7 — authentication & hardening: complete (2026-07-18).**
 
 - `hf-auth` — the local SSH-key issuer and connection grants (ADR 0006):
   SSH public-key challenge/response against `authorized_keys` (SshSig,
@@ -41,7 +105,11 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
 - `holdfastd` supports real auth (`--ssh-auth <user> <authorized_keys>`) with
   per-source-address rate limiting and lockout, plus an Origin allowlist
   (`--allowed-origin`) for browser endpoints, alongside the retained
-  loopback-only dev mode.
+  loopback-only dev mode. Opt-in password login for allowlisted users
+  (`--password-auth <user>`, PAM via the shared `hf-auth` verifier; ADR 0016,
+  threat model T13) gives the web client a username/password form that yields
+  the same connection grant as the SSH flow — see `deploy/pam/README.md` for
+  the PAM stack and the shadow-access note for multi-user daemons.
 - `hf` signs SSH challenges with an OpenSSH key (`hf --user alice --key
   ~/.ssh/id_ed25519 open`) and reuses the issued grant for later reconnects.
 - Hardening in place: parser fuzz/robustness harnesses, Origin allowlist, a
@@ -68,8 +136,27 @@ and naming). Protocol details: `protocol/specification.md`. Security analysis:
   are all fixed and tested. SSH-challenge channel binding is implemented for
   WebTransport (signature bound to the pinned server cert hash — ADR 0008),
   defeating relay/MITM there; the nginx-fronted WebSocket path relies on the
-  operator's TLS/PKI. Still open before non-loopback use: a real multi-user soak
-  of the privilege drop. See ADR 0006/0007/0008 and `protocol/threat-model.md`.
+  operator's TLS/PKI. Shell attachment is now owner-scoped in addition to
+  requiring the rotating resume token, so possession of another user's valid
+  token cannot cross the authorization boundary. A bounded typed audit ring and
+  fixed-label operational counters cover authentication and shell lifecycle
+  events without accepting terminal bytes, commands, grants, signatures, or
+  resume tokens (`crates/daemon/src/observability.rs`). Shell resource
+  containment is enforced too: `prlimit` installs hard per-account/process
+  ceilings before exec, and the reference systemd units cap aggregate PIDs and
+  memory (ADR 0009). A broader real multi-user soak remains an operational gate
+  before wide deployment, not unfinished mechanism. See ADR 0006–0009 and
+  `protocol/threat-model.md`.
+
+Phase 7 reproduction commands:
+
+```bash
+cargo test -p hf-session-core
+cargo test -p hf-daemon
+tests/packet-loss/run.sh
+tests/authorization/run.sh  # real uid switch needs root + a secondary account
+cd web && npm test
+```
 
 **Phase 5 — native client: complete (2026-07-16).** (Phase 4 moved to the
 admin-overlay project per the plan addendum.)
@@ -93,15 +180,18 @@ cargo run -p hf-native-client -- open            # terminal 2 (or: hf open)
 - `holdfastd` now terminates **WebTransport over QUIC** (UDP) alongside the
   WebSocket fallback — identical protocol semantics; every bidirectional
   stream is a channel (ADR 0005). Dev certs are self-signed (14 days) and
-  pinned by the browser via `/webtransport-info`; production uses ACME on a
-  DNS-only hostname with the daemon owning UDP 443 (nginx keeps TCP 443).
-- Browser client tries WebTransport first (3 s timeout) and falls back to
-  WebSocket, with the active transport shown in the status bar.
+  pinned by the browser via `/webtransport-info`; production loads a bounded
+  public PEM chain/key with `--wt-cert`/`--wt-key` and uses browser WebPKI on a
+  DNS-only hostname. Non-loopback self-signed WebTransport fails closed. The
+  daemon owns UDP 443 while nginx may keep TCP 443.
+- Browser client tries WebTransport first (3 s timeout); the WebSocket
+  fallback described here was removed by ADR 0014 — the client is now
+  QUIC-only and says so when WebTransport is unreachable.
 - Tested over real QUIC: full shell cycle, **address-change resume** (new
   client UDP endpoint, rotated token, retained history — the Phase 3 exit
   criterion's resume clause), and cross-transport reattach (open over
-  WebTransport, reattach over WebSocket). Adverse-network (netem) tests are
-  deferred to Phase 7 — see `tests/packet-loss/README.md`.
+  WebTransport, reattach over WebSocket). Phase 7 added the complete
+  adverse-network netem suite — see `tests/packet-loss/README.md`.
 - Screen datagrams remain deferred per spec §7 (reliable output baseline).
 
 **Phase 2 — browser proof of concept: complete (2026-07-16).**
@@ -143,15 +233,35 @@ the same flow interactively.
 Phase 1 exit criterion is covered by
 `crates/session-core/tests/lifecycle.rs::create_detach_reattach_terminate_with_retained_scrollback`.
 
-Verify everything: `cargo test --workspace` (52 tests) plus
+Verify everything: `cargo test --workspace` plus
 `./spikes/encoding-spike/run-interop.sh` and `cd web && npx tsc --noEmit`.
 
 Phase 0 spikes remain under `spikes/` (throwaway reference code — never
 imported by production crates). Still pending from Phase 0: a manual
-real-browser run of `spikes/webtransport-echo/browser-echo.html`.
+real-browser run of `spikes/webtransport-echo/browser-echo.html`; configured
+certificate negotiation is automated separately in
+`crates/daemon/tests/webtransport_tls.rs`.
 
-Next: **Phase 2 — browser proof of concept** (xterm.js over WebSocket,
-reconnection after reload, two shells as tabs, lazy history fetch).
+**Phase 8 — optional SSH compatibility adapter: complete (2026-07-18).**
+
+`hf-ssh-adapter` terminates a minimal public-key-authenticated SSH server on a
+loopback TCP address and maps one interactive PTY shell channel to a Holdfast
+shell attachment (ADR 0013). It deliberately rejects exec, SFTP/subsystems,
+environment injection, forwarding, X11 and agent forwarding. An opt-in
+`--password-auth` mode verifies the local user's Unix password through PAM
+(auth + account checks only, adapter-scoped; ADR 0015, threat model T13) —
+the default, the daemon and the issuer remain key-only. The real OpenSSH
+test covers interactive output, unauthorized keys and rejected remote exec:
+`cargo test -p hf-ssh-adapter --test openssh -- --nocapture`; password
+negotiation, gating and the password-authenticated shell are covered in
+`crates/ssh-adapter/tests/password.rs`, with the real shadow/pam_unix round
+trip under `tests/password-auth/run.sh`. Setup and exact manual reproduction
+commands are in `crates/ssh-adapter/README.md`.
+
+All core implementation phases are complete. The multi-server control plane,
+client-facing gateway and agentless SSH backend remain a separate overlay
+project; the manual real-browser Phase 0 echo check and a broader multi-user
+soak are still deployment gates before wide production use.
 
 ## Layout
 

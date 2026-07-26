@@ -1,27 +1,27 @@
 # Threat model
 
 ```text
-Status: Phase 7 in progress — must still be manually reviewed before any
-        deployment beyond localhost. Each threat lists its automated coverage.
-Last updated: 2026-07-16
+Status: Phase 7 complete — manual security review performed; residual
+        deployment risks are listed below. Each threat lists automated coverage.
+Last updated: 2026-07-18
 ```
 
 ## Coverage snapshot (as of Phase 7)
 
 | Threat | Status | Where |
 |---|---|---|
-| T1 stolen token/grant | partial | resume-token rotation + hash storage; rate limiting **with bounded/evicting bucket map** (daemon auth tests); grant expiry/audience; grant `ops` scope enforced end to end (`scoped_grant_ops_are_enforced`); per-user shell cap (`per_user_shell_cap_is_enforced_and_isolated`); `authorized_keys` option-bearing entries skipped, not granted full access. Grant signing key is persistable so grants survive restart. SSH-challenge channel binding implemented for WebTransport (signature bound to the server cert hash — ADR 0008; `ssh_channel_binding_is_enforced_over_webtransport`), defeating relay/MITM on that transport; the nginx-fronted WebSocket path remains a documented TLS/PKI-trust limitation |
-| T2 cross-user attachment | covered | session-core `rotated_token_rejects_replay`; auth rejects unknown key with generic error; per-user isolation on list/terminate/idempotency (daemon `users_cannot_see_or_terminate_each_others_shells`, session-core `idempotency_reuse_is_scoped_to_owner`) |
-| T3 malicious server/agent | pending | agent mode is Phase 6; VT parser fuzzing pending |
+| T1 stolen token/grant | partial | resume-token rotation + hash storage; rate limiting **with bounded/evicting bucket map** (daemon auth tests); grant expiry/audience; grant `ops` scope enforced end to end (`scoped_grant_ops_are_enforced`); per-user shell cap (`per_user_shell_cap_is_enforced_and_isolated`); `authorized_keys` option-bearing entries skipped, not granted full access. Grant signing key is persistable so grants survive restart (standalone server identity derives from it, keeping the audience stable — ADR 0017; `persisted_grant_key_gives_stable_server_id_and_grants_survive_restart`). SSH-challenge channel binding implemented for WebTransport (signature bound to the server cert hash — ADR 0008; `ssh_channel_binding_is_enforced_over_webtransport`), defeating relay/MITM; with the WebSocket fallback removed from the product (ADR 0014), browser terminal traffic is always channel-bound |
+| T2 cross-user attachment | covered | attachment checks authenticated owner **and** resume token (`resume_token_does_not_bypass_owner_check`); end-to-end stolen-valid-token/list/terminate isolation (`users_cannot_see_or_terminate_each_others_shells`); idempotency is owner-scoped (`idempotency_reuse_is_scoped_to_owner`) |
+| T3 malicious server/agent | partial | hostile VT/escape/fuzz/resize corpus covered (`terminal-model/tests/hostile.rs`); Phase 6 registration enforces mTLS CA trust plus exact leaf-fingerprint → `server_id` mapping. Agent shell-open and attach independently verify central grants; attach also checks local ownership and applies fixed frame/stream/flow-control/input/output/history bounds. Real QUIC/PTY coverage exercises forged and cross-user rejection, I/O, resize, history, detach and reconnect (`daemon/tests/agent_mode.rs`, ADRs 0010–0012). The client-facing gateway and hostile-backend end-to-end corpus remain overlay work |
 | T4 compromised gateway | n/a (core) | gateway is the overlay project; grant verify-key split in place |
-| T5 memory exhaustion | covered | framing rejects oversized pre-alloc; bounded queues (session-core); rate-limiter map bounded/evicting; concurrent WebTransport streams per connection explicitly capped (`concurrent_bidi_streams_are_capped`); parser fuzz harnesses (protocol/daemon) |
-| T6 fork bombs / PTY exhaustion | partial | per-user shell/attachment limits enforced; cgroup/rlimit launcher pending |
+| T5 memory exhaustion | covered | framing rejects oversized pre-alloc; bounded PTY/model/attachment/transport queues; rate-limiter map bounded/evicting; concurrent WebTransport streams per connection explicitly capped (`concurrent_bidi_streams_are_capped`); parser fuzz harnesses (protocol/daemon) |
+| T6 fork bombs / PTY exhaustion | covered | per-user shell/attachment limits; hard inherited `prlimit` ceilings (`NPROC=512`, `NOFILE=1024`, `CORE=0`); aggregate systemd `TasksMax`/`MemoryHigh`/`MemoryMax` (ADR 0009); ordinary + uid-dropped PTY tests |
 | T7 origin confusion | covered | Origin allowlist on the WS endpoint (daemon `origin.rs` tests); dev auth refuses non-loopback |
 | T8 replay of open/terminate | covered | idempotency keys + idempotent terminate (session-core) |
 | T9 terminal escape attacks | covered | title sanitization, paste-injection guard (incl. bidi/zero-width/line-separator Trojan-Source chars), inert OSC-52/OSC-8 — `web/src/client/terminal-safety.ts` + expanded hostile corpus; server-side model survives a hostile escape/fuzz/resize corpus (`crates/terminal-model/tests/hostile.rs`), incl. the fixed avt 0/1-column resize DoS (clamped in `TerminalModel` + `session-core`, tested end-to-end) |
-| T10 secret leakage in logs | partial | ResumeToken/redacted Debug; key fingerprints (not keys) logged |
+| T10 secret leakage in logs | covered | ResumeToken/redacted Debug; bounded closed-schema audit records and fixed-label counters accept no terminal bytes, commands, grants, signatures, or tokens (`daemon::observability` unit tests + daemon auth integration) |
 | T11 supply chain | partial | cargo-audit + npm-audit CI gate (.github/workflows/audit.yml); lockfiles committed |
-| T12 privilege escalation | covered | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop **mechanism** implemented via `setpriv` (`session-core/src/launch.rs`, `--drop-privileges`, default off), real switch verified over a PTY in `tests/privilege_drop.rs` (run `tests/authorization/run.sh`). Remaining: production capability/unit hardening (ADR 0007) |
+| T12 privilege escalation | covered | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop **mechanism** implemented via `setpriv` (`session-core/src/launch.rs`, `--drop-privileges`, default off), real switch verified over a PTY in `tests/privilege_drop.rs` (run `tests/authorization/run.sh`); production capability/unit hardening is in `deploy/systemd/` (ADR 0007). A broader multi-user soak remains an operational gate |
 
 "Covered" = automated test asserts it today. "Partial" = core mechanism exists
 and is tested, some hardening remains. "Pending" = designed, not yet built.
@@ -59,6 +59,9 @@ shoulder-surfed URL, leaked log).
   shell, operations).
 - Resume tokens rotate on every successful attach; replay of a rotated token is
   rejected (`ERR_TOKEN_REPLAYED`) and audited as suspected theft.
+- Attachment authorization checks the authenticated owner before validating or
+  rotating the token. A token copied from another user receives the same
+  not-found response as an unknown shell and remains unusable.
 - Server stores only token hashes; tokens never appear in logs, metrics, crash
   dumps or URLs (POST bodies / headers only).
 - **Tests:** expired grant rejected; rotated-token replay rejected and audited;
@@ -85,8 +88,9 @@ Server-supplied terminal output is hostile input.
   answer for another server_id or enumerate other servers' shells.
 - Backend output cannot trigger gateway-side shell execution by construction
   (no exec paths reachable from parsing).
-- **Tests:** fuzzing VT parser; agent presenting wrong identity rejected;
-  oversized/rapid output from backend hits bounds, not OOM.
+- **Tests:** fuzzing VT parser; real-QUIC agent tests reject a wrong identity
+  and an untrusted CA and exercise bounded certificate rotation/reconnect;
+  oversized/rapid backend routing remains a Phase 6 test obligation.
 
 ### T4. Compromised gateway attempting lateral movement
 
@@ -109,6 +113,10 @@ The gateway is the highest-value network target (bastion in agentless mode).
   bounded, and limited to 2 in flight per attachment.
 - Datagram processing is allocation-free above a small fixed buffer; stale
   revisions are discarded without buffering.
+- The HTTP/3 static-file surface (ADR 0014) shares the per-connection stream
+  cap with protocol channels and adds its own bounds: request-path length
+  cap, literal matching (no percent-decoding), traversal-shaped paths
+  rejected before filesystem access, fixed per-file size ceiling.
 - **Tests:** oversized frame rejected pre-allocation (asserted via allocator
   hooks or memory ceiling in test); flood of history requests throttled; slow
   reader triggers `ERR_TOO_SLOW` detach, not memory growth.
@@ -118,20 +126,27 @@ The gateway is the highest-value network target (bastion in agentless mode).
 - Per-user limits: max shells, max attachments, max streams (spec §8).
 - PTY children run under cgroup/rlimit constraints (pids, memory) set at launch
   by the privileged launcher; limits are configuration, enforcement is default.
+- Implemented (ADR 0009): `/usr/bin/prlimit` installs hard inherited process,
+  open-file and core-dump ceilings before optional `setpriv`; invalid limits or
+  a missing wrapper fail shell open. Reference systemd units cap aggregate tasks
+  and resident memory for the daemon plus every child shell.
 - Shell expiry policy reclaims abandoned shells.
-- **Tests:** opening shells beyond limit fails with `ERR_LIMIT_EXCEEDED`; fork
-  bomb inside a shell cannot prevent other users' shells from opening.
+- **Tests:** opening shells beyond the logical limit fails with
+  `ERR_LIMIT_EXCEEDED`; ordinary and uid-dropped PTYs observe the configured
+  hard ceilings; both reference cgroup units pass `systemd-analyze verify`.
 
-### T7. Origin confusion and cross-site WebTransport/WebSocket
+### T7. Origin confusion and cross-site WebTransport
 
-- Browser endpoints validate the `Origin` header against an allowlist; the
-  WebSocket fallback additionally requires the connection grant in the first
-  frame (grants are never readable cross-origin).
+- The Origin allowlist is enforced on the WebTransport CONNECT request
+  headers (ADR 0014) — browsers always send `Origin` there; requests without
+  one (native clients) are allowed. The legacy WebSocket endpoint is off by
+  default (test-only config gate) and enforces the same allowlist when
+  enabled.
 - Control-plane HTTPS API uses SameSite cookies + CSRF tokens or pure
   bearer-token auth; state-changing endpoints reject cross-origin requests.
 - Grants are audience-bound to the gateway hostname.
-- **Tests:** WebSocket/WebTransport connect with wrong/absent Origin rejected;
-  grant minted for another audience rejected.
+- **Tests:** WebTransport (and gated WebSocket) connect with wrong/absent
+  Origin rejected; grant minted for another audience rejected.
 
 ### T8. Replay of open-shell or terminate-shell commands
 
@@ -177,8 +192,14 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
   terminated, actor, IDs, result).
 - Metrics are counters/gauges/histograms only — no free-text labels derived
   from user input.
-- **Tests:** log-capture assertions in integration tests; Debug-format snapshot
-  tests on secret-bearing types.
+- Implemented in `hf-daemon::observability`: a closed event enum (no
+  content/credential fields), control-character stripping and a 128-character
+  metadata cap, a 4,096-record FIFO ring, and fixed-label monotonic counters.
+  The daemon exposes snapshots to deployment/overlay adapters; nothing is sent
+  to a central service by the standalone core.
+- **Tests:** bounded-ring and metadata-sanitization unit tests; fixed-label
+  counter tests; Debug-format snapshot tests on secret-bearing types; daemon
+  auth integration asserts emitted records contain no secret/content fields.
 
 ### T11. Supply-chain compromise (QUIC stack, VT parsing, browser deps)
 
@@ -221,6 +242,45 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
   tests (`launch.rs`); the real uid switch verified over a PTY
   (`privilege_drop.rs` via `tests/authorization/run.sh` — a `nobody`-scoped
   shell reports uid 65534, a no-account shell stays as the daemon's uid).
+
+### T13. Password authentication brute force and credential exposure (opt-in)
+
+- Password authentication is **off by default everywhere** and exists in two
+  opt-in places, both backed by the same fail-closed verifier
+  (`crates/auth/src/pam.rs`; auth + account checks only — no PAM session, no
+  credential installation, ADR 0007's launch path untouched):
+  1. the loopback SSH compatibility adapter (`--password-auth`, ADR 0015);
+  2. the daemon's local issuer for web/native login
+     (`--password-auth <user>`, ADR 0016).
+- Adapter exposure: the listener is loopback-only (ADR 0013), so guessing
+  requires code execution on the same host. Bounded: foreign usernames, empty
+  and oversized (> `MAX_PASSWORD_BYTES`) passwords are rejected before any
+  PAM work; every failed attempt (password or public-key alike) pays a
+  constant `auth_rejection_time` of 1 s; at most 3 attempts per connection
+  and a bounded connection count cap parallelism.
+- Daemon exposure: the password crosses the network only inside the encrypted
+  transport (WebTransport TLS 1.3; the WS path exists only behind the
+  test-only gate). Only allowlisted usernames are accepted, the same
+  pre-verifier bounds apply, failures collapse into one indistinguishable
+  reply and count toward the per-source rate limiter (5 failures/min → 60 s
+  lockout, bounded tracking map). Refused entirely in dev-insecure mode. The
+  audit ring records `AuthMethod::Password`, never password material. Unlike
+  the SSH challenge, a password carries no ADR 0008 channel binding — an
+  accepted residual of the method itself, mitigated by TLS and by grants
+  (which are what the client actually stores and replays).
+- Account lockout (`pam_faillock`) can be layered in
+  `deploy/pam/holdfast-ssh` without code changes.
+- Fail closed: unknown PAM service (`/etc/pam.d/other` denies), any PAM
+  error, interior NUL in credentials, or a process lacking the privilege to
+  verify the target user (pam_unix's `unix_chkpwd` refuses foreign-user
+  checks without root/shadow access) all deny.
+- **Tests:** adapter negotiation/gating/bridge with an injected verifier
+  (`crates/ssh-adapter/tests/password.rs`); daemon wire tests with injected
+  verifiers (`crates/daemon/tests/auth.rs` — grant issuance + reconnect,
+  verifier-call counting on foreign/oversized input, refusal when disabled,
+  audit content checks); PAM fail-closed unit tests (`crates/auth/src/pam.rs`);
+  real shadow/pam_unix round trip via `tests/password-auth/run.sh` (root,
+  throwaway account).
 
 ## Residual risks accepted for now (revisit before beta)
 

@@ -32,16 +32,26 @@ CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE CAP_DAC_READ_SE
 ExecStart=/usr/local/bin/holdfastd \
     --bind 127.0.0.1:8080 \
     --wt-bind 0.0.0.0:443 \
+    --wt-cert /etc/holdfast/tls/fullchain.pem \
+    --wt-key /etc/holdfast/tls/privkey.pem \
     --web-root /var/lib/holdfast/web \
     --drop-privileges \
     --ssh-auth alice /home/alice/.ssh/authorized_keys \
     --account alice alice \
     --ssh-auth bob /home/bob/.ssh/authorized_keys \
     --account bob bob \
-    --allowed-origin https://terminal.example.com
+    --allowed-origin https://terminal.example.com \
+    --grant-key /var/lib/holdfast/grant.key
 
 Restart=on-failure
 RestartSec=2s
+
+# Aggregate containment for the daemon and all user shells (ADR 0009).
+# Per-account RLIMIT_NPROC and per-process NOFILE/core limits are also applied
+# by holdfastd before setpriv changes uid/gid.
+TasksMax=2048
+MemoryHigh=50%
+MemoryMax=75%
 
 # --- Sandboxing ---
 # CRITICAL: NoNewPrivileges must stay OFF here. The shells run as real user
@@ -59,6 +69,8 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictRealtime=yes
+# Home of grant.key: persistent grants + stable server identity (ADR 0017).
+StateDirectory=holdfast
 
 [Install]
 WantedBy=multi-user.target

@@ -6,8 +6,8 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use hf_session_core::{
-    Attachment, AttachmentEvent, OpenShellRequest, SessionCoreConfig, SessionError, ShellManager,
-    ShellState,
+    Attachment, AttachmentEvent, OpenShellRequest, ResumeToken, SessionCoreConfig, SessionError,
+    ShellManager, ShellResourceLimits, ShellState,
 };
 
 const T: Duration = Duration::from_secs(10);
@@ -29,8 +29,11 @@ fn read_until(attachment: &Attachment, needle: &str) -> String {
     let mut collected = Vec::new();
     loop {
         let now = Instant::now();
-        assert!(now < deadline, "timeout waiting for {needle:?}; got {:?}",
-            String::from_utf8_lossy(&collected));
+        assert!(
+            now < deadline,
+            "timeout waiting for {needle:?}; got {:?}",
+            String::from_utf8_lossy(&collected)
+        );
         match attachment.events.recv_timeout(deadline - now) {
             Ok(AttachmentEvent::Output(bytes)) => {
                 collected.extend_from_slice(&bytes);
@@ -57,44 +60,64 @@ fn create_detach_reattach_terminate_with_retained_scrollback() {
 
     // First attachment: generate more output than the 6-row screen holds.
     let a1 = mgr
-        .attach(&opened.shell_id, &opened.resume_token, 40, 6)
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
         .unwrap();
-    mgr.write_input(&opened.shell_id, b"for i in $(seq 1 30); do echo scroll-$i; done\r")
-        .unwrap();
+    mgr.write_input(
+        &opened.shell_id,
+        b"for i in $(seq 1 30); do echo scroll-$i; done\r",
+    )
+    .unwrap();
     read_until(&a1, "scroll-30");
     let token_after_first = a1.rotated_resume_token.clone();
 
     // Detach. The shell must keep running and keep accumulating output.
     mgr.detach(&opened.shell_id, a1.attachment_id).unwrap();
-    mgr.write_input(&opened.shell_id, b"echo while-detached\r").unwrap();
+    mgr.write_input(&opened.shell_id, b"echo while-detached\r")
+        .unwrap();
     // Give the pump a moment to feed the model while nobody is attached.
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(mgr.shell_info(&opened.shell_id).unwrap().state, ShellState::Running);
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().state,
+        ShellState::Running
+    );
 
     // Reattach with the rotated token: snapshot + history must cover both
     // pre-detach scrollback and output produced while detached.
-    let a2 = mgr.attach(&opened.shell_id, &token_after_first, 40, 6).unwrap();
+    let a2 = mgr
+        .attach("", &opened.shell_id, &token_after_first, 40, 6)
+        .unwrap();
     let snapshot = String::from_utf8_lossy(&a2.snapshot).into_owned();
-    assert!(snapshot.contains("while-detached"), "snapshot misses detached-era output");
+    assert!(
+        snapshot.contains("while-detached"),
+        "snapshot misses detached-era output"
+    );
     assert!(a2.screen_revision > 0);
     assert!(a2.newest_history_line_id > a2.oldest_history_line_id);
 
-    let history = mgr
-        .history(&opened.shell_id, 0, 1000, 1 << 20)
-        .unwrap();
+    let history = mgr.history(&opened.shell_id, 0, 1000, 1 << 20).unwrap();
     let all = history.lines.join("\n");
-    assert!(all.contains("scroll-1") && all.contains("scroll-25"),
-        "retained scrollback must include pre-detach lines: {all}");
+    assert!(
+        all.contains("scroll-1") && all.contains("scroll-25"),
+        "retained scrollback must include pre-detach lines: {all}"
+    );
 
     // The shell is still interactive after reattach.
-    mgr.write_input(&opened.shell_id, b"echo after-reattach\r").unwrap();
+    mgr.write_input(&opened.shell_id, b"echo after-reattach\r")
+        .unwrap();
     read_until(&a2, "after-reattach");
 
     // Terminate: exits, is idempotent, and notifies the attachment.
     let exit = mgr.terminate(&opened.shell_id).unwrap();
     assert!(!exit.success, "SIGKILL'd shell must not report success");
-    assert_eq!(mgr.terminate(&opened.shell_id).unwrap(), exit, "terminate is idempotent");
-    assert_eq!(mgr.shell_info(&opened.shell_id).unwrap().state, ShellState::Exited);
+    assert_eq!(
+        mgr.terminate(&opened.shell_id).unwrap(),
+        exit,
+        "terminate is idempotent"
+    );
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().state,
+        ShellState::Exited
+    );
 
     let deadline = Instant::now() + T;
     loop {
@@ -114,7 +137,10 @@ fn open_shell_is_idempotent_per_key() {
     let mgr = ShellManager::new(SessionCoreConfig::default());
     let first = mgr.open_shell(&bash_request(2)).unwrap();
     let second = mgr.open_shell(&bash_request(2)).unwrap();
-    assert_eq!(first.shell_id, second.shell_id, "same key must not create a second shell");
+    assert_eq!(
+        first.shell_id, second.shell_id,
+        "same key must not create a second shell"
+    );
     assert!(second.reused);
     assert_eq!(mgr.list_shells().len(), 1);
     mgr.terminate(&first.shell_id).unwrap();
@@ -135,13 +161,22 @@ fn idempotency_reuse_is_scoped_to_owner() {
         idempotency_key: [42; 16],
         ..Default::default()
     };
-    let bob = OpenShellRequest { user: "bob".into(), ..alice.clone() };
+    let bob = OpenShellRequest {
+        user: "bob".into(),
+        ..alice.clone()
+    };
 
     let a = mgr.open_shell(&alice).unwrap();
     // Bob reuses the *same* idempotency key: must NOT get Alice's shell.
     let b = mgr.open_shell(&bob).unwrap();
-    assert_ne!(a.shell_id, b.shell_id, "bob must not receive alice's shell via a shared key");
-    assert!(!b.reused, "cross-owner key collision must open a fresh shell, not reuse");
+    assert_ne!(
+        a.shell_id, b.shell_id,
+        "bob must not receive alice's shell via a shared key"
+    );
+    assert!(
+        !b.reused,
+        "cross-owner key collision must open a fresh shell, not reuse"
+    );
 
     // Alice reusing her own key is still idempotent.
     let a2 = mgr.open_shell(&alice).unwrap();
@@ -152,21 +187,96 @@ fn idempotency_reuse_is_scoped_to_owner() {
     mgr.terminate(&b.shell_id).unwrap();
 }
 
+/// A valid resume token remains scoped to its authenticated owner (spec §12).
+#[test]
+fn resume_token_does_not_bypass_owner_check() {
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+    let opened = mgr
+        .open_shell(&OpenShellRequest {
+            user: "alice".into(),
+            command: Some("bash".into()),
+            args: vec!["--norc".into()],
+            cols: 40,
+            rows: 6,
+            idempotency_key: [43; 16],
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(matches!(
+        mgr.attach("bob", &opened.shell_id, &opened.resume_token, 40, 6),
+        Err(SessionError::ShellNotFound)
+    ));
+
+    // The rejected attempt neither consumes nor rotates Alice's token.
+    let attachment = mgr
+        .attach("alice", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
+    mgr.detach(&opened.shell_id, attachment.attachment_id)
+        .unwrap();
+    mgr.terminate(&opened.shell_id).unwrap();
+}
+
+/// The agent transport may attach only after independently checking its signed
+/// grant. The core API still enforces local owner isolation without exposing a
+/// resume token to the gateway.
+#[test]
+fn transport_authorized_attach_is_owner_scoped() {
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+    let opened = mgr
+        .open_shell(&OpenShellRequest {
+            user: "alice".into(),
+            command: Some("bash".into()),
+            args: vec!["--norc".into()],
+            cols: 40,
+            rows: 6,
+            idempotency_key: [44; 16],
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(matches!(
+        mgr.attach_authorized("bob", &opened.shell_id, 40, 6),
+        Err(SessionError::ShellNotFound)
+    ));
+    let attachment = mgr
+        .attach_authorized("alice", &opened.shell_id, 40, 6)
+        .unwrap();
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().attachment_count,
+        1
+    );
+    mgr.detach(&opened.shell_id, attachment.attachment_id)
+        .unwrap();
+    mgr.terminate(&opened.shell_id).unwrap();
+}
+
 #[test]
 fn rotated_token_rejects_replay() {
     let mgr = ShellManager::new(SessionCoreConfig::default());
     let opened = mgr.open_shell(&bash_request(3)).unwrap();
 
-    let a1 = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
-    // The original token was rotated away by the successful attach.
+    let a1 = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
+    // The original token was rotated away by the successful attach: replaying
+    // it is the distinct possible-theft signal, not generic invalidity
+    // (spec §12).
     assert!(matches!(
-        mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6),
-        Err(SessionError::InvalidToken)
+        mgr.attach("", &opened.shell_id, &opened.resume_token, 40, 6),
+        Err(SessionError::TokenReplayed)
     ));
     // The rotated token works, and rotates again.
-    let a2 = mgr.attach(&opened.shell_id, &a1.rotated_resume_token, 40, 6).unwrap();
+    let a2 = mgr
+        .attach("", &opened.shell_id, &a1.rotated_resume_token, 40, 6)
+        .unwrap();
     assert!(matches!(
-        mgr.attach(&opened.shell_id, &a1.rotated_resume_token, 40, 6),
+        mgr.attach("", &opened.shell_id, &a1.rotated_resume_token, 40, 6),
+        Err(SessionError::TokenReplayed)
+    ));
+    // A token that was never valid for this shell stays InvalidToken.
+    assert!(matches!(
+        mgr.attach("", &opened.shell_id, &ResumeToken::generate(), 40, 6),
         Err(SessionError::InvalidToken)
     ));
     drop(a2);
@@ -174,16 +284,44 @@ fn rotated_token_rejects_replay() {
 }
 
 #[test]
+fn idempotent_reopen_supersedes_the_old_token_as_a_replay() {
+    // The idempotent-reuse path also rotates; the token it replaced must be
+    // recognized as replayed, since client recovery leans on this path.
+    let mgr = ShellManager::new(SessionCoreConfig::default());
+    let opened = mgr.open_shell(&bash_request(30)).unwrap();
+    let reopened = mgr.open_shell(&bash_request(30)).unwrap();
+    assert!(reopened.reused);
+    assert_eq!(reopened.shell_id, opened.shell_id);
+    assert!(matches!(
+        mgr.attach("", &opened.shell_id, &opened.resume_token, 40, 6),
+        Err(SessionError::TokenReplayed)
+    ));
+    let a = mgr
+        .attach("", &opened.shell_id, &reopened.resume_token, 40, 6)
+        .unwrap();
+    drop(a);
+    mgr.terminate(&opened.shell_id).unwrap();
+}
+
+#[test]
 fn detach_does_not_kill_and_terminate_does() {
     let mgr = ShellManager::new(SessionCoreConfig::default());
     let opened = mgr.open_shell(&bash_request(4)).unwrap();
-    let a = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
+    let a = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
 
     mgr.detach(&opened.shell_id, a.attachment_id).unwrap();
-    assert_eq!(mgr.shell_info(&opened.shell_id).unwrap().state, ShellState::Running);
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().state,
+        ShellState::Running
+    );
 
     mgr.terminate(&opened.shell_id).unwrap();
-    assert_eq!(mgr.shell_info(&opened.shell_id).unwrap().state, ShellState::Exited);
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().state,
+        ShellState::Exited
+    );
 
     // Input to an exited shell is an error, not a panic.
     assert!(matches!(
@@ -229,7 +367,10 @@ fn per_user_shell_cap_is_enforced_and_isolated() {
     // Bob is unaffected by Alice's usage.
     let _b1 = open("bob", 4).unwrap();
     let _b2 = open("bob", 5).unwrap();
-    assert!(matches!(open("bob", 6), Err(SessionError::LimitExceeded("max_shells_per_user"))));
+    assert!(matches!(
+        open("bob", 6),
+        Err(SessionError::LimitExceeded("max_shells_per_user"))
+    ));
 
     // Freeing one of Alice's shells lets her open again.
     mgr.terminate(&a1.shell_id).unwrap();
@@ -258,10 +399,13 @@ fn hostile_resize_dimensions_do_not_crash_or_hang_the_shell() {
             ..Default::default()
         })
         .unwrap();
-    let a = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
+    let a = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
 
     // Put a wide glyph on screen — the ingredient for the 1-column panic.
-    mgr.write_input(&opened.shell_id, b"printf '\\xf0\\x9f\\xa6\\x80wide\\n'\r").unwrap();
+    mgr.write_input(&opened.shell_id, b"printf '\\xf0\\x9f\\xa6\\x80wide\\n'\r")
+        .unwrap();
     read_until(&a, "wide");
 
     // Every degenerate size the emulator would otherwise choke on.
@@ -271,7 +415,8 @@ fn hostile_resize_dimensions_do_not_crash_or_hang_the_shell() {
 
     // Back to a sane size, the shell is still alive and responsive.
     mgr.resize(&opened.shell_id, 40, 6).unwrap();
-    mgr.write_input(&opened.shell_id, b"echo still-alive-$((6*7))\r").unwrap();
+    mgr.write_input(&opened.shell_id, b"echo still-alive-$((6*7))\r")
+        .unwrap();
     read_until(&a, "still-alive-42");
 
     mgr.terminate(&opened.shell_id).unwrap();
@@ -292,19 +437,54 @@ fn shell_and_attachment_limits_are_enforced() {
         Err(SessionError::LimitExceeded("max_shells"))
     ));
 
-    let a1 = mgr.attach(&s1.shell_id, &s1.resume_token, 40, 6).unwrap();
-    let a2 = mgr.attach(&s1.shell_id, &a1.rotated_resume_token, 40, 6).unwrap();
+    let a1 = mgr
+        .attach("", &s1.shell_id, &s1.resume_token, 40, 6)
+        .unwrap();
+    let a2 = mgr
+        .attach("", &s1.shell_id, &a1.rotated_resume_token, 40, 6)
+        .unwrap();
     assert!(matches!(
-        mgr.attach(&s1.shell_id, &a2.rotated_resume_token, 40, 6),
+        mgr.attach("", &s1.shell_id, &a2.rotated_resume_token, 40, 6),
         Err(SessionError::LimitExceeded("max_attachments_per_shell"))
     ));
+}
+
+#[test]
+fn shell_process_inherits_hard_resource_limits() {
+    let mgr = ShellManager::new(SessionCoreConfig {
+        shell_resource_limits: ShellResourceLimits {
+            // Kept comfortably above the host test user's current process
+            // count: RLIMIT_NPROC is per real uid, not per shell, on Linux.
+            max_processes: 4_096,
+            max_open_files: 333,
+            max_core_bytes: 0,
+        },
+        ..Default::default()
+    });
+    let opened = mgr.open_shell(&bash_request(13)).unwrap();
+    let attachment = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
+
+    // `ulimit` is a bash builtin, so these checks do not need to fork while
+    // inspecting the inherited hard ceilings.
+    mgr.write_input(&opened.shell_id, b"ulimit -Hu\r").unwrap();
+    read_until(&attachment, "4096");
+    mgr.write_input(&opened.shell_id, b"ulimit -Hn\r").unwrap();
+    read_until(&attachment, "333");
+    mgr.write_input(&opened.shell_id, b"ulimit -Hc\r").unwrap();
+    read_until(&attachment, "0");
+
+    mgr.terminate(&opened.shell_id).unwrap();
 }
 
 #[test]
 fn natural_exit_is_observed_without_terminate() {
     let mgr = ShellManager::new(SessionCoreConfig::default());
     let opened = mgr.open_shell(&bash_request(5)).unwrap();
-    let a = mgr.attach(&opened.shell_id, &opened.resume_token, 40, 6).unwrap();
+    let a = mgr
+        .attach("", &opened.shell_id, &opened.resume_token, 40, 6)
+        .unwrap();
 
     mgr.write_input(&opened.shell_id, b"exit 7\r").unwrap();
     let deadline = Instant::now() + T;
@@ -318,7 +498,10 @@ fn natural_exit_is_observed_without_terminate() {
             Err(e) => panic!("expected natural exit, got {e:?}"),
         }
     }
-    assert_eq!(mgr.shell_info(&opened.shell_id).unwrap().state, ShellState::Exited);
+    assert_eq!(
+        mgr.shell_info(&opened.shell_id).unwrap().state,
+        ShellState::Exited
+    );
     // Terminating an already-exited shell returns the recorded status.
     assert_eq!(mgr.terminate(&opened.shell_id).unwrap().exit_code, 7);
 }

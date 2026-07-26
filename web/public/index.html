@@ -37,6 +37,29 @@
   #status[data-kind="warn"] { color: #d29922; }
   #status[data-kind="err"] { color: #f85149; }
   #panels { flex: 1; min-height: 0; }
+  dialog {
+    background: #161b22; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 8px; padding: 1.2rem; max-width: 34rem; width: 90%;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { margin-top: 0; font-size: 1.1rem; }
+  dialog label { display: block; margin: .6rem 0; font-size: .85rem; color: #8b949e; }
+  dialog input, dialog textarea {
+    display: block; width: 100%; margin-top: .25rem; padding: .4rem;
+    background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; font-family: monospace; font-size: .85rem;
+  }
+  dialog pre {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    padding: .6rem; overflow-x: auto; font-size: .8rem; user-select: all;
+  }
+  dialog button {
+    background: #238636; color: #fff; border: 0; border-radius: 6px;
+    padding: .4rem .9rem; cursor: pointer; margin-top: .4rem;
+  }
+  #login-error { color: #f85149; font-size: .85rem; min-height: 1em; }
+  .login-alt { font-size: .85rem; margin: .4rem 0 0; }
+  .login-alt a { color: #58a6ff; }
   .panel { height: 100%; padding: .4rem; display: none; }
   .panel .xterm { height: 100%; }
 </style>
@@ -52,6 +75,37 @@
   <span id="status" data-kind="warn">starting…</span>
 </header>
 <div id="panels"></div>
+<dialog id="login">
+  <h2>Sign in</h2>
+  <label>Username
+    <input id="login-username" autocomplete="username" spellcheck="false">
+  </label>
+  <div id="login-password-section" hidden>
+    <label>Password
+      <input id="login-password" type="password" autocomplete="current-password">
+    </label>
+    <button id="login-password-submit">Sign in</button>
+    <p class="login-alt"><a href="#" id="login-use-key">Use an SSH key instead</a></p>
+  </div>
+  <div id="login-step1">
+    <label>Public key (paste your <code>~/.ssh/id_*.pub</code> line)
+      <textarea id="login-pubkey" rows="3" spellcheck="false"></textarea>
+    </label>
+    <button id="login-request">Request challenge</button>
+    <p class="login-alt" hidden id="login-use-password-line"><a href="#" id="login-use-password">Use a password instead</a></p>
+  </div>
+  <div id="login-step2" hidden>
+    <p>Run this on the machine that holds your private key, then paste the
+    output below. The signed blob is bound to this server's certificate, so
+    it is useless anywhere else.</p>
+    <pre id="login-command"></pre>
+    <label>Signature (<code>-----BEGIN SSH SIGNATURE-----&hellip;</code>)
+      <textarea id="login-signature" rows="8" spellcheck="false"></textarea>
+    </label>
+    <button id="login-submit">Sign in</button>
+  </div>
+  <p id="login-error"></p>
+</dialog>
 <script type="module" src="app.js"></script>
 </body>
 </html>

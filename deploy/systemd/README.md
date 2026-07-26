@@ -9,12 +9,40 @@ is **never** run as root outright.
 | `holdfastd.service` | the `holdfast` service account | `CAP_NET_BIND_SERVICE` only | one administrator; the standalone case |
 | `holdfastd-multiuser.service` | each authenticated user's own account | `CAP_SETUID` + `CAP_SETGID` (+ `CAP_DAC_READ_SEARCH`, `CAP_NET_BIND_SERVICE`) | multiple users with real Unix accounts |
 
+Both units also provide aggregate resource containment (ADR 0009):
+`TasksMax=2048`, `MemoryHigh=50%`, and `MemoryMax=75%`. Independently,
+`holdfastd` wraps every shell in `/usr/bin/prlimit` with hard inherited defaults
+of 512 processes per Unix uid, 1,024 open files per process, and zero-byte core
+dumps. Tune the daemon flags and unit values together for the host's workload;
+never remove both layers.
+
+## WebTransport certificate
+
+Both reference units expect a publicly trusted chain at
+`/etc/holdfast/tls/fullchain.pem` and its private key at
+`/etc/holdfast/tls/privkey.pem`. The private key must be readable by the
+`holdfast` service account and mode 0600 or stricter; the directory should not
+be writable by that account. Copy renewed ACME output into those paths
+atomically and restart the service:
+
+```bash
+sudo systemctl restart holdfastd
+```
+
+The browser uses ordinary WebPKI for this configured identity. The generated
+hash-pinned identity is deliberately restricted to loopback development.
+
 ## The privilege model (multi-user)
 
 Privilege separation for T12 (ADR 0007) has an authorization half and a
 mechanism half. The mechanism is `setpriv`: the daemon wraps each shell in
 `setpriv --reuid <uid> --regid <gid> --init-groups --inh-caps -all
 --ambient-caps -all --reset-env -- <shell>`.
+
+The complete exec chain is `prlimit → setpriv → shell`, so resource limits
+are installed before the account switch and remain in force afterward. Both
+`prlimit` and `setpriv` are supplied by util-linux and referenced by absolute
+path; a missing executable fails shell open rather than bypassing a boundary.
 
 - The daemon does **not** run as root. It is granted `AmbientCapabilities=`
   `CAP_SETUID CAP_SETGID` — exactly enough to change uid/gid, nothing more.

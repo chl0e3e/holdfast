@@ -4,7 +4,7 @@
 Protocol version: 0.1 (draft)
 Status: Phase 0 draft — normative once Phase 1 begins; every change to this
         document must ship with the matching change to messages.proto
-Last updated: 2026-07-16
+Last updated: 2026-07-18
 ```
 
 This protocol is transport-independent. It runs over any transport that provides
@@ -158,6 +158,16 @@ server -> AuthenticationResult { ok, user_id, expires_at, error? }
   For the local issuer, the challenge/response exchange rides in `Authenticate`
   (a small sub-negotiation: request challenge → signed response → grant), so
   the message flow is identical for both issuers from the transport's view.
+- The local issuer MAY additionally accept `Authenticate { password_request }`
+  (ADR 0016): a single round trip carrying `username` + `password`, verified
+  locally (PAM) and answered with the same issued grant as the SSH path.
+  Password login is **off by default**, per-username allowlisted, and bounded
+  (`MAX_USERNAME_BYTES` = 128, `MAX_PASSWORD_BYTES` = 1024; empty values
+  rejected). Servers MUST NOT advertise or accept it in dev-insecure mode,
+  MUST subject failures to the same rate limiting as other methods, and MUST
+  never log or audit the password itself. It only ever rides the encrypted
+  transport; whether it is offered is advertised to the browser client via
+  `passwordAuth` in `/webtransport-info`.
 - Every shell-scoped request is authorized against the authenticated user and
   the grant's scope. Authorization failure is `ERR_FORBIDDEN` and MUST be
   indistinguishable from a nonexistent shell (`ERR_NOT_FOUND` is reserved for
@@ -326,7 +336,9 @@ authorizing → synchronizing → live → { detached | closed }
 - Issued at `ShellOpened` and rotated at every successful `ShellAttached`.
 - Scoped to (user, shell, attachment policy) with an expiry; opaque to clients.
 - The server stores only a hash. Presenting an already-rotated token fails with
-  `ERR_TOKEN_REPLAYED` and raises an audit event (possible theft).
+  `ERR_TOKEN_REPLAYED` and raises an audit event (possible theft). Replay
+  detection covers the last 64 superseded tokens per shell (bounded ring);
+  anything older — or never valid — reports `ERR_TOKEN_EXPIRED`.
 - Resume tokens are never written to logs, metrics or crash dumps.
 
 ## 13. Errors and close codes
@@ -358,3 +370,120 @@ pongs → the server treats the session as dead, detaches its attachments
 - All IDs (`server_id`, `shell_id`, token IDs) are opaque 128-bit values,
   rendered as lowercase hex with a type prefix in logs/UI (`srv_…`, `sh_…`).
   Authorization keys are these opaque IDs, never display names.
+
+## 16. Managed-server agent link (overlay extension)
+
+The optional administration overlay connects a managed server to a gateway on
+a **separate outbound raw-QUIC connection** using ALPN `holdfast-agent/0`. This
+link is not a client session, is never accepted by standalone daemon listeners,
+and does not change the core daemon's ability to operate without a gateway.
+
+TLS is mutual. The gateway validates the agent certificate against its agent CA
+and maps the SHA-256 fingerprint of the presented leaf certificate to exactly
+one stable 128-bit `server_id` in its local registry. A certificate may never
+answer for another server. Rotation is an overlap operation: the registry may
+map a bounded set of old and next leaf fingerprints to the same `server_id`.
+
+The agent opens the first bidirectional stream and sends one length-prefixed
+protobuf `AgentEnvelope` containing:
+
+```text
+AgentRegister {
+    protocol_major, protocol_minor
+    server_id, agent_build, max_frame_bytes
+}
+```
+
+The gateway compares `server_id` with the identity selected by the authenticated
+leaf certificate. A mismatch or unregistered certificate is rejected and the
+connection is closed. A successful response is:
+
+```text
+AgentRegistration {
+    accepted = true, server_id
+    max_frame_bytes, keepalive_interval_ms
+}
+```
+
+Agent control framing is `u32 big-endian length | AgentEnvelope`, with a hard
+16 KiB ceiling. The receiver rejects an oversized length before allocating the
+payload. `agent_build` is informational UTF-8 and limited to 128 encoded bytes.
+The valid range is 1–16 KiB; the negotiated frame maximum is the lower valid
+peer value, never above 16 KiB.
+`AgentPing`/`AgentPong` provide bounded link liveness. Terminal data never uses
+this control stream.
+
+After registration, the gateway may request a local shell on the same control
+stream:
+
+```text
+AgentOpenShell {
+    user_id, unix_account, command
+    initial_cols, initial_rows, idempotency_key, connection_grant
+}
+AgentShellOpened { shell_id, reused }
+```
+
+The envelope carries the request ID and authenticated `server_id`; the agent
+rejects any other server identity. `user_id` and `unix_account` are each capped
+at 128 encoded bytes, `command` at 4 KiB, and `idempotency_key` is exactly 16
+bytes. The agent passes the request through its local `AccessPolicy` and the
+same bounded `ShellManager`/privileged launcher used by standalone mode. A
+denial is an `agent_error` with `ERR_FORBIDDEN`; limits and launch failures use
+their existing v0 error codes. Retrying the same owner/key after link recovery
+returns the same live `shell_id` with `reused=true`. The gateway link never owns
+the shell, so connection loss does not terminate it.
+
+The connection grant is capped at 8 KiB and is verified by the agent, not
+trusted merely because the gateway has mTLS access. Its signature/time window,
+configured gateway audience (capped at 256 bytes), explicit `server_id` scope,
+`open` operation, and `sub == user_id` must all pass before local account policy
+is evaluated. Invalid signatures/expiry are `ERR_UNAUTHENTICATED`; subject,
+operation, audience, or server-scope failures are `ERR_FORBIDDEN`. Thus a stolen
+gateway certificate alone cannot invent a user or broaden a captured grant.
+
+This control operation intentionally does not carry terminal bytes or a client
+resume token.
+
+For each live attachment, the gateway opens a new bidirectional QUIC stream.
+The first frame is an `AgentEnvelope` scoped to the authenticated `server_id`
+and requested `shell_id`:
+
+```text
+AgentAttachShell { user_id, connection_grant, cols, rows }
+AgentShellAttached {
+    screen_snapshot, screen_revision
+    oldest_history_line_id, newest_history_line_id
+}
+```
+
+The agent independently verifies signature/time, configured audience, explicit
+server scope, `attach` operation and `sub == user_id`, then checks that the
+local shell belongs to that user. Ownership mismatch is indistinguishable from
+an unknown shell. The gateway never receives the managed daemon's local resume
+token; the future client-facing gateway layer owns its own client resume-token
+boundary. Grant expiry closes this attachment stream; the shell survives and a
+fresh grant may create a new attachment.
+
+After `AgentShellAttached`, the stream carries the existing explicit protobuf
+messages `TerminalInput`, `TerminalOutput`, `TerminalResize`, `DetachShell`,
+`RequestHistory`, `HistoryChunk`, `HistoryEnd`, `ShellExited`, and `Error`
+inside `AgentEnvelope`. Every frame repeats the exact `server_id` and
+`shell_id`; a mismatch closes only that attachment. Input and output remain
+reliable and ordered. Stream EOF, reset, `DetachShell`, grant expiry, output
+backpressure or protocol failure detaches without terminating the shell.
+
+Agent attachment framing uses the same `u32 big-endian length | AgentEnvelope`
+shape with a separate fixed 256 KiB ceiling. Length is rejected before payload
+allocation. One connection permits at most 64 gateway-opened attachment
+streams in addition to its agent-opened control stream. Per-stream QUIC receive
+flow control is 256 KiB and the aggregate connection send/receive window is
+16 MiB. Raw input is capped at
+64 KiB per frame and processed directly without an application queue. PTY
+output chunks remain capped at 8 KiB; the bridge into an async QUIC writer is
+bounded to 64 messages / 512 KiB, in addition to session-core's bounded
+per-attachment queue. History is sequential (one request in flight), capped at
+10,000 lines and half the attachment frame limit in requested bytes, so its
+response always fits. Multiple simultaneous attachments to one shell remain
+bounded by `max_attachments_per_shell` (default 4); ADR 0012 records that v0
+policy.

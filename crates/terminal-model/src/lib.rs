@@ -6,6 +6,7 @@
 //! No HTTP or QUIC imports, ever (enforced dependency direction).
 
 mod history;
+mod modes;
 mod utf8;
 
 pub use history::{HistoryRange, HistoryRing};
@@ -46,6 +47,9 @@ pub struct TerminalModel {
     vt: avt::Vt,
     utf8: utf8::IncrementalUtf8,
     history: HistoryRing,
+    /// Input-encoding modes (mouse tracking, DECCKM, bracketed paste) that
+    /// avt's dump does not restore; replayed by [`TerminalModel::snapshot`].
+    modes: modes::ModeTracker,
     /// Monotonic screen revision; 0 is reserved for "none" (spec §1), so the
     /// model starts at 1.
     revision: u64,
@@ -66,6 +70,7 @@ impl TerminalModel {
                 .build(),
             utf8: utf8::IncrementalUtf8::new(),
             history: HistoryRing::new(config.max_history_lines, config.max_history_bytes),
+            modes: modes::ModeTracker::new(),
             revision: 1,
             cols,
             rows,
@@ -77,9 +82,12 @@ impl TerminalModel {
     pub fn feed(&mut self, bytes: &[u8]) -> u64 {
         let text = self.utf8.push(bytes);
         if !text.is_empty() {
+            self.modes.scan(&text);
             let changes = self.vt.feed_str(&text);
-            let evicted: Vec<String> =
-                changes.scrollback.map(|l| l.text().trim_end().to_string()).collect();
+            let evicted: Vec<String> = changes
+                .scrollback
+                .map(|l| l.text().trim_end().to_string())
+                .collect();
             for line in evicted {
                 self.history.push(line);
             }
@@ -109,9 +117,13 @@ impl TerminalModel {
 
     /// Byte sequence that reconstructs the current screen (including the
     /// alternate screen and cursor) in a fresh emulator — the attach
-    /// `ScreenSnapshot` payload.
+    /// `ScreenSnapshot` payload. Also replays input-encoding modes (mouse
+    /// tracking, application cursor keys, bracketed paste) that avt's dump
+    /// omits, so a reattached client keeps the app's input contract.
     pub fn snapshot(&self) -> Vec<u8> {
-        self.vt.dump().into_bytes()
+        let mut bytes = self.vt.dump().into_bytes();
+        bytes.extend_from_slice(self.modes.restore_sequence().as_bytes());
+        bytes
     }
 
     pub fn revision(&self) -> u64 {
@@ -124,7 +136,10 @@ impl TerminalModel {
 
     /// Visible screen as plain text lines (for tests and diagnostics).
     pub fn visible_lines(&self) -> Vec<String> {
-        self.vt.view().map(|l| l.text().trim_end().to_string()).collect()
+        self.vt
+            .view()
+            .map(|l| l.text().trim_end().to_string())
+            .collect()
     }
 
     /// Oldest retained history line ID; 0 when no history is retained.
@@ -144,6 +159,7 @@ impl TerminalModel {
         maximum_lines: u32,
         maximum_bytes: u32,
     ) -> HistoryRange {
-        self.history.range(before_line_id, maximum_lines, maximum_bytes)
+        self.history
+            .range(before_line_id, maximum_lines, maximum_bytes)
     }
 }

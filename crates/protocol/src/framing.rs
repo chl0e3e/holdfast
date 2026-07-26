@@ -7,7 +7,7 @@
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 
-use crate::pb::Envelope;
+use crate::pb::{AgentEnvelope, Envelope};
 
 pub const LENGTH_PREFIX_BYTES: usize = 4;
 
@@ -23,13 +23,46 @@ pub enum FrameError {
 
 /// Encode one envelope as a length-prefixed frame.
 pub fn encode_frame(envelope: &Envelope, max_frame_bytes: u32) -> Result<Vec<u8>, FrameError> {
-    let len = envelope.encoded_len();
+    encode_delimited(envelope, max_frame_bytes)
+}
+
+/// Encode one managed-agent control envelope with the same explicit length
+/// delimiter used by reliable client streams (spec §16).
+pub fn encode_agent_frame(
+    envelope: &AgentEnvelope,
+    max_frame_bytes: u32,
+) -> Result<Vec<u8>, FrameError> {
+    encode_delimited(envelope, max_frame_bytes)
+}
+
+/// Decode an already-delimited managed-agent payload. Transport code must
+/// check its u32 header against the maximum before allocating this slice.
+pub fn decode_agent_payload(payload: &[u8]) -> Result<AgentEnvelope, FrameError> {
+    Ok(AgentEnvelope::decode(payload)?)
+}
+
+/// Validate an untrusted length prefix before allocating its payload buffer.
+pub fn checked_payload_len(
+    header: [u8; LENGTH_PREFIX_BYTES],
+    maximum: u32,
+) -> Result<usize, FrameError> {
+    let len = u32::from_be_bytes(header);
+    if len > maximum {
+        return Err(FrameError::TooLarge { len, max: maximum });
+    }
+    Ok(len as usize)
+}
+
+fn encode_delimited(message: &impl Message, max_frame_bytes: u32) -> Result<Vec<u8>, FrameError> {
+    let len = message.encoded_len();
     if len > max_frame_bytes as usize {
-        return Err(FrameError::EncodeTooLarge { max: max_frame_bytes });
+        return Err(FrameError::EncodeTooLarge {
+            max: max_frame_bytes,
+        });
     }
     let mut out = Vec::with_capacity(LENGTH_PREFIX_BYTES + len);
     out.put_u32(len as u32);
-    envelope.encode(&mut out).expect("Vec<u8> write cannot fail");
+    message.encode(&mut out).expect("Vec<u8> write cannot fail");
     Ok(out)
 }
 
@@ -45,13 +78,26 @@ pub struct FrameDecoder {
 
 impl FrameDecoder {
     pub fn new(max_frame_bytes: u32) -> FrameDecoder {
-        FrameDecoder { max_frame_bytes, buf: BytesMut::new() }
+        FrameDecoder {
+            max_frame_bytes,
+            buf: BytesMut::new(),
+        }
     }
 
     /// Append transport bytes. Fails fast if the pending frame header already
     /// exceeds the maximum, without buffering the rest of that frame.
     pub fn extend(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
-        self.buf.extend_from_slice(bytes);
+        // If this call completes a split header, inspect those four bytes
+        // before copying payload supplied in the same transport read.
+        if self.buf.len() < LENGTH_PREFIX_BYTES {
+            let header_bytes = (LENGTH_PREFIX_BYTES - self.buf.len()).min(bytes.len());
+            self.buf.extend_from_slice(&bytes[..header_bytes]);
+            self.check_header()?;
+            self.buf.extend_from_slice(&bytes[header_bytes..]);
+        } else {
+            self.check_header()?;
+            self.buf.extend_from_slice(bytes);
+        }
         self.check_header()
     }
 
@@ -80,7 +126,10 @@ impl FrameDecoder {
         if self.buf.len() >= LENGTH_PREFIX_BYTES {
             let len = u32::from_be_bytes(self.buf[..LENGTH_PREFIX_BYTES].try_into().unwrap());
             if len > self.max_frame_bytes {
-                return Err(FrameError::TooLarge { len, max: self.max_frame_bytes });
+                return Err(FrameError::TooLarge {
+                    len,
+                    max: self.max_frame_bytes,
+                });
             }
         }
         Ok(())
@@ -107,7 +156,10 @@ mod tests {
         let mut dec = FrameDecoder::new(1024);
         dec.extend(&frame).unwrap();
         let env = dec.next_frame().unwrap().expect("one frame");
-        assert!(matches!(env.message, Some(envelope::Message::Ping(Ping { nonce: 42 }))));
+        assert!(matches!(
+            env.message,
+            Some(envelope::Message::Ping(Ping { nonce: 42 }))
+        ));
         assert!(dec.next_frame().unwrap().is_none());
         assert_eq!(dec.buffered(), 0);
     }
@@ -135,8 +187,45 @@ mod tests {
         let mut dec = FrameDecoder::new(1024);
         // Header claims 1 MiB; only the 4 header bytes are ever buffered.
         let err = dec.extend(&(1_048_576u32).to_be_bytes()).unwrap_err();
-        assert!(matches!(err, FrameError::TooLarge { len: 1_048_576, max: 1024 }));
+        assert!(matches!(
+            err,
+            FrameError::TooLarge {
+                len: 1_048_576,
+                max: 1024
+            }
+        ));
         assert_eq!(dec.buffered(), 4, "payload must not be buffered");
+    }
+
+    #[test]
+    fn oversized_header_rejects_payload_from_the_same_read_before_buffering_it() {
+        let mut dec = FrameDecoder::new(1024);
+        let mut hostile_read = (1_048_576u32).to_be_bytes().to_vec();
+        hostile_read.resize(1_048_580, 0xAA);
+        let err = dec.extend(&hostile_read).unwrap_err();
+        assert!(matches!(
+            err,
+            FrameError::TooLarge {
+                len: 1_048_576,
+                max: 1024
+            }
+        ));
+        assert_eq!(dec.buffered(), 4, "untrusted payload must never be copied");
+    }
+
+    #[test]
+    fn checked_payload_length_rejects_before_callers_allocate() {
+        assert_eq!(
+            checked_payload_len(512u32.to_be_bytes(), 1024).unwrap(),
+            512
+        );
+        assert!(matches!(
+            checked_payload_len(1025u32.to_be_bytes(), 1024),
+            Err(FrameError::TooLarge {
+                len: 1025,
+                max: 1024
+            })
+        ));
     }
 
     #[test]
@@ -154,9 +243,11 @@ mod tests {
             request_id: 1,
             server_id: vec![],
             shell_id: vec![],
-            message: Some(envelope::Message::TerminalOutput(crate::pb::TerminalOutput {
-                data: vec![0u8; 2048],
-            })),
+            message: Some(envelope::Message::TerminalOutput(
+                crate::pb::TerminalOutput {
+                    data: vec![0u8; 2048],
+                },
+            )),
         };
         assert!(matches!(
             encode_frame(&big, 1024),
@@ -169,6 +260,38 @@ mod tests {
         let mut dec = FrameDecoder::new(1024);
         dec.extend(&0u32.to_be_bytes()).unwrap();
         let env = dec.next_frame().unwrap().expect("empty envelope decodes");
-        assert!(env.message.is_none(), "spec §3: unset oneof is a protocol error upstream");
+        assert!(
+            env.message.is_none(),
+            "spec §3: unset oneof is a protocol error upstream"
+        );
+    }
+
+    #[test]
+    fn agent_frame_roundtrip_uses_explicit_protobuf_schema() {
+        use crate::pb::{agent_envelope, AgentEnvelope, AgentPing};
+
+        let envelope = AgentEnvelope {
+            request_id: 0,
+            server_id: vec![7; 16],
+            shell_id: vec![],
+            message: Some(agent_envelope::Message::AgentPing(AgentPing { nonce: 7 })),
+        };
+        let frame = encode_agent_frame(&envelope, 1024).unwrap();
+        let payload_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
+        let decoded = decode_agent_payload(&frame[4..4 + payload_len]).unwrap();
+        assert!(matches!(
+            decoded.message,
+            Some(agent_envelope::Message::AgentPing(AgentPing { nonce: 7 }))
+        ));
+    }
+
+    #[test]
+    fn agent_attachment_ceiling_rejects_before_allocation() {
+        let maximum = crate::AGENT_ATTACHMENT_FRAME_BYTES_MAX;
+        assert!(matches!(
+            checked_payload_len(maximum.saturating_add(1).to_be_bytes(), maximum),
+            Err(FrameError::TooLarge { len, max })
+                if len == maximum + 1 && max == maximum
+        ));
     }
 }

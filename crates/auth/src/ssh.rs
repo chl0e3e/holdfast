@@ -76,7 +76,8 @@ impl SshVerifier {
     /// Step 2: is the offered key (OpenSSH one-line text, e.g.
     /// `ssh-ed25519 AAAA... comment`) authorized? Always scans the whole set.
     pub fn is_authorized(&self, offered_openssh: &str) -> Result<(), SshError> {
-        let offered = PublicKey::from_openssh(offered_openssh).map_err(|_| SshError::MalformedKey)?;
+        let offered =
+            PublicKey::from_openssh(offered_openssh).map_err(|_| SshError::MalformedKey)?;
         let mut found = false;
         for key in &self.authorized {
             // Compare key material, not comments.
@@ -124,7 +125,9 @@ impl SshVerifier {
             .verify(SSH_NAMESPACE, &message, &sig)
             .map_err(|_| SshError::BadSignature)?;
 
-        Ok(VerifiedIdentity { fingerprint: authorized_match.fingerprint(HashAlg::Sha256).to_string() })
+        Ok(VerifiedIdentity {
+            fingerprint: authorized_match.fingerprint(HashAlg::Sha256).to_string(),
+        })
     }
 }
 
@@ -174,10 +177,14 @@ mod tests {
         verifier.is_authorized(&offered).unwrap();
 
         let challenge = new_challenge();
-        let sig = private.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
+        let sig = private
+            .sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge)
+            .unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
 
-        let identity = verifier.verify_response(b"", &challenge, pem.as_bytes()).unwrap();
+        let identity = verifier
+            .verify_response(b"", &challenge, pem.as_bytes())
+            .unwrap();
         assert!(identity.fingerprint.starts_with("SHA256:"));
     }
 
@@ -188,11 +195,16 @@ mod tests {
 
         let (attacker, _) = keypair();
         let offered = attacker.public_key().to_openssh().unwrap();
-        assert!(matches!(verifier.is_authorized(&offered), Err(SshError::KeyNotAuthorized)));
+        assert!(matches!(
+            verifier.is_authorized(&offered),
+            Err(SshError::KeyNotAuthorized)
+        ));
 
         // Even with a valid signature, an unauthorized key fails verification.
         let challenge = new_challenge();
-        let sig = attacker.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
+        let sig = attacker
+            .sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge)
+            .unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
         assert!(matches!(
             verifier.verify_response(b"", &challenge, pem.as_bytes()),
@@ -214,7 +226,9 @@ mod tests {
         let real_binding = [0xBBu8; 32]; // R's cert hash, what R verifies against
 
         let signed = channel_bound_message(&attacker_binding, &challenge);
-        let sig = private.sign(SSH_NAMESPACE, HashAlg::Sha512, &signed).unwrap();
+        let sig = private
+            .sign(SSH_NAMESPACE, HashAlg::Sha512, &signed)
+            .unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
 
         // R (real binding) rejects the relayed signature.
@@ -234,7 +248,9 @@ mod tests {
         let verifier = SshVerifier::from_authorized_keys(&authorized_line).unwrap();
 
         let signed_challenge = new_challenge();
-        let sig = private.sign(SSH_NAMESPACE, HashAlg::Sha512, &signed_challenge).unwrap();
+        let sig = private
+            .sign(SSH_NAMESPACE, HashAlg::Sha512, &signed_challenge)
+            .unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
 
         let server_challenge = new_challenge(); // different nonce
@@ -249,7 +265,9 @@ mod tests {
         let (private, authorized_line) = keypair();
         let verifier = SshVerifier::from_authorized_keys(&authorized_line).unwrap();
         let challenge = new_challenge();
-        let sig = private.sign("some-other-namespace", HashAlg::Sha512, &challenge).unwrap();
+        let sig = private
+            .sign("some-other-namespace", HashAlg::Sha512, &challenge)
+            .unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
         assert!(matches!(
             verifier.verify_response(b"", &challenge, pem.as_bytes()),
@@ -261,12 +279,13 @@ mod tests {
     fn multiple_authorized_keys_any_matches() {
         let (p1, line1) = keypair();
         let (_p2, line2) = keypair();
-        let verifier =
-            SshVerifier::from_authorized_keys(&format!("{line1}\n{line2}\n")).unwrap();
+        let verifier = SshVerifier::from_authorized_keys(&format!("{line1}\n{line2}\n")).unwrap();
         let challenge = new_challenge();
         let sig = p1.sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge).unwrap();
         let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
-        assert!(verifier.verify_response(b"", &challenge, pem.as_bytes()).is_ok());
+        assert!(verifier
+            .verify_response(b"", &challenge, pem.as_bytes())
+            .is_ok());
     }
 
     #[test]
@@ -282,7 +301,12 @@ mod tests {
         // A key an admin deliberately restricted must not authenticate with
         // full access. Holdfast can't honor the restriction, so it fails closed.
         let (private, line) = keypair();
-        for opts in ["command=\"/usr/bin/backup\"", "restrict", "from=\"10.0.0.0/8\"", "no-pty"] {
+        for opts in [
+            "command=\"/usr/bin/backup\"",
+            "restrict",
+            "from=\"10.0.0.0/8\"",
+            "no-pty",
+        ] {
             let restricted = format!("{opts} {line}");
             // The only entry is restricted → nothing authorizable remains.
             assert!(
@@ -308,6 +332,9 @@ mod tests {
         let text = format!("command=\"/x\" {restricted_line}\n{plain_line}\n");
         let verifier = SshVerifier::from_authorized_keys(&text).unwrap();
         let offered = plain_priv.public_key().to_openssh().unwrap();
-        assert!(verifier.is_authorized(&offered).is_ok(), "the unrestricted key authenticates");
+        assert!(
+            verifier.is_authorized(&offered).is_ok(),
+            "the unrestricted key authenticates"
+        );
     }
 }

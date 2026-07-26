@@ -119,7 +119,10 @@ mod tests {
         h.protocol_major = 1;
         assert_eq!(
             negotiate_server(&h, SERVER_CAPS, 256 * 1024, 1200, true),
-            Err(NegotiationError::MajorVersion { client: 1, server: 0 })
+            Err(NegotiationError::MajorVersion {
+                client: 1,
+                server: 0
+            })
         );
     }
 

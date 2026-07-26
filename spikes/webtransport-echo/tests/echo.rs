@@ -36,7 +36,11 @@ async fn stream_and_datagram_echo() {
     let mut got = vec![0u8; payload.len()];
     let mut filled = 0;
     while filled < got.len() {
-        let n = recv.read(&mut got[filled..]).await.unwrap().expect("stream open");
+        let n = recv
+            .read(&mut got[filled..])
+            .await
+            .unwrap()
+            .expect("stream open");
         filled += n;
     }
     assert_eq!(&got, payload, "stream echo must return exact bytes");

@@ -31,11 +31,13 @@ fn run_command_and_read_output() {
 fn resize_reaches_the_child() {
     let mut sh = PtyShell::spawn_bash(24, 80).expect("spawn bash in PTY");
     sh.send("stty size\r").unwrap();
-    sh.read_until("24 80", T).expect("initial size visible to child");
+    sh.read_until("24 80", T)
+        .expect("initial size visible to child");
 
     sh.resize(50, 120).unwrap();
     sh.send("stty size\r").unwrap();
-    sh.read_until("50 120", T).expect("resized dimensions visible to child");
+    sh.read_until("50 120", T)
+        .expect("resized dimensions visible to child");
 }
 
 #[test]

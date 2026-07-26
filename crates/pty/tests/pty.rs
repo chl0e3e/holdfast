@@ -23,8 +23,11 @@ fn read_until(rx: &Receiver<Vec<u8>>, needle: &str, timeout: Duration) -> String
     let mut collected = Vec::new();
     loop {
         let now = Instant::now();
-        assert!(now < deadline, "timeout waiting for {needle:?}; got {:?}",
-            String::from_utf8_lossy(&collected));
+        assert!(
+            now < deadline,
+            "timeout waiting for {needle:?}; got {:?}",
+            String::from_utf8_lossy(&collected)
+        );
         match rx.recv_timeout(deadline - now) {
             Ok(chunk) => {
                 collected.extend_from_slice(&chunk);
@@ -57,6 +60,23 @@ fn interactive_io_and_graceful_exit() {
 }
 
 #[test]
+fn bounded_output_queue_applies_backpressure_without_losing_output() {
+    let mut pty = PtyProcess::spawn(&bash(80, 24)).unwrap();
+    let rx = pty.take_output().unwrap();
+
+    // More than twice the 512-KiB reader queue. The producer may block while
+    // the queue is full, but draining must resume it and deliver the tail.
+    pty.write(b"yes x | head -c 1048576; echo BOUNDED-$((20+22))-DONE\r")
+        .unwrap();
+    let output = read_until(&rx, "BOUNDED-42-DONE", T);
+    assert!(output.len() > 512 * 1024, "large output was truncated");
+
+    pty.write(b"exit\r").unwrap();
+    let status = pty.wait().unwrap();
+    assert!(status.success);
+}
+
+#[test]
 fn resize_propagates_to_child() {
     let mut pty = PtyProcess::spawn(&bash(80, 24)).unwrap();
     let rx = pty.take_output().unwrap();
@@ -75,7 +95,10 @@ fn kill_is_clean_and_idempotent() {
     pty.write(b"sleep 300\r").unwrap();
 
     let pid = pty.process_id().expect("pid") as i32;
-    assert!(pty.try_wait().unwrap().is_none(), "still running before kill");
+    assert!(
+        pty.try_wait().unwrap().is_none(),
+        "still running before kill"
+    );
 
     pty.kill().unwrap();
     let status = pty.wait().unwrap();

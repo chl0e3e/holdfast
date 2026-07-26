@@ -100,9 +100,17 @@ mod tests {
 
     #[test]
     fn trailing_bytes_rejected() {
-        let env = Envelope { request_id: 1, server_id: vec![], shell_id: vec![], message: None };
+        let env = Envelope {
+            request_id: 1,
+            server_id: vec![],
+            shell_id: vec![],
+            message: None,
+        };
         let mut msg = encode_message(1, &env, 1024).unwrap();
         msg.push(0);
-        assert!(matches!(decode_message(&msg, 1024), Err(WireError::NotExactlyOneFrame)));
+        assert!(matches!(
+            decode_message(&msg, 1024),
+            Err(WireError::NotExactlyOneFrame)
+        ));
     }
 }

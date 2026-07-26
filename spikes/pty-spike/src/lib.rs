@@ -20,7 +20,12 @@ impl PtyShell {
     pub fn spawn_bash(rows: u16, cols: u16) -> Result<PtyShell> {
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("openpty")?;
 
         let mut cmd = CommandBuilder::new("bash");
@@ -44,7 +49,12 @@ impl PtyShell {
             }
         });
 
-        Ok(PtyShell { master: pair.master, child, writer, output: rx })
+        Ok(PtyShell {
+            master: pair.master,
+            child,
+            writer,
+            output: rx,
+        })
     }
 
     /// Accumulate PTY output until `needle` appears or `timeout` elapses.
@@ -86,7 +96,12 @@ impl PtyShell {
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("resize PTY")
     }
 }

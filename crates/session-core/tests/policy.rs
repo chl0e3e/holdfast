@@ -22,7 +22,10 @@ fn req(user: &str, account: Option<&str>, key: u8) -> OpenShellRequest {
 
 fn manager() -> ShellManager {
     let mut allowed = HashMap::new();
-    allowed.insert("alice".to_string(), vec!["alice".to_string(), "deploy".to_string()]);
+    allowed.insert(
+        "alice".to_string(),
+        vec!["alice".to_string(), "deploy".to_string()],
+    );
     ShellManager::with_policy(
         SessionCoreConfig::default(),
         Arc::new(StaticPolicy::new(allowed)),
@@ -44,7 +47,11 @@ fn default_account_is_the_first_allowed() {
     let mgr = manager();
     let opened = mgr.open_shell(&req("alice", None, 2)).unwrap();
     let info = mgr.shell_info(&opened.shell_id).unwrap();
-    assert_eq!(info.account.as_deref(), Some("alice"), "default = first listed");
+    assert_eq!(
+        info.account.as_deref(),
+        Some("alice"),
+        "default = first listed"
+    );
     mgr.terminate(&opened.shell_id).unwrap();
 }
 

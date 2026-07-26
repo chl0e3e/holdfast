@@ -59,6 +59,90 @@ message DatagramEnvelope {
   }
 }
 
+// The managed-server overlay uses a separate raw-QUIC connection and ALPN.
+// It deliberately does not reuse the client Envelope (spec §16).
+message AgentEnvelope {
+  // Correlates gateway operations with responses; 0 for registration and
+  // unsolicited keepalive.
+  uint64 request_id = 1;
+  // Every post-TLS message is scoped to the certificate-selected server.
+  bytes server_id = 2;
+  // Set on every attachment-stream frame; empty on the control stream.
+  bytes shell_id = 3;
+  oneof message {
+    AgentRegister agent_register = 10;
+    AgentRegistration agent_registration = 11;
+    AgentPing agent_ping = 12;
+    AgentPong agent_pong = 13;
+    Error agent_error = 14;
+    AgentOpenShell agent_open_shell = 15;
+    AgentShellOpened agent_shell_opened = 16;
+    AgentAttachShell agent_attach_shell = 17;
+    AgentShellAttached agent_shell_attached = 18;
+    TerminalInput terminal_input = 19;
+    TerminalOutput terminal_output = 20;
+    TerminalResize terminal_resize = 21;
+    DetachShell detach_shell = 22;
+    RequestHistory request_history = 23;
+    HistoryChunk history_chunk = 24;
+    HistoryEnd history_end = 25;
+    ShellExited shell_exited = 26;
+  }
+}
+
+message AgentRegister {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  bytes server_id = 3;
+  string agent_build = 4;
+  uint32 max_frame_bytes = 5;
+}
+
+message AgentRegistration {
+  bool accepted = 1;
+  bytes server_id = 2;
+  uint32 max_frame_bytes = 3;
+  uint32 keepalive_interval_ms = 4;
+  string rejection_reason = 5;
+}
+
+message AgentPing {
+  uint64 nonce = 1;
+}
+
+message AgentPong {
+  uint64 nonce = 1;
+}
+
+message AgentOpenShell {
+  string user_id = 1;
+  string unix_account = 2; // empty = local policy default
+  string command = 3;      // empty = login shell
+  uint32 initial_cols = 4;
+  uint32 initial_rows = 5;
+  bytes idempotency_key = 6; // gateway-generated, exactly 16 bytes
+  bytes connection_grant = 7; // central issuer; agent verifies independently
+}
+
+message AgentShellOpened {
+  bytes shell_id = 1;
+  bool reused = 2;
+}
+
+message AgentAttachShell {
+  string user_id = 1;
+  bytes connection_grant = 2; // central issuer; agent verifies independently
+  uint32 cols = 3;
+  uint32 rows = 4;
+}
+
+message AgentShellAttached {
+  bytes screen_snapshot = 1;
+  uint64 screen_revision = 2;
+  uint64 oldest_history_line_id = 3;
+  uint64 newest_history_line_id = 4;
+}
+
 enum ClientKind {
   CLIENT_KIND_UNSPECIFIED = 0;
   CLIENT_KIND_BROWSER_WEBTRANSPORT = 1;
@@ -154,7 +238,17 @@ message Authenticate {
     bytes connection_grant = 1;
     SshChallengeRequest ssh_challenge_request = 2;
     SshChallengeResponse ssh_challenge_response = 3;
+    PasswordRequest password_request = 4;
   }
+}
+
+// Opt-in local password login (ADR 0016). Single round trip: on success the
+// AuthenticationResult carries an issued grant like the SSH challenge path.
+// Only ever sent over the encrypted transport; the daemon rejects it unless
+// password auth is explicitly enabled for the named user.
+message PasswordRequest {
+  string username = 1; // bounded: MAX_USERNAME_BYTES
+  string password = 2; // bounded: MAX_PASSWORD_BYTES, never logged
 }
 
 message SshChallengeRequest {

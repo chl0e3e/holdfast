@@ -1,0 +1,28 @@
+# Standalone workspace (excluded from the repo root): building this crate
+# needs a platform webview toolchain — WebView2 on Windows (the primary
+# target), webkit2gtk-4.1 on Linux. Verify with `cargo tauri build` there or
+# in CI; the GUI-free logic lives in hf-client-core and is tested in the
+# main workspace.
+[workspace]
+
+[package]
+name = "hf-desktop"
+description = "Holdfast desktop client: multi-session, multi-server tabbed terminals (Tauri 2 + xterm.js)."
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+hf-client-core = { path = "../../crates/client-core" }
+tauri = { version = "2", features = [] }
+tokio = { version = "1.52", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+lto = "thin"

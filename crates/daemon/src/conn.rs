@@ -18,6 +18,7 @@ use hf_protocol::FRAME_BYTES_DEFAULT;
 use hf_session_core::{AttachmentEvent, OpenShellRequest, ResumeToken, SessionError, ShellState};
 
 use crate::auth::AuthMode;
+use crate::observability::{AuditEvent, AuthMethod, RejectReason, ShellOperation};
 use crate::AppState;
 
 pub(crate) const KEEPALIVE_INTERVAL_MS: u32 = 15_000;
@@ -83,19 +84,31 @@ impl Conn {
     }
 
     pub(crate) fn max_frame_bytes(&self) -> u32 {
-        self.negotiated.as_ref().map(|n| n.max_frame_bytes).unwrap_or(FRAME_BYTES_DEFAULT)
+        self.negotiated
+            .as_ref()
+            .map(|n| n.max_frame_bytes)
+            .unwrap_or(FRAME_BYTES_DEFAULT)
     }
 
     /// Whether this connection's grant scope permits `op` ("open", "attach",
     /// "terminate", "list"). Unrestricted connections permit everything.
     fn permits(&self, op: &str) -> bool {
-        self.op_scope.as_ref().map_or(true, |ops| ops.iter().any(|o| o == op))
+        self.op_scope
+            .as_ref()
+            .map_or(true, |ops| ops.iter().any(|o| o == op))
     }
 
     /// The transport saw a channel/stream close: drop its attachment, if any.
     pub(crate) fn channel_closed(&mut self, channel: u64) {
         if let Some(binding) = self.attachments.remove(&channel) {
-            let _ = self.state.manager.detach(&binding.shell_id, binding.attachment_id);
+            let _ = self
+                .state
+                .manager
+                .detach(&binding.shell_id, binding.attachment_id);
+            self.state.observability.record(AuditEvent::ShellDetached {
+                user: self.user_id.clone(),
+                shell_id: binding.shell_id,
+            });
         }
     }
 
@@ -103,7 +116,14 @@ impl Conn {
     /// shells keep running (spec §11).
     pub(crate) fn detach_all(&mut self) {
         for (_, binding) in self.attachments.drain() {
-            let _ = self.state.manager.detach(&binding.shell_id, binding.attachment_id);
+            let _ = self
+                .state
+                .manager
+                .detach(&binding.shell_id, binding.attachment_id);
+            self.state.observability.record(AuditEvent::ShellDetached {
+                user: self.user_id.clone(),
+                shell_id: binding.shell_id,
+            });
         }
     }
 
@@ -112,7 +132,8 @@ impl Conn {
     }
 
     pub(crate) async fn send_error(&self, channel: u64, code: pb::ErrorCode, text: &str) -> bool {
-        self.send(channel, error_envelope(0, code, text, false)).await
+        self.send(channel, error_envelope(0, code, text, false))
+            .await
     }
 
     /// Authentication (spec §5). Rate-limited by source address. Handles the
@@ -121,8 +142,21 @@ impl Conn {
     async fn handle_authenticate(&mut self, request_id: u64, auth: pb::Authenticate) -> bool {
         let now = Instant::now();
         if !self.state.auth.rate_limiter.check(self.peer_ip, now) {
+            self.state
+                .observability
+                .record(AuditEvent::AuthenticationFailed {
+                    source_ip: self.peer_ip,
+                    reason: RejectReason::RateLimited,
+                });
             return self
-                .send(0, auth_failure(request_id, pb::ErrorCode::ErrLimitExceeded, "too many attempts"))
+                .send(
+                    0,
+                    auth_failure(
+                        request_id,
+                        pb::ErrorCode::ErrLimitExceeded,
+                        "too many attempts",
+                    ),
+                )
                 .await;
         }
 
@@ -131,6 +165,13 @@ impl Conn {
             self.authenticated = true;
             self.user_id = "dev".into();
             self.state.auth.rate_limiter.record_success(self.peer_ip);
+            self.state
+                .observability
+                .record(AuditEvent::AuthenticationSucceeded {
+                    user: self.user_id.clone(),
+                    source_ip: self.peer_ip,
+                    method: AuthMethod::Development,
+                });
             return self.send(0, auth_ok(request_id, "dev", 0)).await;
         }
 
@@ -150,10 +191,17 @@ impl Conn {
                         self.authenticated = true;
                         self.user_id = claims.sub.clone();
                         // Honor the grant's operation scope (empty = all).
-                        self.op_scope =
-                            (!claims.ops.is_empty()).then(|| claims.ops.clone());
+                        self.op_scope = (!claims.ops.is_empty()).then(|| claims.ops.clone());
                         self.state.auth.rate_limiter.record_success(self.peer_ip);
-                        self.send(0, auth_ok(request_id, &claims.sub, claims.exp_ms)).await
+                        self.state
+                            .observability
+                            .record(AuditEvent::AuthenticationSucceeded {
+                                user: claims.sub.clone(),
+                                source_ip: self.peer_ip,
+                                method: AuthMethod::ConnectionGrant,
+                            });
+                        self.send(0, auth_ok(request_id, &claims.sub, claims.exp_ms))
+                            .await
                     }
                     Err(_) => self.fail_auth(request_id, "invalid grant").await,
                 }
@@ -183,7 +231,8 @@ impl Conn {
                     error_message: String::new(),
                     challenge,
                 };
-                self.send(0, respond(request_id, Msg::AuthenticationResult(result))).await
+                self.send(0, respond(request_id, Msg::AuthenticationResult(result)))
+                    .await
             }
 
             // Step 4–5: prove possession of the key.
@@ -194,39 +243,52 @@ impl Conn {
                 if resp.challenge != expected {
                     return self.fail_auth(request_id, "challenge mismatch").await;
                 }
-                let verified = self
-                    .state
-                    .auth
-                    .ssh_verifier(&username)
-                    .and_then(|v| {
-                        v.verify_response(&self.channel_binding, &expected, &resp.signature).ok()
-                    });
+                let verified = self.state.auth.ssh_verifier(&username).and_then(|v| {
+                    v.verify_response(&self.channel_binding, &expected, &resp.signature)
+                        .ok()
+                });
                 match verified {
                     Some(identity) => {
                         tracing::info!(user = %username, key = %identity.fingerprint, "authenticated");
-                        self.authenticated = true;
-                        self.user_id = username.clone();
-                        self.state.auth.rate_limiter.record_success(self.peer_ip);
-                        // Issue a grant for this session (audience-bound).
-                        let claims = hf_auth::GrantClaims {
-                            sub: username.clone(),
-                            aud: self.state.auth.audience.clone(),
-                            servers: vec![],
-                            ops: vec![],
-                            iat_ms: now_ms(),
-                            exp_ms: now_ms().saturating_add(12 * 3600 * 1000),
-                            jti: hex16(&rand::random::<[u8; 16]>()),
-                        };
-                        let grant = self.state.auth.grant_signer.issue(&claims);
-                        let mut result = auth_ok(request_id, &username, claims.exp_ms);
-                        if let Some(Msg::AuthenticationResult(r)) = &mut result.message {
-                            // Reuse the challenge field to hand back the grant
-                            // (opaque bytes; the client stores it for resume).
-                            r.challenge = grant.as_bytes().to_vec();
-                        }
-                        self.send(0, result).await
+                        self.succeed_issuing_grant(request_id, username, AuthMethod::SshKey)
+                            .await
                     }
                     None => self.fail_auth(request_id, "authentication failed").await,
+                }
+            }
+
+            // Opt-in local password login (ADR 0016): single round trip, same
+            // issued grant as the SSH challenge path.
+            Some(pb::authenticate::Method::PasswordRequest(req)) => {
+                // Bounds and the allowlist run before the verifier so no
+                // backend (PAM) work is spent on oversized or foreign input;
+                // all failures collapse into the same reply.
+                let verifier = self
+                    .state
+                    .auth
+                    .password_verifier(&req.username)
+                    .filter(|_| {
+                        !req.username.is_empty()
+                            && req.username.len() <= hf_auth::MAX_USERNAME_BYTES
+                            && !req.password.is_empty()
+                            && req.password.len() <= hf_auth::MAX_PASSWORD_BYTES
+                    });
+                let accepted = match verifier {
+                    Some(verifier) => {
+                        let username = req.username.clone();
+                        let password = req.password;
+                        tokio::task::spawn_blocking(move || verifier.verify(&username, &password))
+                            .await
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                if accepted {
+                    tracing::info!(user = %req.username, "authenticated by password");
+                    self.succeed_issuing_grant(request_id, req.username, AuthMethod::Password)
+                        .await
+                } else {
+                    self.fail_auth(request_id, "authentication failed").await
                 }
             }
 
@@ -234,10 +296,60 @@ impl Conn {
         }
     }
 
+    /// Shared success tail for the credential-proving methods (SSH challenge,
+    /// password): mark authenticated, audit, and answer with a session grant.
+    async fn succeed_issuing_grant(
+        &mut self,
+        request_id: u64,
+        username: String,
+        method: AuthMethod,
+    ) -> bool {
+        self.authenticated = true;
+        self.user_id = username.clone();
+        self.state.auth.rate_limiter.record_success(self.peer_ip);
+        self.state
+            .observability
+            .record(AuditEvent::AuthenticationSucceeded {
+                user: username.clone(),
+                source_ip: self.peer_ip,
+                method,
+            });
+        // Issue a grant for this session (audience-bound).
+        let claims = hf_auth::GrantClaims {
+            sub: username.clone(),
+            aud: self.state.auth.audience.clone(),
+            servers: vec![],
+            ops: vec![],
+            iat_ms: now_ms(),
+            exp_ms: now_ms().saturating_add(12 * 3600 * 1000),
+            jti: hex16(&rand::random::<[u8; 16]>()),
+        };
+        let grant = self.state.auth.grant_signer.issue(&claims);
+        let mut result = auth_ok(request_id, &username, claims.exp_ms);
+        if let Some(Msg::AuthenticationResult(r)) = &mut result.message {
+            // Reuse the challenge field to hand back the grant
+            // (opaque bytes; the client stores it for resume).
+            r.challenge = grant.as_bytes().to_vec();
+        }
+        self.send(0, result).await
+    }
+
     async fn fail_auth(&self, request_id: u64, message: &str) -> bool {
-        self.state.auth.rate_limiter.record_failure(self.peer_ip, Instant::now());
-        self.send(0, auth_failure(request_id, pb::ErrorCode::ErrUnauthenticated, message))
-            .await
+        self.state
+            .auth
+            .rate_limiter
+            .record_failure(self.peer_ip, Instant::now());
+        self.state
+            .observability
+            .record(AuditEvent::AuthenticationFailed {
+                source_ip: self.peer_ip,
+                reason: RejectReason::InvalidRequest,
+            });
+        self.send(
+            0,
+            auth_failure(request_id, pb::ErrorCode::ErrUnauthenticated, message),
+        )
+        .await
     }
 
     /// Returns false when the connection must close.
@@ -245,7 +357,15 @@ impl Conn {
         let request_id = envelope.request_id;
         let Some(message) = envelope.message.clone() else {
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "empty envelope", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnknownMessage,
+                        "empty envelope",
+                        false,
+                    ),
+                )
                 .await
                 && false;
         };
@@ -254,25 +374,52 @@ impl Conn {
         if !self.authenticated
             && !matches!(
                 message,
-                Msg::ClientHello(_) | Msg::Authenticate(_) | Msg::Ping(_) | Msg::Pong(_) | Msg::Close(_)
+                Msg::ClientHello(_)
+                    | Msg::Authenticate(_)
+                    | Msg::Ping(_)
+                    | Msg::Pong(_)
+                    | Msg::Close(_)
             )
         {
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrUnauthenticated, "authenticate first", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnauthenticated,
+                        "authenticate first",
+                        false,
+                    ),
+                )
                 .await;
         }
 
         match (channel, message) {
             (0, Msg::ClientHello(hello)) => {
-                match negotiate_server(&hello, &[], FRAME_BYTES_DEFAULT, 1200, self.transport_datagrams) {
+                match negotiate_server(
+                    &hello,
+                    &[],
+                    FRAME_BYTES_DEFAULT,
+                    1200,
+                    self.transport_datagrams,
+                ) {
                     Ok(negotiated) => {
                         let reply = server_hello(&negotiated, KEEPALIVE_INTERVAL_MS);
                         self.negotiated = Some(negotiated);
-                        self.send(0, respond(request_id, Msg::ServerHello(reply))).await
+                        self.send(0, respond(request_id, Msg::ServerHello(reply)))
+                            .await
                     }
                     Err(e) => {
                         let _ = self
-                            .send(0, error_envelope(request_id, pb::ErrorCode::ErrVersion, &e.to_string(), false))
+                            .send(
+                                0,
+                                error_envelope(
+                                    request_id,
+                                    pb::ErrorCode::ErrVersion,
+                                    &e.to_string(),
+                                    false,
+                                ),
+                            )
                             .await;
                         false
                     }
@@ -281,13 +428,25 @@ impl Conn {
             (0, Msg::Authenticate(auth)) => {
                 if self.negotiated.is_none() {
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "hello first", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrUnknownMessage,
+                                "hello first",
+                                false,
+                            ),
+                        )
                         .await;
                 }
                 self.handle_authenticate(request_id, auth).await
             }
             (_, Msg::Ping(ping)) => {
-                self.send(channel, respond(request_id, Msg::Pong(pb::Pong { nonce: ping.nonce }))).await
+                self.send(
+                    channel,
+                    respond(request_id, Msg::Pong(pb::Pong { nonce: ping.nonce })),
+                )
+                .await
             }
             (0, Msg::Close(_)) => false,
             (0, Msg::ListServers(_)) => {
@@ -298,12 +457,21 @@ impl Conn {
                         healthy: true,
                     }],
                 };
-                self.send(0, respond(request_id, Msg::ServerList(list))).await
+                self.send(0, respond(request_id, Msg::ServerList(list)))
+                    .await
             }
             (0, Msg::ListShells(_)) => {
                 if !self.permits("list") {
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit list", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrForbidden,
+                                "grant does not permit list",
+                                false,
+                            ),
+                        )
                         .await;
                 }
                 let shells = self
@@ -325,21 +493,51 @@ impl Conn {
                         last_attached_at_ms: info.last_attached_at_ms,
                     })
                     .collect();
-                self.send(0, respond(request_id, Msg::ShellList(pb::ShellList { shells }))).await
+                self.send(
+                    0,
+                    respond(request_id, Msg::ShellList(pb::ShellList { shells })),
+                )
+                .await
             }
             (0, Msg::OpenShell(open)) => {
                 if !self.permits("open") {
+                    self.state
+                        .observability
+                        .record(AuditEvent::ShellOperationRejected {
+                            user: self.user_id.clone(),
+                            shell_id: None,
+                            operation: ShellOperation::Open,
+                            reason: RejectReason::Forbidden,
+                        });
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit open", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrForbidden,
+                                "grant does not permit open",
+                                false,
+                            ),
+                        )
                         .await;
                 }
                 let Ok(idempotency_key) = <[u8; 16]>::try_from(open.idempotency_key.as_slice())
                 else {
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "idempotency_key must be 16 bytes", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrUnknownMessage,
+                                "idempotency_key must be 16 bytes",
+                                false,
+                            ),
+                        )
                         .await;
                 };
                 let manager_state = Arc::clone(&self.state);
+                let audit_account =
+                    (!open.unix_account.is_empty()).then(|| open.unix_account.clone());
                 let req = OpenShellRequest {
                     user: self.user_id.clone(),
                     requested_account: (!open.unix_account.is_empty())
@@ -356,6 +554,12 @@ impl Conn {
                         .unwrap_or_else(|e| Err(SessionError::Internal(e.to_string())));
                 match result {
                     Ok(opened) => {
+                        self.state.observability.record(AuditEvent::ShellOpened {
+                            user: self.user_id.clone(),
+                            shell_id: opened.shell_id,
+                            account: audit_account,
+                            reused: opened.reused,
+                        });
                         let mut env = respond(
                             request_id,
                             Msg::ShellOpened(pb::ShellOpened {
@@ -367,18 +571,52 @@ impl Conn {
                         env.shell_id = opened.shell_id.to_wire();
                         self.send(0, env).await
                     }
-                    Err(e) => self.send(0, session_error(request_id, &e)).await,
+                    Err(e) => {
+                        self.state
+                            .observability
+                            .record(AuditEvent::ShellOperationRejected {
+                                user: self.user_id.clone(),
+                                shell_id: None,
+                                operation: ShellOperation::Open,
+                                reason: reject_reason(&e),
+                            });
+                        self.send(0, session_error(request_id, &e)).await
+                    }
                 }
             }
             (0, Msg::TerminateShell(_)) => {
                 if !self.permits("terminate") {
+                    self.state
+                        .observability
+                        .record(AuditEvent::ShellOperationRejected {
+                            user: self.user_id.clone(),
+                            shell_id: None,
+                            operation: ShellOperation::Terminate,
+                            reason: RejectReason::Forbidden,
+                        });
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit terminate", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrForbidden,
+                                "grant does not permit terminate",
+                                false,
+                            ),
+                        )
                         .await;
                 }
                 let Ok(shell_id) = ShellId::from_wire(&envelope.shell_id) else {
                     return self
-                        .send(0, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "bad shell id", false))
+                        .send(
+                            0,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrNotFound,
+                                "bad shell id",
+                                false,
+                            ),
+                        )
                         .await;
                 };
                 // Per-user isolation (threat model T12): only the shell's owner
@@ -389,9 +627,25 @@ impl Conn {
                 match self.state.manager.shell_info(&shell_id) {
                     Ok(info) if info.owner == self.user_id => {}
                     _ => {
+                        self.state
+                            .observability
+                            .record(AuditEvent::ShellOperationRejected {
+                                user: self.user_id.clone(),
+                                shell_id: Some(shell_id),
+                                operation: ShellOperation::Terminate,
+                                reason: RejectReason::NotFound,
+                            });
                         return self
-                            .send(0, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "no such shell", false))
-                            .await
+                            .send(
+                                0,
+                                error_envelope(
+                                    request_id,
+                                    pb::ErrorCode::ErrNotFound,
+                                    "no such shell",
+                                    false,
+                                ),
+                            )
+                            .await;
                     }
                 }
                 let manager_state = Arc::clone(&self.state);
@@ -401,6 +655,13 @@ impl Conn {
                         .unwrap_or_else(|e| Err(SessionError::Internal(e.to_string())));
                 match result {
                     Ok(exit) => {
+                        self.state
+                            .observability
+                            .record(AuditEvent::ShellTerminated {
+                                user: self.user_id.clone(),
+                                shell_id,
+                                exit_code: exit.exit_code,
+                            });
                         let mut env = respond(
                             request_id,
                             Msg::ShellExited(pb::ShellExited {
@@ -412,7 +673,17 @@ impl Conn {
                         env.shell_id = envelope.shell_id.clone();
                         self.send(0, env).await
                     }
-                    Err(e) => self.send(0, session_error(request_id, &e)).await,
+                    Err(e) => {
+                        self.state
+                            .observability
+                            .record(AuditEvent::ShellOperationRejected {
+                                user: self.user_id.clone(),
+                                shell_id: Some(shell_id),
+                                operation: ShellOperation::Terminate,
+                                reason: reject_reason(&e),
+                            });
+                        self.send(0, session_error(request_id, &e)).await
+                    }
                 }
             }
             // ---- Attachment channels (client-opened, odd IDs) ----
@@ -428,17 +699,26 @@ impl Conn {
             (ch, Msg::TerminalResize(resize)) if ch != 0 => {
                 if let Some(b) = self.attachments.get(&ch) {
                     // Newest size wins; errors on exited shells are benign.
-                    let _ = self
-                        .state
-                        .manager
-                        .resize(&b.shell_id, resize.cols as u16, resize.rows as u16);
+                    let _ = self.state.manager.resize(
+                        &b.shell_id,
+                        resize.cols as u16,
+                        resize.rows as u16,
+                    );
                 }
                 true
             }
             (ch, Msg::RequestHistory(req)) if ch != 0 => {
                 let Some(b) = self.attachments.get(&ch) else {
                     return self
-                        .send(ch, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "no attachment on channel", false))
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrNotFound,
+                                "no attachment on channel",
+                                false,
+                            ),
+                        )
                         .await;
                 };
                 match self.state.manager.history(
@@ -470,9 +750,12 @@ impl Conn {
                             .unwrap_or(0);
                         self.send(
                             ch,
-                            respond(request_id, Msg::HistoryEnd(pb::HistoryEnd {
-                                oldest_available_line_id: oldest,
-                            })),
+                            respond(
+                                request_id,
+                                Msg::HistoryEnd(pb::HistoryEnd {
+                                    oldest_available_line_id: oldest,
+                                }),
+                            ),
                         )
                         .await
                     }
@@ -482,12 +765,24 @@ impl Conn {
             (ch, Msg::DetachShell(_)) if ch != 0 => {
                 if let Some(b) = self.attachments.remove(&ch) {
                     let _ = self.state.manager.detach(&b.shell_id, b.attachment_id);
+                    self.state.observability.record(AuditEvent::ShellDetached {
+                        user: self.user_id.clone(),
+                        shell_id: b.shell_id,
+                    });
                 }
                 true
             }
             (_, _) => {
-                self.send(channel, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "unexpected message for this channel", false))
-                    .await
+                self.send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnknownMessage,
+                        "unexpected message for this channel",
+                        false,
+                    ),
+                )
+                .await
             }
         }
     }
@@ -495,30 +790,85 @@ impl Conn {
     async fn attach(&mut self, channel: u64, envelope: &Envelope, attach: pb::AttachShell) -> bool {
         let request_id = envelope.request_id;
         if !self.permits("attach") {
+            self.state
+                .observability
+                .record(AuditEvent::ShellOperationRejected {
+                    user: self.user_id.clone(),
+                    shell_id: None,
+                    operation: ShellOperation::Attach,
+                    reason: RejectReason::Forbidden,
+                });
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrForbidden, "grant does not permit attach", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrForbidden,
+                        "grant does not permit attach",
+                        false,
+                    ),
+                )
                 .await;
         }
         if self.attachments.contains_key(&channel) {
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrUnknownMessage, "channel already attached", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnknownMessage,
+                        "channel already attached",
+                        false,
+                    ),
+                )
                 .await;
         }
         let Ok(shell_id) = ShellId::from_wire(&envelope.shell_id) else {
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrNotFound, "bad shell id", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrNotFound,
+                        "bad shell id",
+                        false,
+                    ),
+                )
                 .await;
         };
         let Some(token) = ResumeToken::from_wire(&attach.resume_token) else {
             return self
-                .send(channel, error_envelope(request_id, pb::ErrorCode::ErrTokenExpired, "malformed resume token", false))
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrTokenExpired,
+                        "malformed resume token",
+                        false,
+                    ),
+                )
                 .await;
         };
 
-        match self.state.manager.attach(&shell_id, &token, attach.cols as u16, attach.rows as u16) {
+        match self.state.manager.attach(
+            &self.user_id,
+            &shell_id,
+            &token,
+            attach.cols as u16,
+            attach.rows as u16,
+        ) {
             Ok(attachment) => {
-                self.attachments
-                    .insert(channel, Binding { shell_id, attachment_id: attachment.attachment_id });
+                self.state.observability.record(AuditEvent::ShellAttached {
+                    user: self.user_id.clone(),
+                    shell_id,
+                });
+                self.attachments.insert(
+                    channel,
+                    Binding {
+                        shell_id,
+                        attachment_id: attachment.attachment_id,
+                    },
+                );
 
                 let mut reply = respond(
                     request_id,
@@ -572,13 +922,40 @@ impl Conn {
                     .expect("spawn forwarder");
                 true
             }
-            Err(e) => self.send(channel, session_error(request_id, &e)).await,
+            Err(e) => {
+                self.state
+                    .observability
+                    .record(AuditEvent::ShellOperationRejected {
+                        user: self.user_id.clone(),
+                        shell_id: Some(shell_id),
+                        operation: ShellOperation::Attach,
+                        reason: reject_reason(&e),
+                    });
+                self.send(channel, session_error(request_id, &e)).await
+            }
         }
     }
 }
 
+fn reject_reason(error: &SessionError) -> RejectReason {
+    match error {
+        SessionError::ShellNotFound => RejectReason::NotFound,
+        SessionError::NotRunning => RejectReason::NotRunning,
+        SessionError::LimitExceeded(_) => RejectReason::LimitExceeded,
+        SessionError::Forbidden => RejectReason::Forbidden,
+        SessionError::InvalidToken => RejectReason::InvalidToken,
+        SessionError::TokenReplayed => RejectReason::TokenReplayed,
+        SessionError::Pty(_) | SessionError::Internal(_) => RejectReason::Internal,
+    }
+}
+
 fn respond(request_id: u64, message: Msg) -> Envelope {
-    Envelope { request_id, server_id: vec![], shell_id: vec![], message: Some(message) }
+    Envelope {
+        request_id,
+        server_id: vec![],
+        shell_id: vec![],
+        message: Some(message),
+    }
 }
 
 fn auth_ok(request_id: u64, user_id: &str, expires_at_ms: i64) -> Envelope {
@@ -623,7 +1000,11 @@ fn hex16(bytes: &[u8; 16]) -> String {
 fn error_envelope(request_id: u64, code: pb::ErrorCode, text: &str, retryable: bool) -> Envelope {
     respond(
         request_id,
-        Msg::Error(pb::Error { code: code as i32, human_message: text.into(), retryable }),
+        Msg::Error(pb::Error {
+            code: code as i32,
+            human_message: text.into(),
+            retryable,
+        }),
     )
 }
 
@@ -634,6 +1015,10 @@ fn session_error(request_id: u64, e: &SessionError) -> Envelope {
         SessionError::LimitExceeded(_) => (pb::ErrorCode::ErrLimitExceeded, true),
         SessionError::Forbidden => (pb::ErrorCode::ErrForbidden, false),
         SessionError::InvalidToken => (pb::ErrorCode::ErrTokenExpired, false),
+        // Distinct from expiry: a superseded-but-once-valid token is a theft
+        // signal (spec §12) and must reach the client as code 11 so it can
+        // tell "recover via idempotency key" from "token was garbage".
+        SessionError::TokenReplayed => (pb::ErrorCode::ErrTokenReplayed, false),
         SessionError::Pty(_) | SessionError::Internal(_) => (pb::ErrorCode::ErrInternal, true),
     };
     error_envelope(request_id, code, &e.to_string(), retryable)

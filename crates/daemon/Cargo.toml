@@ -14,11 +14,24 @@ path = "src/main.rs"
 name = "hf_daemon"
 path = "src/lib.rs"
 
+[features]
+default = []
+agent-mode = ["dep:hf-agent", "dep:rustls-pemfile"]
+
 [dependencies]
 hf-protocol = { path = "../protocol" }
 hf-session-core = { path = "../session-core" }
+hf-agent = { path = "../agent", optional = true }
 axum.workspace = true
-wtransport.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+h3-webtransport.workspace = true
+http.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+bytes.workspace = true
+sha2.workspace = true
+time.workspace = true
 hf-auth = { path = "../auth" }
 tower-http.workspace = true
 tokio.workspace = true
@@ -29,7 +42,23 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rustls-pki-types.workspace = true
+zeroize.workspace = true
+rustls.workspace = true
+rustls-pemfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+wtransport.workspace = true
 tokio-tungstenite.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+quinn.workspace = true
+http.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+hf-gateway = { path = "../gateway" }
+rcgen.workspace = true
 ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }
+base64.workspace = true

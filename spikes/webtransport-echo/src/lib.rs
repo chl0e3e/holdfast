@@ -36,7 +36,11 @@ impl EchoServer {
             .build();
 
         let endpoint = Endpoint::server(config)?;
-        Ok(EchoServer { endpoint, cert_hash, cert_hash_js })
+        Ok(EchoServer {
+            endpoint,
+            cert_hash,
+            cert_hash_js,
+        })
     }
 
     /// Accept sessions forever, echoing on every bidi stream and datagram.
@@ -54,7 +58,11 @@ impl EchoServer {
 
 async fn handle_session(incoming: IncomingSession) -> Result<()> {
     let request = incoming.await?;
-    tracing::info!(authority = request.authority(), path = request.path(), "session request");
+    tracing::info!(
+        authority = request.authority(),
+        path = request.path(),
+        "session request"
+    );
     let connection = request.accept().await?;
 
     loop {

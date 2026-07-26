@@ -15,9 +15,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 const T: Duration = Duration::from_secs(10);
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Client {
     ws: WsStream,
@@ -29,7 +28,10 @@ impl Client {
         let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/terminal/ws"))
             .await
             .expect("ws connect");
-        Client { ws, next_request: 1 }
+        Client {
+            ws,
+            next_request: 1,
+        }
     }
 
     async fn send(&mut self, channel: u64, mut envelope: Envelope) -> u64 {
@@ -37,7 +39,10 @@ impl Client {
         self.next_request += 1;
         envelope.request_id = request_id;
         let bytes = wire::encode_message(channel, &envelope, FRAME_BYTES_DEFAULT).unwrap();
-        self.ws.send(WsMessage::Binary(bytes.into())).await.expect("ws send");
+        self.ws
+            .send(WsMessage::Binary(bytes.into()))
+            .await
+            .expect("ws send");
         request_id
     }
 
@@ -61,7 +66,10 @@ impl Client {
     {
         let deadline = tokio::time::Instant::now() + T;
         loop {
-            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for message");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for message"
+            );
             let (ch, env) = self.recv().await;
             if let Some(r) = pred(ch, &env) {
                 return r;
@@ -118,9 +126,7 @@ impl Client {
         )
         .await;
         self.recv_until(|ch, env| match (ch, &env.message) {
-            (0, Some(Msg::ShellOpened(o))) => {
-                Some((env.shell_id.clone(), o.resume_token.clone()))
-            }
+            (0, Some(Msg::ShellOpened(o))) => Some((env.shell_id.clone(), o.resume_token.clone())),
             _ => None,
         })
         .await
@@ -155,8 +161,13 @@ impl Client {
     }
 
     async fn input(&mut self, channel: u64, data: &[u8]) {
-        self.send(channel, plain(Msg::TerminalInput(pb::TerminalInput { data: data.to_vec() })))
-            .await;
+        self.send(
+            channel,
+            plain(Msg::TerminalInput(pb::TerminalInput {
+                data: data.to_vec(),
+            })),
+        )
+        .await;
     }
 
     async fn wait_output(&mut self, channel: u64, needle: &str) {
@@ -164,7 +175,9 @@ impl Client {
         self.recv_until(|ch, env| match (ch, &env.message) {
             (c, Some(Msg::TerminalOutput(out))) if c == channel => {
                 collected.extend_from_slice(&out.data);
-                String::from_utf8_lossy(&collected).contains(needle).then_some(())
+                String::from_utf8_lossy(&collected)
+                    .contains(needle)
+                    .then_some(())
             }
             _ => None,
         })
@@ -173,12 +186,18 @@ impl Client {
 }
 
 fn plain(message: Msg) -> Envelope {
-    Envelope { request_id: 0, server_id: vec![], shell_id: vec![], message: Some(message) }
+    Envelope {
+        request_id: 0,
+        server_id: vec![],
+        shell_id: vec![],
+        message: Some(message),
+    }
 }
 
 #[tokio::test]
 async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
     let daemon = Daemon::start(DaemonConfig {
+        enable_websocket: true,
         bind: "127.0.0.1:0".parse().unwrap(),
         ..Default::default()
     })
@@ -199,7 +218,8 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
     c1.input(1, b"echo marker-shell-A\r").await;
     c1.wait_output(1, "marker-shell-A").await;
     // Shell B: enough output to scroll well past the 6-row screen.
-    c1.input(3, b"for i in $(seq 1 40); do echo scroll-B-$i; done\r").await;
+    c1.input(3, b"for i in $(seq 1 40); do echo scroll-B-$i; done\r")
+        .await;
     c1.wait_output(3, "scroll-B-40").await;
 
     // --- Browser reload: drop the whole connection without detaching. ---
@@ -231,16 +251,22 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
 
     let (snapshot_b, _token_b3, newest_b) = c2.attach(3, &shell_b, &token_b2).await;
     let visible_b = String::from_utf8_lossy(&snapshot_b);
-    assert!(visible_b.contains("scroll-B-40"), "shell B snapshot shows latest output");
+    assert!(
+        visible_b.contains("scroll-B-40"),
+        "shell B snapshot shows latest output"
+    );
     assert!(newest_b > 0, "shell B has retained scrollback");
 
     // Scrollback that scrolled off the screen is retrievable via history.
     let req = c2
-        .send(3, plain(Msg::RequestHistory(pb::RequestHistory {
-            before_line_id: 0,
-            maximum_lines: 1000,
-            maximum_bytes: 1 << 20,
-        })))
+        .send(
+            3,
+            plain(Msg::RequestHistory(pb::RequestHistory {
+                before_line_id: 0,
+                maximum_lines: 1000,
+                maximum_bytes: 1 << 20,
+            })),
+        )
         .await;
     let lines = c2
         .recv_until(|ch, env| match (ch, &env.message) {
@@ -251,8 +277,10 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
         })
         .await;
     let joined = lines.join("\n");
-    assert!(joined.contains("scroll-B-1") && joined.contains("scroll-B-30"),
-        "history must contain scrolled-off lines: {joined}");
+    assert!(
+        joined.contains("scroll-B-1") && joined.contains("scroll-B-30"),
+        "history must contain scrolled-off lines: {joined}"
+    );
     c2.recv_until(|ch, env| {
         matches!((ch, &env.message), (3, Some(Msg::HistoryEnd(_)))).then_some(())
     })
@@ -263,7 +291,8 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
     c2.wait_output(1, "alive-after-reload").await;
 
     // --- Detach vs terminate are distinct. ---
-    c2.send(1, plain(Msg::DetachShell(pb::DetachShell {}))).await;
+    c2.send(1, plain(Msg::DetachShell(pb::DetachShell {})))
+        .await;
     let mut env = plain(Msg::TerminateShell(pb::TerminateShell {}));
     env.shell_id = shell_b.clone();
     c2.send(0, env).await;
@@ -286,9 +315,17 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
         .await;
     for (id, state) in by_shell {
         if id == shell_a {
-            assert_eq!(state, pb::ShellState::Running as i32, "detached shell keeps running");
+            assert_eq!(
+                state,
+                pb::ShellState::Running as i32,
+                "detached shell keeps running"
+            );
         } else {
-            assert_eq!(state, pb::ShellState::Exited as i32, "terminated shell exits");
+            assert_eq!(
+                state,
+                pb::ShellState::Exited as i32,
+                "terminated shell exits"
+            );
         }
     }
 
@@ -298,6 +335,7 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
 #[tokio::test]
 async fn stale_resume_token_is_rejected() {
     let daemon = Daemon::start(DaemonConfig {
+        enable_websocket: true,
         bind: "127.0.0.1:0".parse().unwrap(),
         ..Default::default()
     })
@@ -309,7 +347,8 @@ async fn stale_resume_token_is_rejected() {
     let (shell, token) = c.open_shell(9).await;
     let (_, _rotated, _) = c.attach(1, &shell, &token).await;
 
-    // The original token was rotated away; replaying it must fail.
+    // The original token was rotated away; replaying it must fail with the
+    // distinct possible-theft code (spec §12), not generic expiry.
     let mut env = plain(Msg::AttachShell(pb::AttachShell {
         resume_token: token,
         cols: 40,
@@ -325,13 +364,14 @@ async fn stale_resume_token_is_rejected() {
             _ => None,
         })
         .await;
-    assert_eq!(code, pb::ErrorCode::ErrTokenExpired as i32);
+    assert_eq!(code, pb::ErrorCode::ErrTokenReplayed as i32);
     daemon.abort();
 }
 
 #[tokio::test]
 async fn requests_before_auth_are_rejected() {
     let daemon = Daemon::start(DaemonConfig {
+        enable_websocket: true,
         bind: "127.0.0.1:0".parse().unwrap(),
         ..Default::default()
     })
@@ -353,6 +393,7 @@ async fn requests_before_auth_are_rejected() {
 #[tokio::test]
 async fn dev_auth_refuses_non_loopback_bind() {
     let result = Daemon::start(DaemonConfig {
+        enable_websocket: true,
         bind: "0.0.0.0:0".parse().unwrap(),
         ..Default::default()
     })

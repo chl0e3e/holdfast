@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
+# The desktop app is its own workspace: building it needs platform GUI
+# toolchains (WebView2 on Windows, webkit2gtk on Linux) that must not become
+# a prerequisite for `cargo test --workspace` on the core repo.
+exclude = ["desktop/src-tauri"]
 members = [
     "crates/protocol",
     "crates/daemon",
@@ -13,6 +17,7 @@ members = [
     "crates/auth",
     "crates/agent",
     "crates/native-client",
+    "crates/client-core",
     "crates/ssh-adapter",
     "spikes/webtransport-echo",
     "spikes/pty-spike",
@@ -29,7 +34,12 @@ rust-version = "1.85"
 [workspace.dependencies]
 tokio = { version = "1.52", features = ["full"] }
 wtransport = { version = "0.7", features = ["quinn"] }
-quinn = "0.11"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+h3 = "0.0.8"
+h3-quinn = { version = "0.0.10", features = ["datagram"] }
+h3-webtransport = "0.1.2"
+http = "1"
+time = "0.3"
 prost = "0.14"
 prost-build = "0.14"
 protox = "0.9"
@@ -40,8 +50,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 portable-pty = "0.9"
 nix = { version = "0.31", features = ["process", "signal", "term"] }
-rustls = "0.23"
-rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+rcgen = "0.14"
 avt = "0.18"
 rand = "0.9"
 sha2 = "0.10"
@@ -52,9 +64,13 @@ tokio-tungstenite = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+dirs = "6"
 libc = "0.2"
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+russh = { version = "0.62.2", default-features = false, features = ["ring", "rsa"] }
+rand-10 = { package = "rand", version = "0.10" }
+zeroize = "1"
 
 # Crate dependency direction (enforced by review until tooling exists):
 #   protocol, terminal-model, pty        -> no HTTP/QUIC imports

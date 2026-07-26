@@ -1,5 +1,5 @@
-//! Privilege-drop launch construction (threat model T12, the *mechanism* half —
-//! ADR 0007).
+//! Resource-limited and privilege-dropped launch construction (threat models
+//! T6/T12; ADRs 0009 and 0007).
 //!
 //! Authorization (which account a user may request) lives in [`crate::policy`].
 //! Once an account is resolved, this module builds the argv that actually
@@ -8,13 +8,14 @@
 //! supplementary groups, sets the uid, and resets the environment — the full,
 //! well-audited drop sequence — with no PAM and no password.
 //!
-//! The drop is only attempted when [`SessionCoreConfig::privilege_drop`] is
-//! enabled *and* the resolved account differs from the daemon's own user. It is
-//! fail-closed in two layers, so the shell is never silently run under the
-//! wrong (more-privileged) account:
+//! Every shell first receives hard process/file/core limits through
+//! `/usr/bin/prlimit`. The uid/gid drop is only attempted when
+//! [`SessionCoreConfig::privilege_drop`] is enabled *and* the resolved account
+//! differs from the daemon's own user. It is fail-closed in two layers, so the
+//! shell is never silently run under the wrong (more-privileged) account:
 //!
-//! - **At build time** (here): a missing account or absent `setpriv` binary is
-//!   an error that aborts the open before any process is spawned.
+//! - **At build time** (here): invalid limits, a missing account, or an absent
+//!   `prlimit`/`setpriv` binary is an error before any process is spawned.
 //! - **At exec time** (`setpriv` itself): if the daemon lacks the privilege to
 //!   switch, `setpriv` performs the uid/gid change *before* exec'ing the shell
 //!   and aborts with a non-zero status when it fails — it never execs the shell
@@ -23,10 +24,12 @@
 //!
 //! [`SessionCoreConfig::privilege_drop`]: crate::SessionCoreConfig::privilege_drop
 
-use crate::SessionError;
+use crate::{SessionError, ShellResourceLimits};
 
 /// `setpriv` path. Absolute so a hostile `PATH` cannot substitute it.
 const SETPRIV: &str = "/usr/bin/setpriv";
+/// `prlimit` path (util-linux). Absolute for the same reason as `setpriv`.
+const PRLIMIT: &str = "/usr/bin/prlimit";
 /// Fallback shell when the client did not specify a command and we are wrapping
 /// (we cannot pass `None`/`$SHELL` through `setpriv`; `$SHELL` would be the
 /// daemon user's shell anyway, not the target account's).
@@ -81,7 +84,31 @@ fn setpriv_wrap(ids: AccountIds, program: &str, args: &[String]) -> Launch {
         program.to_string(),
     ];
     wrapped.extend(args.iter().cloned());
-    Launch { program: Some(SETPRIV.to_string()), args: wrapped }
+    Launch {
+        program: Some(SETPRIV.to_string()),
+        args: wrapped,
+    }
+}
+
+/// Apply hard inherited limits to a concrete launch. `prlimit` runs before a
+/// possible `setpriv`, so the limits survive the uid/gid switch and cannot be
+/// raised by the shell or its descendants.
+fn prlimit_wrap(limits: ShellResourceLimits, launch: Launch) -> Launch {
+    let program = launch
+        .program
+        .expect("resource limiting requires a concrete program");
+    let mut args = vec![
+        format!("--nproc={0}:{0}", limits.max_processes),
+        format!("--nofile={0}:{0}", limits.max_open_files),
+        format!("--core={0}:{0}", limits.max_core_bytes),
+        "--".to_string(),
+        program,
+    ];
+    args.extend(launch.args);
+    Launch {
+        program: Some(PRLIMIT.to_string()),
+        args,
+    }
 }
 
 /// Resolve a Unix account name to its uid/gid via the host account database
@@ -90,9 +117,14 @@ fn setpriv_wrap(ids: AccountIds, program: &str, args: &[String]) -> Launch {
 /// missing versus merely unauthorized.
 fn resolve_account_ids(name: &str) -> Result<AccountIds, SessionError> {
     match nix::unistd::User::from_name(name) {
-        Ok(Some(user)) => Ok(AccountIds { uid: user.uid.as_raw(), gid: user.gid.as_raw() }),
+        Ok(Some(user)) => Ok(AccountIds {
+            uid: user.uid.as_raw(),
+            gid: user.gid.as_raw(),
+        }),
         Ok(None) => Err(SessionError::Forbidden),
-        Err(e) => Err(SessionError::Internal(format!("account lookup failed: {e}"))),
+        Err(e) => Err(SessionError::Internal(format!(
+            "account lookup failed: {e}"
+        ))),
     }
 }
 
@@ -114,23 +146,56 @@ fn own_uid() -> u32 {
 /// error as "do not open the shell" — there is no unprivileged fallback.
 pub(crate) fn build_launch(
     privilege_drop: bool,
+    limits: ShellResourceLimits,
     account: Option<&str>,
     command: Option<&str>,
     args: &[String],
 ) -> Result<Launch, SessionError> {
+    if limits.max_processes == 0 || limits.max_open_files == 0 {
+        return Err(SessionError::Internal(
+            "shell process and open-file limits must be greater than zero".into(),
+        ));
+    }
+    if !std::path::Path::new(PRLIMIT).exists() {
+        return Err(SessionError::Internal(format!(
+            "shell resource limits require {PRLIMIT}, but it is not present"
+        )));
+    }
+
     let account = account.filter(|a| !a.is_empty());
     let wants_switch = privilege_drop && account.is_some();
 
     if !wants_switch {
-        // Direct launch: preserve `None` = `$SHELL` semantics.
-        return Ok(Launch { program: command.map(str::to_string), args: args.to_vec() });
+        let program = command
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("SHELL").ok())
+            .unwrap_or_else(|| DEFAULT_SHELL.to_string());
+        return Ok(prlimit_wrap(
+            limits,
+            Launch {
+                program: Some(program),
+                args: args.to_vec(),
+            },
+        ));
     }
 
     let name = account.unwrap();
     let ids = resolve_account_ids(name)?;
     if ids.uid == own_uid() {
-        // Switching to ourselves is a no-op; run directly.
-        return Ok(Launch { program: command.map(str::to_string), args: args.to_vec() });
+        // Switching to ourselves is a no-op, but resource limits still apply.
+        let program = command
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("SHELL").ok())
+            .unwrap_or_else(|| DEFAULT_SHELL.to_string());
+        return Ok(prlimit_wrap(
+            limits,
+            Launch {
+                program: Some(program),
+                args: args.to_vec(),
+            },
+        ));
     }
 
     if !std::path::Path::new(SETPRIV).exists() {
@@ -140,49 +205,90 @@ pub(crate) fn build_launch(
     }
 
     let program = command.filter(|c| !c.is_empty()).unwrap_or(DEFAULT_SHELL);
-    Ok(setpriv_wrap(ids, program, args))
+    Ok(prlimit_wrap(limits, setpriv_wrap(ids, program, args)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn direct_launch_when_privilege_drop_disabled() {
-        // Even with an account requested, a disabled flag never wraps.
-        let l = build_launch(false, Some("someone"), Some("bash"), &["-l".into()]).unwrap();
-        assert_eq!(l, Launch { program: Some("bash".into()), args: vec!["-l".into()] });
+    fn limits() -> ShellResourceLimits {
+        ShellResourceLimits {
+            max_processes: 32,
+            max_open_files: 64,
+            max_core_bytes: 0,
+        }
     }
 
     #[test]
-    fn direct_launch_preserves_none_shell() {
-        let l = build_launch(false, None, None, &[]).unwrap();
-        assert_eq!(l, Launch { program: None, args: vec![] });
+    fn direct_launch_when_privilege_drop_disabled() {
+        // Account switching is disabled, but the resource wrapper is mandatory.
+        let l = build_launch(
+            false,
+            limits(),
+            Some("someone"),
+            Some("bash"),
+            &["-l".into()],
+        )
+        .unwrap();
+        assert_eq!(l.program.as_deref(), Some(PRLIMIT));
+        assert_eq!(
+            l.args,
+            vec![
+                "--nproc=32:32",
+                "--nofile=64:64",
+                "--core=0:0",
+                "--",
+                "bash",
+                "-l"
+            ]
+        );
+    }
+
+    #[test]
+    fn default_shell_is_concrete_inside_resource_wrapper() {
+        let l = build_launch(false, limits(), None, None, &[]).unwrap();
+        let expected = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+        assert_eq!(l.program.as_deref(), Some(PRLIMIT));
+        assert_eq!(l.args.last(), Some(&expected));
     }
 
     #[test]
     fn empty_account_is_treated_as_no_switch() {
-        let l = build_launch(true, Some(""), Some("bash"), &[]).unwrap();
-        assert_eq!(l, Launch { program: Some("bash".into()), args: vec![] });
+        let l = build_launch(true, limits(), Some(""), Some("bash"), &[]).unwrap();
+        assert_eq!(l.program.as_deref(), Some(PRLIMIT));
+        assert_eq!(l.args.last().map(String::as_str), Some("bash"));
     }
 
     #[test]
     fn setpriv_argv_shape_is_correct() {
         // The pure builder: numeric ids, init-groups, reset-env, then command.
-        let l = setpriv_wrap(AccountIds { uid: 1001, gid: 2002 }, "/bin/bash", &["-c".into(), "id".into()]);
+        let l = setpriv_wrap(
+            AccountIds {
+                uid: 1001,
+                gid: 2002,
+            },
+            "/bin/bash",
+            &["-c".into(), "id".into()],
+        );
         assert_eq!(l.program.as_deref(), Some(SETPRIV));
         assert_eq!(
             l.args,
             vec![
-                "--reuid", "1001",
-                "--regid", "2002",
+                "--reuid",
+                "1001",
+                "--regid",
+                "2002",
                 "--init-groups",
-                "--inh-caps", "-all",
-                "--ambient-caps", "-all",
+                "--inh-caps",
+                "-all",
+                "--ambient-caps",
+                "-all",
                 "--reset-env",
                 "--",
                 "/bin/bash",
-                "-c", "id",
+                "-c",
+                "id",
             ]
         );
     }
@@ -192,14 +298,34 @@ mod tests {
         // Guard against a hostile PATH: both the wrapper and the reference to it
         // are absolute.
         assert!(SETPRIV.starts_with('/'));
+        assert!(PRLIMIT.starts_with('/'));
         assert!(DEFAULT_SHELL.starts_with('/'));
+    }
+
+    #[test]
+    fn zero_process_or_file_limit_is_rejected() {
+        let mut invalid = limits();
+        invalid.max_processes = 0;
+        assert!(matches!(
+            build_launch(false, invalid, None, Some("bash"), &[]),
+            Err(SessionError::Internal(_))
+        ));
+        invalid = limits();
+        invalid.max_open_files = 0;
+        assert!(matches!(
+            build_launch(false, invalid, None, Some("bash"), &[]),
+            Err(SessionError::Internal(_))
+        ));
     }
 
     #[test]
     fn resolve_root_is_zero_zero() {
         // `root` exists on every Unix host and is uid/gid 0 — a stable anchor
         // for the resolver without depending on this host's other accounts.
-        assert_eq!(resolve_account_ids("root").unwrap(), AccountIds { uid: 0, gid: 0 });
+        assert_eq!(
+            resolve_account_ids("root").unwrap(),
+            AccountIds { uid: 0, gid: 0 }
+        );
     }
 
     #[test]
@@ -212,8 +338,12 @@ mod tests {
     fn switch_to_self_is_a_noop() {
         // Resolve the daemon's own account by uid and ask to switch to it: the
         // builder must run directly, not wrap.
-        let me = nix::unistd::User::from_uid(nix::unistd::geteuid()).unwrap().unwrap();
-        let l = build_launch(true, Some(&me.name), Some("bash"), &[]).unwrap();
-        assert_eq!(l, Launch { program: Some("bash".into()), args: vec![] });
+        let me = nix::unistd::User::from_uid(nix::unistd::geteuid())
+            .unwrap()
+            .unwrap();
+        let l = build_launch(true, limits(), Some(&me.name), Some("bash"), &[]).unwrap();
+        assert_eq!(l.program.as_deref(), Some(PRLIMIT));
+        assert!(!l.args.iter().any(|arg| arg == SETPRIV));
+        assert_eq!(l.args.last().map(String::as_str), Some("bash"));
     }
 }

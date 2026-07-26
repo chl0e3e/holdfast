@@ -1,0 +1,13 @@
+# PAM stack for `hf-ssh-adapter --password-auth` (ADR 0015).
+# Install as /etc/pam.d/holdfast-ssh
+#
+# The adapter performs authentication and account checks only; it never opens
+# a PAM session or installs credentials. Add a pam_faillock line here to lock
+# the account under repeated failure, on top of the adapter's own per-attempt
+# delay and connection bounds.
+#
+# Debian/Ubuntu form. On RHEL-family hosts replace the includes with:
+#   auth     include  system-auth
+#   account  include  system-auth
+@include common-auth
+@include common-account

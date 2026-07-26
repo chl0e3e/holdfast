@@ -22,12 +22,21 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
-nix.workspace = true
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std"] }
 hf-auth = { path = "../auth" }
-libc.workspace = true
 rand.workspace = true
+dirs.workspace = true
+thiserror.workspace = true
+
+# The hf CLI binary is unix-only (raw mode, SIGWINCH); the lib stays portable.
+# Verify with: cargo check -p hf-native-client --lib --target x86_64-pc-windows-msvc
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
-hf-daemon = { path = "../daemon" }
 ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }
+
+# The integration tests spawn a real daemon, which is unix-only (pty, pam).
+[target.'cfg(unix)'.dev-dependencies]
+hf-daemon = { path = "../daemon" }

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Holdfast</title>
+    <link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <div id="tabs"></div>
+      <div id="actions">
+        <button id="add-server" title="Add a server">+ server</button>
+        <button id="detach" title="Detach: shell keeps running">detach</button>
+        <button id="terminate" title="Terminate: kill the shell">terminate</button>
+      </div>
+      <div id="status" data-kind="warn">starting…</div>
+    </header>
+    <main id="panels"></main>
+
+    <dialog id="add-server-dialog">
+      <form method="dialog" id="add-server-form">
+        <h2>Add server</h2>
+        <label>URL <input id="srv-url" placeholder="https://host or http://127.0.0.1:8080" required /></label>
+        <label>Name <input id="srv-name" placeholder="display name" /></label>
+        <label>Username <input id="srv-user" placeholder="(SSH auth) username" /></label>
+        <label>SSH key path <input id="srv-key" placeholder="(SSH auth) C:\Users\me\.ssh\id_ed25519" /></label>
+        <p class="hint">Leave username/key empty for loopback dev daemons.</p>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button id="srv-submit" value="default">Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
-// Holdfast browser client, Phase 2: xterm.js shells as tabs over WebSocket.
+// Holdfast browser client: xterm.js shells as tabs over WebTransport (QUIC
+// only — ADR 0014).
 //
 // Reload recovery: shell IDs + the latest rotated resume tokens persist in
 // localStorage; on (re)connect every stored shell is reattached and its
@@ -21,17 +22,26 @@ import {
   OpenShellSchema,
   PongSchema,
   RequestHistorySchema,
+  PasswordRequestSchema,
+  SshChallengeRequestSchema,
+  SshChallengeResponseSchema,
   TerminalInputSchema,
   TerminalResizeSchema,
   TerminateShellSchema,
   type Envelope,
 } from "../gen/messages_pb.js";
-import { connectTransport, envelope, type HfTransport } from "./transport.js";
+import {
+  connectTransport,
+  envelope,
+  QuicUnavailableError,
+  type HfTransport,
+} from "./transport.js";
 import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 1;
 const STORAGE_KEY = "holdfast.shells.v1";
+const GRANT_KEY = "holdfast.grant.v1";
 const HISTORY_PAGE_LINES = 200;
 const HISTORY_PAGE_BYTES = 128 * 1024;
 const LIVE_BUFFER_CAP = 2 * 1024 * 1024; // re-render buffer bound (spec §8 spirit)
@@ -112,8 +122,23 @@ class Tab {
       this.title = clean;
       this.refreshLabel();
     });
+    // xterm.js rewrites Alt+Up/Down into Ctrl+Up/Down on non-Mac platforms
+    // (an old word-navigation hack in its Keyboard.ts), so apps like weechat
+    // never see the Alt+arrow sequences they bind. Send the real CSI 1;3A/B
+    // ourselves and bypass xterm's handling for those keys.
+    this.term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type === "keydown" &&
+        event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown")
+      ) {
+        app.sendInput(this, event.key === "ArrowUp" ? "\x1b[1;3A" : "\x1b[1;3B");
+        event.preventDefault();
+        return false;
+      }
+      return true;
+    });
     // Paste guard: a paste carrying newlines/control chars can inject commands.
-    this.term.attachCustomKeyEventHandler(() => true);
     this.panel.addEventListener("paste", (event) => app.handlePaste(this, event));
     this.setState("connecting");
   }
@@ -191,13 +216,23 @@ class App {
   }
 
   async connect(): Promise<void> {
-    this.setStatus("connecting…", "warn");
+    this.setStatus("connecting over QUIC…", "warn");
     try {
       this.transport = await connectTransport(
         (channel, env) => this.onFrame(channel, env),
         () => this.onDisconnect(),
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof QuicUnavailableError) {
+        // No fallback (ADR 0014): say QUIC is required and keep retrying.
+        this.setStatus(
+          `QUIC required — WebTransport unreachable, retrying in ${this.backoffMs / 1000}s`,
+          "err",
+        );
+        setTimeout(() => void this.connect(), this.backoffMs);
+        this.backoffMs = Math.min(this.backoffMs * 2, 15_000);
+        return;
+      }
       this.onDisconnect();
       return;
     }
@@ -205,12 +240,7 @@ class App {
     await this.hello();
     await this.authenticate();
     this.backoffMs = 1000;
-    this.setStatus(
-      this.transport.kind === "webtransport"
-        ? "connected · WebTransport (QUIC)"
-        : "connected · WebSocket fallback",
-      "ok",
-    );
+    this.setStatus("connected · WebTransport (QUIC)", "ok");
 
     // Reattach persisted shells; open a first shell on a fresh start.
     const stored = loadStored();
@@ -256,10 +286,7 @@ class App {
         value: create(ClientHelloSchema, {
           protocolMajor: PROTOCOL_MAJOR,
           protocolMinor: PROTOCOL_MINOR,
-          clientKind:
-            this.transport?.kind === "webtransport"
-              ? ClientKind.BROWSER_WEBTRANSPORT
-              : ClientKind.BROWSER_WEBSOCKET,
+          clientKind: ClientKind.BROWSER_WEBTRANSPORT,
           clientBuild: "holdfast-web phase-2",
           capabilities: [Capability.DATAGRAMS],
           maxFrameBytes: 256 * 1024,
@@ -271,18 +298,175 @@ class App {
     if (reply.message.case !== "serverHello") throw new Error("hello failed");
   }
 
+  /// Auth ladder (spec §5): stored connection grant → dev empty grant →
+  /// interactive SSH challenge/response. The private key never leaves the
+  /// user's machine: the browser shows the exact `ssh-keygen -Y sign`
+  /// command and the user pastes back the SSHSIG.
   async authenticate(): Promise<void> {
+    const stored = localStorage.getItem(GRANT_KEY);
+    if (stored) {
+      if (await this.tryGrant(b64.dec(stored))) return;
+      localStorage.removeItem(GRANT_KEY); // expired or daemon key rotated
+    }
+    // Dev daemons (hash-pin certificates) accept an empty grant. Don't burn a
+    // guaranteed-failing attempt against production daemons — failed auths
+    // feed the rate limiter (threat model T1).
+    const info = (await fetch("/webtransport-info").then((r) => r.json())) as {
+      certificateMode: "hash-pin" | "webpki";
+    };
+    if (info.certificateMode !== "webpki" && (await this.tryGrant(new Uint8Array()))) {
+      return;
+    }
+    await this.sshLogin();
+  }
+
+  async tryGrant(grant: Uint8Array): Promise<boolean> {
     const [, reply] = await this.request(0, envelope({
       message: {
         case: "authenticate",
         value: create(AuthenticateSchema, {
-          method: { case: "connectionGrant", value: new Uint8Array() },
+          method: { case: "connectionGrant", value: grant },
         }),
       },
     }));
-    if (reply.message.case !== "authenticationResult" || !reply.message.value.ok) {
-      throw new Error("authentication failed");
-    }
+    return reply.message.case === "authenticationResult" && reply.message.value.ok;
+  }
+
+  async sshLogin(): Promise<void> {
+    const dialog = document.getElementById("login") as HTMLDialogElement;
+    const passwordSection = document.getElementById("login-password-section")!;
+    const step1 = document.getElementById("login-step1")!;
+    const step2 = document.getElementById("login-step2")!;
+    const errorLine = document.getElementById("login-error")!;
+    const username = document.getElementById("login-username") as HTMLInputElement;
+    const password = document.getElementById("login-password") as HTMLInputElement;
+    const pubkey = document.getElementById("login-pubkey") as HTMLTextAreaElement;
+    const command = document.getElementById("login-command")!;
+    const signature = document.getElementById("login-signature") as HTMLTextAreaElement;
+
+    // Channel binding (ADR 0008): the server certificate hash, mixed into the
+    // signed message so a relayed challenge cannot be reused elsewhere. The
+    // same endpoint advertises whether password login (ADR 0016) is enabled.
+    const info = (await fetch("/webtransport-info").then((r) => r.json())) as {
+      certHashBase64: string;
+      passwordAuth?: boolean;
+    };
+    const binding = b64.dec(info.certHashBase64);
+
+    // Password is the default form when the daemon offers it; the key flow
+    // stays one click away either way (and is the only form otherwise).
+    const showPassword = (show: boolean) => {
+      passwordSection.hidden = !show;
+      step1.hidden = show;
+      step2.hidden = true;
+      errorLine.textContent = "";
+    };
+    document.getElementById("login-use-password-line")!.hidden = !info.passwordAuth;
+    showPassword(info.passwordAuth === true);
+    dialog.showModal();
+
+    await new Promise<void>((resolve) => {
+      let challenge: Uint8Array | null = null;
+
+      const finish = (grant: Uint8Array) => {
+        if (grant.length > 0) localStorage.setItem(GRANT_KEY, b64.enc(grant));
+        password.value = "";
+        dialog.close();
+        resolve();
+      };
+
+      document.getElementById("login-use-key")!.onclick = (event) => {
+        event.preventDefault();
+        showPassword(false);
+      };
+      document.getElementById("login-use-password")!.onclick = (event) => {
+        event.preventDefault();
+        showPassword(true);
+      };
+
+      const submitPassword = async () => {
+        errorLine.textContent = "";
+        const [, reply] = await this.request(0, envelope({
+          message: {
+            case: "authenticate",
+            value: create(AuthenticateSchema, {
+              method: {
+                case: "passwordRequest",
+                value: create(PasswordRequestSchema, {
+                  username: username.value.trim(),
+                  password: password.value,
+                }),
+              },
+            }),
+          },
+        }));
+        if (reply.message.case !== "authenticationResult" || !reply.message.value.ok) {
+          errorLine.textContent = "sign-in failed — check the username and password";
+          return;
+        }
+        finish(reply.message.value.challenge);
+      };
+      document.getElementById("login-password-submit")!.onclick = submitPassword;
+      password.onkeydown = (event) => {
+        if (event.key === "Enter") void submitPassword();
+      };
+
+      document.getElementById("login-request")!.onclick = async () => {
+        errorLine.textContent = "";
+        const [, reply] = await this.request(0, envelope({
+          message: {
+            case: "authenticate",
+            value: create(AuthenticateSchema, {
+              method: {
+                case: "sshChallengeRequest",
+                value: create(SshChallengeRequestSchema, {
+                  username: username.value.trim(),
+                  publicKey: new TextEncoder().encode(pubkey.value.trim()),
+                }),
+              },
+            }),
+          },
+        }));
+        if (reply.message.case !== "authenticationResult"
+            || reply.message.value.challenge.length === 0) {
+          errorLine.textContent = "key not authorized for that user";
+          return;
+        }
+        challenge = reply.message.value.challenge;
+        const message = new Uint8Array(binding.length + challenge.length);
+        message.set(binding, 0);
+        message.set(challenge, binding.length);
+        command.textContent =
+          `echo ${b64.enc(message)} | base64 -d | ` +
+          `ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n holdfast-auth@v0`;
+        step1.hidden = true;
+        step2.hidden = false;
+      };
+
+      document.getElementById("login-submit")!.onclick = async () => {
+        if (!challenge) return;
+        errorLine.textContent = "";
+        const [, reply] = await this.request(0, envelope({
+          message: {
+            case: "authenticate",
+            value: create(AuthenticateSchema, {
+              method: {
+                case: "sshChallengeResponse",
+                value: create(SshChallengeResponseSchema, {
+                  challenge,
+                  signature: new TextEncoder().encode(signature.value.trim() + "\n"),
+                }),
+              },
+            }),
+          },
+        }));
+        if (reply.message.case !== "authenticationResult" || !reply.message.value.ok) {
+          errorLine.textContent = "signature rejected — check the key and try again";
+          return;
+        }
+        finish(reply.message.value.challenge); // issued grant (spec §5)
+      };
+    });
   }
 
   async newShell(): Promise<void> {

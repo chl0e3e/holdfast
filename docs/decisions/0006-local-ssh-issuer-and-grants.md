@@ -60,6 +60,13 @@ bucket.
 
 ## Phase 7 hardening status
 
+> **Update (2026-07-18): Phase 7 is complete.** The remaining items recorded
+> below all landed: netem coverage, browser/server terminal-escape hardening,
+> the reviewed privilege-drop path (ADR 0007), WebTransport channel binding
+> (ADR 0008), bounded safe audit/metrics, owner-scoped attachment, and shell
+> resource containment (ADR 0009). The original snapshot is retained below as
+> implementation history.
+
 Done: native-client SSH signing + grant reuse; parser fuzz/robustness
 harnesses (`crates/protocol/tests/fuzz_framing.rs`,
 `crates/daemon/tests/fuzz_wire.rs`); Origin allowlist (T7,
