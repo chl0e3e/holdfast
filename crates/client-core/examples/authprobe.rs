@@ -16,7 +16,42 @@ use hf_client_core::{Core, CoreEvent, ServerConfig};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let url = args.next().expect("usage: authprobe <url> <username> <password>");
+    let url = args
+        .next()
+        .expect("usage: authprobe <url> <username> <password> | --boot <store>");
+
+    // `--boot <store>`: open an existing store the way the GUI does and print
+    // what `bootstrap()` reports, to tell "the core never said auth-required"
+    // apart from "the GUI ignored it".
+    if url == "--boot" {
+        let store = args.next().expect("--boot needs a store path");
+        let (core, _events) = Core::spawn(PathBuf::from(store)).await?;
+        for _ in 0..25 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let boot = core.bootstrap().await;
+            let settled = boot.servers.iter().all(|s| s.status.is_some());
+            if settled || boot.servers.is_empty() {
+                for s in &boot.servers {
+                    println!(
+                        "server key={} url={} name={:?} status={:?} detail={:?} shells={}",
+                        s.key,
+                        s.url,
+                        s.display_name,
+                        s.status,
+                        s.status_detail,
+                        s.shells.len()
+                    );
+                }
+                if boot.servers.is_empty() {
+                    println!("store has NO servers");
+                }
+                return Ok(());
+            }
+        }
+        println!("status never settled");
+        return Ok(());
+    }
+
     let username = args.next().expect("username");
     let password = args.next().expect("password");
 
