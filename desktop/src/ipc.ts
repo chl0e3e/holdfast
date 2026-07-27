@@ -12,6 +12,10 @@ export type ServerView = {
   url: string;
   displayName: string;
   shells: ShellView[];
+  /** Status at bootstrap time — set when the core emitted one before the
+   *  frontend subscribed (e.g. auth-required right after launch). */
+  status?: ServerStatus;
+  statusDetail?: string;
 };
 export type BootstrapView = { servers: ServerView[] };
 

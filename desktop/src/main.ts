@@ -94,7 +94,19 @@ class App implements TabDelegate {
     });
 
     const boot = await ipc.bootstrap();
-    for (const server of boot.servers) this.ensureGroup(server);
+    for (const server of boot.servers) {
+      const group = this.ensureGroup(server);
+      // Statuses emitted before this frontend subscribed (auth-required
+      // fires milliseconds after core spawn) arrive via the bootstrap
+      // snapshot instead of an event.
+      if (server.status) {
+        group.status = server.status;
+        group.label.dataset.status = server.status;
+        if (server.status === "auth-required") {
+          this.promptLogin(server.key, server.statusDetail);
+        }
+      }
+    }
     for (const server of boot.servers) {
       for (const shell of server.shells) {
         const tab = this.ensureTab(server.key, shell.shell, shell.name);

@@ -117,6 +117,13 @@ pub struct ServerView {
     pub url: String,
     pub display_name: String,
     pub shells: Vec<ShellView>,
+    /// Present connection status. Status events emitted before the GUI
+    /// subscribes (e.g. `auth-required` milliseconds after spawn) are
+    /// otherwise lost, leaving a password server with no login prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ServerStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +151,9 @@ struct CoreInner {
     store: Arc<Store>,
     servers: Mutex<HashMap<String, mpsc::Sender<ServerCmd>>>,
     events: mpsc::Sender<CoreEvent>,
+    /// Last emitted status per server, snapshotted into [`BootstrapView`] so
+    /// a GUI that subscribes after spawn still learns the current state.
+    statuses: Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>,
 }
 
 /// Command queue depth per server supervisor. Commands sent while the
@@ -174,6 +184,7 @@ impl Core {
                 store,
                 servers: Mutex::new(HashMap::new()),
                 events: event_tx,
+                statuses: Arc::new(std::sync::Mutex::new(HashMap::new())),
             }),
         };
         for key in core.inner.store.snapshot().servers.keys() {
@@ -188,6 +199,7 @@ impl Core {
             server_key: server_key.clone(),
             store: Arc::clone(&self.inner.store),
             events: self.inner.events.clone(),
+            statuses: Arc::clone(&self.inner.statuses),
         };
         tokio::spawn(run_supervisor(ctx, rx));
         self.inner.servers.lock().await.insert(server_key, tx);
@@ -197,22 +209,31 @@ impl Core {
     /// arrive as events immediately after.
     pub async fn bootstrap(&self) -> BootstrapView {
         let data: StoreData = self.inner.store.snapshot();
+        let statuses = self.inner.statuses.lock().unwrap().clone();
         BootstrapView {
             servers: data
                 .servers
                 .into_iter()
-                .map(|(key, record)| ServerView {
-                    key,
-                    url: record.url,
-                    display_name: record.display_name,
-                    shells: record
-                        .shells
-                        .into_iter()
-                        .map(|(shell, s)| ShellView {
-                            shell,
-                            name: s.name,
-                        })
-                        .collect(),
+                .map(|(key, record)| {
+                    let (status, status_detail) = match statuses.get(&key) {
+                        Some((s, d)) => (Some(*s), d.clone()),
+                        None => (None, None),
+                    };
+                    ServerView {
+                        key,
+                        url: record.url,
+                        display_name: record.display_name,
+                        shells: record
+                            .shells
+                            .into_iter()
+                            .map(|(shell, s)| ShellView {
+                                shell,
+                                name: s.name,
+                            })
+                            .collect(),
+                        status,
+                        status_detail,
+                    }
                 })
                 .collect(),
         }
@@ -236,6 +257,7 @@ impl Core {
     /// shells keep running server-side unless individually terminated.
     pub async fn remove_server(&self, server_key: &str) -> Result<()> {
         self.inner.servers.lock().await.remove(server_key);
+        self.inner.statuses.lock().unwrap().remove(server_key);
         self.inner.store.remove_server(server_key)
     }
 

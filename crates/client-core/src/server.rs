@@ -93,6 +93,9 @@ pub struct SupervisorCtx {
     pub server_key: String,
     pub store: Arc<Store>,
     pub events: mpsc::Sender<CoreEvent>,
+    /// Mirror of the last emitted status, read by `Core::bootstrap` so GUIs
+    /// that subscribe late still see the current state.
+    pub statuses: Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +677,10 @@ async fn recover_token(
 
 impl SupervisorCtx {
     async fn emit_status(&self, status: ServerStatus, detail: Option<String>) {
+        self.statuses
+            .lock()
+            .unwrap()
+            .insert(self.server_key.clone(), (status, detail.clone()));
         let _ = self
             .events
             .send(CoreEvent::ServerStatus {

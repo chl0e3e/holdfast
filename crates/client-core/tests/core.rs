@@ -394,3 +394,57 @@ async fn password_login_and_grant_only_restart() {
 
     daemon.abort();
 }
+
+/// The auth-required status fires milliseconds after spawn — before a real
+/// GUI has subscribed to events. Bootstrap must carry the current status so
+/// a late subscriber still shows the login prompt (the desktop's launch bug:
+/// password server, no dialog, every open refused).
+#[tokio::test]
+async fn bootstrap_snapshots_auth_required_status() {
+    let dir = temp_dir();
+    let store_path = dir.join("desktop.json");
+    let (core, events) = Core::spawn(store_path.clone()).await.unwrap();
+    let server = core
+        .add_server(ServerConfig {
+            url: "https://unreachable.invalid".into(),
+            display_name: "pw".into(),
+            username: Some("someone".into()),
+            ssh_key_path: None,
+        })
+        .await
+        .unwrap();
+    // Deliberately NOT draining `events` — simulating the pre-subscribe gap.
+    drop(events);
+
+    // PasswordRequired is decided locally (no network), so this settles fast.
+    let mut status = None;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let boot = core.bootstrap().await;
+        status = boot.servers.iter().find(|s| s.key == server).unwrap().status;
+        if status.is_some() {
+            break;
+        }
+    }
+    assert_eq!(
+        status,
+        Some(hf_client_core::ServerStatus::AuthRequired),
+        "bootstrap must report auth-required for a password server"
+    );
+
+    // A restarted core (fresh supervisors, same store) must report it too.
+    drop(core);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (core2, events2) = Core::spawn(store_path).await.unwrap();
+    drop(events2);
+    let mut status = None;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let boot = core2.bootstrap().await;
+        status = boot.servers.iter().find(|s| s.key == server).unwrap().status;
+        if status.is_some() {
+            break;
+        }
+    }
+    assert_eq!(status, Some(hf_client_core::ServerStatus::AuthRequired));
+}
