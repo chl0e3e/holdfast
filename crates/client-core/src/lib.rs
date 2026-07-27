@@ -449,6 +449,46 @@ pub(crate) fn normalize_url(url: &str) -> String {
 }
 
 #[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    /// The desktop reads these exact keys/values to decide whether to open
+    /// the login dialog at launch; a rename here silently loses the prompt.
+    #[test]
+    fn bootstrap_json_carries_status_for_the_gui() {
+        let view = BootstrapView {
+            servers: vec![ServerView {
+                key: "abc".into(),
+                url: "https://host".into(),
+                display_name: "host".into(),
+                shells: vec![],
+                status: Some(ServerStatus::AuthRequired),
+                status_detail: Some("authentication failed".into()),
+            }],
+        };
+        let json = serde_json::to_value(&view).unwrap();
+        let server = &json["servers"][0];
+        assert_eq!(server["status"], "auth-required");
+        assert_eq!(server["statusDetail"], "authentication failed");
+        assert_eq!(server["displayName"], "host");
+
+        // Absent status must be omitted, not null: the GUI tests truthiness.
+        let view = BootstrapView {
+            servers: vec![ServerView {
+                key: "abc".into(),
+                url: "https://host".into(),
+                display_name: "host".into(),
+                shells: vec![],
+                status: None,
+                status_detail: None,
+            }],
+        };
+        let json = serde_json::to_value(&view).unwrap();
+        assert!(json["servers"][0].get("status").is_none());
+    }
+}
+
+#[cfg(test)]
 mod url_tests {
     use super::normalize_url;
 
