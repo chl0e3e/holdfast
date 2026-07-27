@@ -1267,6 +1267,7 @@ dependencies = [
  "anyhow",
  "base64",
  "dirs",
+ "hf-auth",
  "hf-daemon",
  "hf-native-client",
  "hf-protocol",

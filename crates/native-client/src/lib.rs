@@ -161,6 +161,9 @@ pub enum AuthMethod {
         username: String,
         private_key_path: std::path::PathBuf,
     },
+    /// Opt-in password login (ADR 0016): one round trip, only ever sent over
+    /// the encrypted transport, never persisted by any client.
+    Password { username: String, password: String },
 }
 
 /// Connect, negotiate and authenticate (dev grant) against a daemon.
@@ -343,6 +346,21 @@ async fn authenticate(
             )
             .await?;
             ensure_ok(&result)?;
+            Ok(result.challenge) // the issued grant
+        }
+        AuthMethod::Password { username, password } => {
+            let result = send_auth(
+                control,
+                pb::authenticate::Method::PasswordRequest(pb::PasswordRequest {
+                    username,
+                    password,
+                }),
+            )
+            .await?;
+            ensure_ok(&result)?;
+            if result.challenge.is_empty() {
+                bail!("authentication succeeded but no grant was issued");
+            }
             Ok(result.challenge) // the issued grant
         }
     }

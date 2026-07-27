@@ -67,7 +67,27 @@ pub enum ServerCmd {
         max_lines: u32,
         reply: oneshot::Sender<Result<HistoryPage>>,
     },
+    /// Password for a password-auth server (ADR 0016). Held in memory for a
+    /// single connect attempt, then dropped — never persisted. The outcome
+    /// arrives as a `ServerStatus` event (`Connected` or `AuthRequired` again
+    /// with a detail message).
+    Login {
+        password: String,
+    },
 }
+
+/// Marker error: the record is configured for password login (username set,
+/// no SSH key) and no password is available — the GUI must supply one.
+#[derive(Debug)]
+struct PasswordRequired;
+
+impl std::fmt::Display for PasswordRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("password required")
+    }
+}
+
+impl std::error::Error for PasswordRequired {}
 
 pub struct SupervisorCtx {
     pub server_key: String,
@@ -238,6 +258,9 @@ fn spawn_control(mut chan: Chan, keepalive: Duration) -> (ControlHandle, watch::
 pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd>) {
     let mut backoff = BACKOFF_START;
     let mut first = true;
+    // One-shot password from a Login command; taken on the next connect
+    // attempt and never retained past it.
+    let mut password: Option<String> = None;
     'outer: loop {
         let status = if first {
             ServerStatus::Connecting
@@ -247,9 +270,27 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
         first = false;
         ctx.emit_status(status, None).await;
 
-        let conn = match connect_and_auth(&ctx).await {
+        let attempted_password = password.is_some();
+        let conn = match connect_and_auth(&ctx, password.take()).await {
             Ok(conn) => conn,
             Err(e) => {
+                // Password auth is interactive: without a (correct) password
+                // reconnecting cannot succeed, so instead of the backoff loop
+                // we surface `AuthRequired` and wait for the GUI's Login.
+                if attempted_password || e.downcast_ref::<PasswordRequired>().is_some() {
+                    let detail = attempted_password.then(|| e.to_string());
+                    ctx.emit_status(ServerStatus::AuthRequired, detail).await;
+                    loop {
+                        match rx.recv().await {
+                            None => return, // Core dropped this server
+                            Some(ServerCmd::Login { password: p }) => {
+                                password = Some(p);
+                                continue 'outer;
+                            }
+                            Some(cmd) => refuse_unauthenticated(cmd),
+                        }
+                    }
+                }
                 ctx.emit_status(ServerStatus::Reconnecting, Some(e.to_string()))
                     .await;
                 // Commands queue in the bounded channel meanwhile; if the
@@ -302,7 +343,7 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
     }
 }
 
-async fn connect_and_auth(ctx: &SupervisorCtx) -> Result<ServerConn> {
+async fn connect_and_auth(ctx: &SupervisorCtx, password: Option<String>) -> Result<ServerConn> {
     let record = ctx
         .store
         .server(&ctx.server_key)
@@ -315,15 +356,49 @@ async fn connect_and_auth(ctx: &SupervisorCtx) -> Result<ServerConn> {
             }
         }
     }
-    // Full auth: SSH key when configured, dev otherwise (loopback only).
+    // Full auth: username + key = SSH challenge; username alone = password
+    // login (ADR 0016, needs the GUI to supply one); neither = dev (loopback).
     let method = match (&record.username, &record.ssh_key_path) {
         (Some(username), Some(path)) => AuthMethod::SshKey {
             username: username.clone(),
             private_key_path: path.clone(),
         },
+        (Some(username), None) => {
+            let Some(password) = password else {
+                return Err(PasswordRequired.into());
+            };
+            AuthMethod::Password {
+                username: username.clone(),
+                password,
+            }
+        }
         _ => AuthMethod::Dev,
     };
     connect_with(&record.url, method).await
+}
+
+/// Fail a command that cannot proceed while the server waits for a login.
+/// Replies carry the reason; fire-and-forget commands are dropped.
+fn refuse_unauthenticated(cmd: ServerCmd) {
+    let refusal = || anyhow!("authentication required: log in to this server first");
+    match cmd {
+        ServerCmd::Open { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
+        ServerCmd::Attach { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
+        ServerCmd::Terminate { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
+        ServerCmd::History { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
+        ServerCmd::Input { .. }
+        | ServerCmd::Resize { .. }
+        | ServerCmd::Detach { .. }
+        | ServerCmd::Login { .. } => {}
+    }
 }
 
 async fn resolve_pending_opens(ctx: &SupervisorCtx, control: &ControlHandle) {
@@ -449,6 +524,9 @@ async fn handle_cmd(
             }
             let _ = reply.send(result);
         }
+        // Already authenticated (the grant is fresh): nothing to do. The
+        // password is dropped here, not remembered.
+        ServerCmd::Login { .. } => {}
         ServerCmd::History {
             shell_hex,
             before_line_id,

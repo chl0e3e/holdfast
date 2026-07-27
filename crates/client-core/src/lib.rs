@@ -59,6 +59,10 @@ pub enum ServerStatus {
     Connecting,
     Connected,
     Reconnecting,
+    /// Password-auth server with no valid grant: the GUI must call
+    /// [`Core::login`]. `detail` carries the failure message after a
+    /// rejected attempt.
+    AuthRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -353,6 +357,15 @@ impl Core {
         )
         .await?;
         rx.await.map_err(|_| anyhow!("server task stopped"))?
+    }
+
+    /// Supply the password for a password-auth server (username configured,
+    /// no SSH key — ADR 0016). Used for exactly one connect attempt and never
+    /// persisted; afterwards the refreshed 12 h grant carries reconnects. The
+    /// outcome arrives as a `ServerStatus` event (`Connected`, or
+    /// `AuthRequired` again with a detail message on rejection).
+    pub async fn login(&self, server_key: &str, password: String) -> Result<()> {
+        self.send(server_key, ServerCmd::Login { password }).await
     }
 
     /// Drop a shell entry without terminating the server-side shell (e.g. an

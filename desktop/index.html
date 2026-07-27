@@ -24,12 +24,25 @@
         <h2>Add server</h2>
         <label>URL <input id="srv-url" placeholder="https://host or http://127.0.0.1:8080" required /></label>
         <label>Name <input id="srv-name" placeholder="display name" /></label>
-        <label>Username <input id="srv-user" placeholder="(SSH auth) username" /></label>
-        <label>SSH key path <input id="srv-key" placeholder="(SSH auth) C:\Users\me\.ssh\id_ed25519" /></label>
-        <p class="hint">Leave username/key empty for loopback dev daemons.</p>
+        <label>Username <input id="srv-user" placeholder="username" /></label>
+        <label>SSH key path <input id="srv-key" placeholder="C:\Users\me\.ssh\id_ed25519 (empty = password login)" /></label>
+        <p class="hint">Username + key: SSH auth. Username only: password login (asked on connect). Both empty: loopback dev daemons.</p>
         <menu>
           <button value="cancel">Cancel</button>
           <button id="srv-submit" value="default">Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="login-dialog">
+      <form method="dialog" id="login-form">
+        <h2>Log in</h2>
+        <p id="login-target"></p>
+        <p id="login-error" class="hint" hidden></p>
+        <label>Password <input id="login-password" type="password" autocomplete="current-password" /></label>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button value="default">Log in</button>
         </menu>
       </form>
     </dialog>

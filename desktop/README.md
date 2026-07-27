@@ -4,6 +4,13 @@ Multi-session, multi-server tabbed terminal client (ADR 0019): Tauri 2 +
 xterm.js on top of the GUI-free `hf-client-core` crate. Windows is the
 first shipping target; Linux/macOS work with the same code.
 
+Adding a server takes a URL plus either a username **and** SSH key path
+(SSH challenge/response) or a username alone — then the app prompts for the
+Unix password on connect (ADR 0016, requires `holdfastd --password-auth
+<user>`). Passwords are used for one login and never stored; the issued
+12 h grant (refreshed on use) carries reconnects and restarts. Leave both
+fields empty only for loopback dev daemons.
+
 Shells live on the server (spec §11): closing the app, losing the network
 or rebooting the client machine never kills them. On launch the app
 reattaches every stored shell with screen + scrollback restored, using the

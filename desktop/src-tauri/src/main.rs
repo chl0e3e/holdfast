@@ -48,6 +48,7 @@ fn main() {
             commands::bootstrap,
             commands::add_server,
             commands::remove_server,
+            commands::login,
             commands::open_shell,
             commands::attach_shell,
             commands::shell_input,

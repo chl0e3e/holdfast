@@ -55,6 +55,34 @@ async fn wait_output(rx: &mut mpsc::Receiver<Vec<u8>>, needle: &str) -> String {
     }
 }
 
+/// Wait for a specific status for `server`; returns the event's detail.
+async fn wait_status(
+    events: &mut mpsc::Receiver<CoreEvent>,
+    server: &str,
+    wanted: hf_client_core::ServerStatus,
+) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timeout waiting for {server} to reach {wanted:?}"
+        );
+        if let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(10), events.recv()).await
+        {
+            if let CoreEvent::ServerStatus {
+                server: s,
+                status,
+                detail,
+            } = event
+            {
+                if s == server && status == wanted {
+                    return detail;
+                }
+            }
+        }
+    }
+}
+
 async fn wait_connected(events: &mut mpsc::Receiver<CoreEvent>, server: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -276,6 +304,93 @@ async fn pending_open_journal_recovers_after_crash_before_reply() {
         .unwrap();
     wait_output(&mut rx, "journal-ok").await;
     core2.terminate_shell(&server, shell_hex).await.unwrap();
+
+    daemon.abort();
+}
+
+/// Password auth (ADR 0016): the supervisor surfaces `AuthRequired` instead
+/// of retrying, a wrong password re-prompts with the failure message, the
+/// right one connects, and the refreshed grant — never the password —
+/// carries the next app run straight to `Connected`.
+#[tokio::test]
+async fn password_login_and_grant_only_restart() {
+    use hf_client_core::ServerStatus;
+
+    let dir = temp_dir();
+    let store_path = dir.join("desktop.json");
+    let verifier: std::sync::Arc<dyn hf_auth::PasswordVerifier> =
+        std::sync::Arc::new(|user: &str, password: &str| user == "alice" && password == "s3cret-horse");
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        // Real (non-dev) auth mode with no SSH users: password only.
+        auth: hf_daemon::AuthConfig::SshKeys {
+            users: Default::default(),
+        },
+        password_auth: Some(hf_daemon::PasswordAuthConfig {
+            users: std::iter::once("alice".to_string()).collect(),
+            verifier,
+        }),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let url = format!("http://{}", daemon.local_addr);
+
+    let (core, mut events) = Core::spawn(store_path.clone()).await.unwrap();
+    let server = core
+        .add_server(ServerConfig {
+            url,
+            display_name: "pw".into(),
+            username: Some("alice".into()),
+            ssh_key_path: None, // username without key = password login
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_status(&mut events, &server, ServerStatus::AuthRequired).await,
+        None,
+        "first prompt carries no failure detail"
+    );
+
+    core.login(&server, "wrong".into()).await.unwrap();
+    let detail = wait_status(&mut events, &server, ServerStatus::AuthRequired)
+        .await
+        .expect("rejected attempt must explain itself");
+    assert!(
+        detail.contains("authentication failed"),
+        "unexpected detail: {detail}"
+    );
+
+    core.login(&server, "s3cret-horse".into()).await.unwrap();
+    wait_connected(&mut events, &server).await;
+
+    let shell = core.open_shell(&server, "pw shell", 40, 6).await.unwrap();
+    let (tx, mut rx) = mpsc::channel(256);
+    core.attach_shell(&server, &shell, 40, 6, tx).await.unwrap();
+    core.shell_input(&server, &shell, b"echo pw-alive\r".to_vec())
+        .await
+        .unwrap();
+    wait_output(&mut rx, "pw-alive").await;
+
+    // The password must never touch the store — only the issued grant does.
+    let stored = std::fs::read_to_string(&store_path).unwrap();
+    assert!(!stored.contains("s3cret-horse"), "password persisted: {stored}");
+    assert!(stored.contains("\"grant\""), "grant missing from store");
+
+    // "App restart": the stored grant alone must reconnect — no login call.
+    drop(core);
+    drop(events);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (core2, mut events2) = Core::spawn(store_path).await.unwrap();
+    wait_connected(&mut events2, &server).await;
+    let (tx2, mut rx2) = mpsc::channel(256);
+    core2.attach_shell(&server, &shell, 40, 6, tx2).await.unwrap();
+    core2
+        .shell_input(&server, &shell, b"echo still-here\r".to_vec())
+        .await
+        .unwrap();
+    wait_output(&mut rx2, "still-here").await;
+    core2.terminate_shell(&server, &shell).await.unwrap();
 
     daemon.abort();
 }

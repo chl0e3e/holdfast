@@ -15,7 +15,7 @@ export type ServerView = {
 };
 export type BootstrapView = { servers: ServerView[] };
 
-export type ServerStatus = "connecting" | "connected" | "reconnecting";
+export type ServerStatus = "connecting" | "connected" | "reconnecting" | "auth-required";
 export type ShellStateName = "attached" | "detached" | "orphaned" | "exited";
 
 export type ServerStatusEvent = {
@@ -61,6 +61,9 @@ export const ipc = {
     invoke<string>("add_server", { url, displayName, username, sshKeyPath }),
 
   removeServer: (server: string) => invoke<void>("remove_server", { server }),
+
+  /** One-shot password login (ADR 0016); result arrives as a server-status event. */
+  login: (server: string, password: string) => invoke<void>("login", { server, password }),
 
   openShell: (server: string, name: string, cols: number, rows: number) =>
     invoke<string>("open_shell", { server, name, cols, rows }),

@@ -68,3 +68,17 @@ without it verification fails closed rather than partially succeeding. See
   (`crates/daemon/tests/auth.rs` — success + grant reconnect, fail-closed
   gating with verifier-call counting, refusal when not configured); the real
   shadow/pam_unix round trip stays under `tests/password-auth/run.sh`.
+
+## Addendum (2026-07-27): desktop client support
+
+The desktop client (ADR 0019) now speaks the same `PasswordRequest` flow. A
+server record with a username but no SSH key path means password login: the
+`hf-client-core` supervisor surfaces an `AuthRequired` status instead of
+retrying, holds the GUI-supplied password for exactly one connect attempt and
+never persists it — `desktop.json` stores only the issued grant, which then
+carries reconnects and app restarts for its 12 h refreshed lifetime, exactly
+like the browser's localStorage grant. A rejected attempt re-emits
+`AuthRequired` with the failure detail. Covered end-to-end (wrong password,
+right password, grant-only restart, password absent from the store file) in
+`crates/client-core/tests/core.rs::password_login_and_grant_only_restart`.
+The `hf` CLI remains key-only.

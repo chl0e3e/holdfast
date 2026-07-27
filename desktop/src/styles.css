@@ -62,6 +62,7 @@ body {
 #tabs .server-label[data-status="connected"]::before { content: "● "; color: var(--ok); }
 #tabs .server-label[data-status="connecting"]::before { content: "● "; color: var(--warn); }
 #tabs .server-label[data-status="reconnecting"]::before { content: "● "; color: var(--err); }
+#tabs .server-label[data-status="auth-required"]::before { content: "● "; color: var(--warn); }
 
 button {
   background: transparent;

@@ -36,6 +36,8 @@ class App implements TabDelegate {
   /** Running shells on a server we hold no resume token for (opened by
    *  another client): server key → shell hex → its dim button. */
   elsewhere = new Map<string, Map<string, HTMLButtonElement>>();
+  /** Server key the login dialog is currently prompting for. */
+  loginFor: string | null = null;
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();
@@ -51,6 +53,7 @@ class App implements TabDelegate {
           group.label.dataset.status = e.status;
           group.label.title = e.detail ?? "";
         }
+        if (e.status === "auth-required") this.promptLogin(e.server, e.detail);
         if (e.status === "connected") {
           // Bring back every tab that lost its attachment while we were away.
           for (const tab of this.tabs) {
@@ -115,6 +118,10 @@ class App implements TabDelegate {
     label.className = "server-label";
     label.textContent = server.displayName;
     label.dataset.status = "connecting";
+    // A dismissed login prompt can be reopened from the server label.
+    label.onclick = () => {
+      if (this.groups.get(server.key)?.status === "auth-required") this.promptLogin(server.key);
+    };
     const slot = document.createElement("span");
     slot.style.display = "contents";
     const newShell = document.createElement("button");
@@ -420,6 +427,53 @@ class App implements TabDelegate {
       })();
     };
     dialog.showModal();
+  }
+
+  /** Password prompt for a server in `auth-required` (ADR 0016). The
+   *  password goes straight to the Rust core for one connect attempt and is
+   *  never stored; a wrong password produces another `auth-required` event
+   *  whose detail reopens this dialog with the failure message. */
+  promptLogin(server: string, detail?: string): void {
+    const group = this.groups.get(server);
+    if (!group) return;
+    const dialog = document.getElementById("login-dialog") as HTMLDialogElement;
+    const error = document.getElementById("login-error")!;
+    if (dialog.open) {
+      if (this.loginFor === server && detail) {
+        error.hidden = false;
+        error.textContent = detail;
+      }
+      return;
+    }
+    this.loginFor = server;
+    document.getElementById("login-target")!.textContent =
+      `${group.displayName} needs a password to connect.`;
+    error.hidden = !detail;
+    error.textContent = detail ?? "";
+    const form = document.getElementById("login-form") as HTMLFormElement;
+    const password = document.getElementById("login-password") as HTMLInputElement;
+    password.value = "";
+    form.onsubmit = (event) => {
+      if ((event.submitter as HTMLButtonElement | null)?.value !== "default") return;
+      const value = password.value;
+      password.value = "";
+      if (value) {
+        void ipc.login(server, value).catch((e) => this.setStatus(`login failed: ${e}`, "err"));
+      }
+    };
+    dialog.onclose = () => {
+      this.loginFor = null;
+      password.value = "";
+      // Another server may be waiting for its own login.
+      for (const other of this.groups.values()) {
+        if (other.key !== server && other.status === "auth-required") {
+          this.promptLogin(other.key);
+          break;
+        }
+      }
+    };
+    dialog.showModal();
+    password.focus();
   }
 
   setStatus(text: string, kind: "ok" | "warn" | "err"): void {
