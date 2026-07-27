@@ -275,6 +275,19 @@ failures (ADR 0018), and client keepalive (ADR 0020). See
 `desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
 Linux container lacks a webview toolchain).
 
+Password login (ADR 0016 addendum, 2026-07-27): a server record with a
+username and no key path authenticates by password, prompted on connect and
+never persisted — only the issued grant is stored. Two launch bugs found by
+running the built exe on Windows are fixed in v0.0.2: a scheme-less URL in
+the add-server form is now read as `https://` (previously it could never
+connect, and failed as a *login* error), and the `auth-required` status is
+carried in `bootstrap()` rather than only as an event, so a password server
+prompts at launch instead of leaving every action refused with
+"authentication required". Multi-server is genuinely concurrent — one
+supervisor and one QUIC/HTTP3 connection per server; reproduce against your
+own hosts with
+`cargo run -p hf-client-core --example multiserver -- <url> <user> <key> ...`.
+
 ## Layout
 
 ```
