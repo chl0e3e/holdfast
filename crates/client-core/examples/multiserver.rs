@@ -151,8 +151,13 @@ async fn main() -> anyhow::Result<()> {
                 .next_back()
                 .unwrap_or("(no output)")
                 .to_string();
-            let _ = core.terminate_shell(&server, &shell).await;
-            format!("[{url}] shell ran as: {account}")
+            // Terminate needs CAP_KILL on a privilege-dropping daemon: the
+            // shell belongs to another uid, so without it this is EPERM.
+            let terminated = match core.terminate_shell(&server, &shell).await {
+                Ok(code) => format!("terminate OK (exit {code})"),
+                Err(e) => format!("terminate FAILED: {e}"),
+            };
+            format!("[{url}] shell ran as: {account}; {terminated}")
         }));
     }
     for h in handles {
