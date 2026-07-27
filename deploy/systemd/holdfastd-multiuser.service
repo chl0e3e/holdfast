@@ -24,10 +24,13 @@ Group=holdfast
 
 # Just enough privilege to switch to an allowed account, plus the low-port bind.
 # CAP_SETUID/CAP_SETGID let setpriv change uid/gid; CAP_DAC_READ_SEARCH lets the
-# daemon read each user's ~/.ssh/authorized_keys at startup. The launcher clears
-# inheritable+ambient caps before exec, so NONE of these leak into the shell.
-AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+# daemon read each user's ~/.ssh/authorized_keys at startup; CAP_KILL lets the
+# daemon terminate the shells it launched, which run under other uids after the
+# privilege drop (without it, TerminateShell fails with EPERM). The launcher
+# clears inheritable+ambient caps before exec, so NONE of these leak into the
+# shell.
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
 
 ExecStart=/usr/local/bin/holdfastd \
     --bind 127.0.0.1:8080 \

@@ -86,8 +86,10 @@ The **preferred** `setpriv` approach is now built:
 
 Production deployment is now specified too (`deploy/systemd/`): the daemon runs
 as an unprivileged service account holding only `AmbientCapabilities=CAP_SETUID`
-`CAP_SETGID` — the "just enough privilege, never the whole gateway as root"
-model. Because ambient capabilities survive `setuid`, the launcher additionally
+`CAP_SETGID` (plus, found in production 2026-07-27, `CAP_KILL`: after the drop
+the shell belongs to another uid, so without it `TerminateShell` fails with
+`EPERM` — the daemon must be able to signal the shells it launched) — the "just
+enough privilege, never the whole gateway as root" model. Because ambient capabilities survive `setuid`, the launcher additionally
 clears the inheritable and ambient sets (`--inh-caps -all --ambient-caps -all`)
 before exec so the dropped shell inherits none of the daemon's capabilities,
 while leaving the bounding set intact so ordinary setuid-root tools still work.
