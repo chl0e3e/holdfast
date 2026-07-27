@@ -94,7 +94,7 @@ impl Chan {
 async fn http_get(base: &str, path: &str) -> Result<String> {
     let host_port = base
         .strip_prefix("http://")
-        .ok_or_else(|| anyhow!("--url must be http://host:port (got {base})"))?
+        .ok_or_else(|| anyhow!("server URL must start with https:// or http:// (got {base})"))?
         .trim_end_matches('/');
     let mut stream = tokio::net::TcpStream::connect(host_port)
         .await

@@ -220,7 +220,7 @@ impl Core {
 
     pub async fn add_server(&self, config: ServerConfig) -> Result<String> {
         let key = self.inner.store.add_server(store::ServerRecord {
-            url: config.url,
+            url: normalize_url(&config.url),
             display_name: config.display_name,
             username: config.username,
             ssh_key_path: config.ssh_key_path,
@@ -409,4 +409,33 @@ pub(crate) fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A scheme-less URL from the add-server form ("iliad.example.com") can never
+/// connect, but the failure only surfaced as a login error after the user
+/// typed a password. Assume https:// — bare hostnames are how people type
+/// public servers; loopback dev daemons are spelled http://host:port.
+/// Applied both when a server is added and when a stored record connects, so
+/// records saved before this normalization heal too.
+pub(crate) fn normalize_url(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() || url.contains("://") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::normalize_url;
+
+    #[test]
+    fn bare_hostnames_become_https() {
+        assert_eq!(normalize_url("iliad.example.com"), "https://iliad.example.com");
+        assert_eq!(normalize_url(" host:443 "), "https://host:443");
+        assert_eq!(normalize_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+        assert_eq!(normalize_url("https://host"), "https://host");
+        assert_eq!(normalize_url(""), "");
+    }
 }

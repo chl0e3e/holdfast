@@ -348,10 +348,12 @@ async fn connect_and_auth(ctx: &SupervisorCtx, password: Option<String>) -> Resu
         .store
         .server(&ctx.server_key)
         .context("server removed from store")?;
+    // Records stored before URL normalization may lack a scheme.
+    let url = crate::normalize_url(&record.url);
     // Cheap path first: the stored grant (12h TTL, refreshed on every auth).
     if let Some(grant_b64) = &record.grant {
         if let Ok(grant) = base64::engine::general_purpose::STANDARD.decode(grant_b64) {
-            if let Ok(conn) = connect_with(&record.url, AuthMethod::Grant(grant)).await {
+            if let Ok(conn) = connect_with(&url, AuthMethod::Grant(grant)).await {
                 return Ok(conn);
             }
         }
@@ -374,7 +376,7 @@ async fn connect_and_auth(ctx: &SupervisorCtx, password: Option<String>) -> Resu
         }
         _ => AuthMethod::Dev,
     };
-    connect_with(&record.url, method).await
+    connect_with(&url, method).await
 }
 
 /// Fail a command that cannot proceed while the server waits for a login.
