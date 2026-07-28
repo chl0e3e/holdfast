@@ -275,6 +275,13 @@ failures (ADR 0018), and client keepalive (ADR 0020). See
 `desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
 Linux container lacks a webview toolchain).
 
+Emoji and character pickers (2026-07-28): text inserted by a picker (Windows
+`Win+.`, the browser's emoji menu) reaches the terminal in both clients.
+xterm.js drops such an insertion when it has seen a keydown without a
+matching keyup — exactly what the picker causes by taking focus mid-chord —
+so both clients now forward what it declined, without double-sending ordinary
+keystrokes. Pastes still go through the paste-confirmation guard.
+
 Password login (ADR 0016 addendum, 2026-07-27): a server record with a
 username and no key path authenticates by password, prompted on connect and
 never persisted — only the issued grant is stored. Two launch bugs found by
