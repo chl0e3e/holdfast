@@ -37,6 +37,7 @@ import {
   type HfTransport,
 } from "./transport.js";
 import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
+import { InsertedTextForwarder } from "./inserted-text.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 1;
@@ -76,6 +77,8 @@ class Tab {
   button: HTMLButtonElement;
   /// Sanitized, shell-set window title (T9); shown only as part of the label.
   title = "";
+  /// Recovers picker-inserted text (emoji) that xterm.js declines.
+  inserted = new InsertedTextForwarder();
 
   snapshot: Uint8Array = new Uint8Array();
   historyLines: string[] = [];
@@ -110,7 +113,24 @@ class Tab {
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this.panel);
-    this.term.onData((data) => app.sendInput(this, data));
+    // Reset before xterm.js's own textarea listener (capture on an ancestor
+    // always runs first), so `inserted` describes this event alone.
+    this.panel.addEventListener("input", () => this.inserted.beginInputEvent(), true);
+    this.term.onData((data) => {
+      this.inserted.noteTerminalData();
+      app.sendInput(this, data);
+    });
+    // Emoji/character pickers insert text that xterm.js drops when the keyup
+    // of the opening chord never arrived (Win+. gives focus to the picker).
+    // Send what it declined, and clear the leftover from its hidden textarea.
+    const helper = this.panel.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
+    helper?.addEventListener("input", (event) => {
+      const insert = event as InputEvent;
+      const text = this.inserted.pendingInsert(insert.inputType, insert.data);
+      if (text === null) return;
+      helper.value = "";
+      app.sendInput(this, text);
+    });
     this.term.onResize(({ cols, rows }) => app.sendResize(this, cols, rows));
     this.term.onScroll(() => {
       if (this.term.buffer.active.viewportY === 0) void app.fetchOlderHistory(this);
