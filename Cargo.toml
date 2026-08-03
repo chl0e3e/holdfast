@@ -3,7 +3,9 @@ resolver = "2"
 # The desktop app is its own workspace: building it needs platform GUI
 # toolchains (WebView2 on Windows, webkit2gtk on Linux) that must not become
 # a prerequisite for `cargo test --workspace` on the core repo.
-exclude = ["desktop/src-tauri"]
+# vendor/avt is the patched avt fork (see [patch.crates-io] below); excluded
+# so its own test/bench dev-deps stay out of the workspace graph.
+exclude = ["desktop/src-tauri", "vendor/avt"]
 members = [
     "crates/protocol",
     "crates/daemon",
@@ -27,7 +29,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1"
+version = "0.0.2"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
@@ -71,6 +73,14 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 russh = { version = "0.62.2", default-features = false, features = ["ring", "rsa"] }
 rand-10 = { package = "rand", version = "0.10" }
 zeroize = "1"
+
+# Zero-width fix (2026-08-03): upstream avt 0.18 gives width-0 characters
+# (combining marks, ZWJ, VS16) a full cell, so the server model's cursor
+# drifts one column per mark and attach snapshots replay a sheared screen.
+# The vendored fork attaches them to the preceding cell without advancing,
+# matching wcwidth and xterm.js. Drop when upstream avt handles zero-width.
+[patch.crates-io]
+avt = { path = "vendor/avt" }
 
 # Crate dependency direction (enforced by review until tooling exists):
 #   protocol, terminal-model, pty        -> no HTTP/QUIC imports

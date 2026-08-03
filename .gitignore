@@ -1,4 +1,5 @@
 /target
+vendor/avt/target/
 node_modules/
 web/dist/
 *.pem

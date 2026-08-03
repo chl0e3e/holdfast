@@ -72,6 +72,76 @@ fn snapshot_reconstructs_screen_in_fresh_emulator() {
     assert_eq!(m.visible_lines(), replica.visible_lines());
 }
 
+// Zero-width characters (combining marks, ZWJ, VS16) must not advance the
+// model's cursor: wcwidth and xterm.js give them zero cells, and any drift
+// shifts every later wrap point, so an attach snapshot replays a sheared
+// screen (the "weechat garbled after Zalgo text" bug, 2026-08-03).
+
+#[test]
+fn combining_marks_do_not_shift_wrap_points() {
+    let mut m = small(1000, 1 << 20);
+    // Ten e+U+0301 pairs = 10 display columns on the 20-column screen.
+    m.feed("e\u{0301}".repeat(10).as_bytes());
+    m.feed(b"X");
+
+    let lines = m.visible_lines();
+    assert_eq!(lines[0], format!("{}X", "e\u{0301}".repeat(10)));
+    assert_eq!(lines[1], "", "combining marks must not cause a wrap");
+}
+
+#[test]
+fn vs16_emoji_occupies_one_cell() {
+    let mut m = small(1000, 1 << 20);
+    // U+2764 is narrow; VS16 must not take a cell of its own, so 19 'a's
+    // exactly fill the remainder of the 20-column row without wrapping.
+    m.feed("\u{2764}\u{fe0f}".as_bytes());
+    m.feed("a".repeat(19).as_bytes());
+    assert_eq!(m.visible_lines()[1], "");
+
+    m.feed(b"b");
+    assert_eq!(m.visible_lines()[1], "b", "row was exactly full");
+}
+
+#[test]
+fn zero_width_text_survives_snapshot_round_trip() {
+    let mut m = small(1000, 1 << 20);
+    m.feed("caf\u{0065}\u{0301} \u{2764}\u{fe0f} \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".as_bytes());
+    m.feed(b"\r\nnext");
+
+    let mut replica = small(1000, 1 << 20);
+    replica.feed(&m.snapshot());
+    assert_eq!(m.visible_lines(), replica.visible_lines());
+}
+
+#[test]
+fn zalgo_stacks_are_bounded_but_keep_geometry() {
+    let mut m = small(1000, 1 << 20);
+    // 40 marks on one glyph (attacker-style Zalgo): the model caps what it
+    // retains, but the cursor must stay at column 1 either way.
+    m.feed(b"z");
+    m.feed("\u{0300}".repeat(40).as_bytes());
+    m.feed("y".repeat(19).as_bytes());
+    assert_eq!(m.visible_lines()[1], "", "z + 19 'y's fit the 20-col row");
+
+    let mut replica = small(1000, 1 << 20);
+    replica.feed(&m.snapshot());
+    assert_eq!(m.visible_lines(), replica.visible_lines());
+}
+
+#[test]
+fn combining_marks_reach_history_lines() {
+    let mut m = small(1000, 1 << 20);
+    for _ in 0..6 {
+        m.feed("ne\u{0301}e\r\n".as_bytes());
+    }
+    let range = m.history_range(0, 100, 1 << 20);
+    assert!(
+        range.lines.iter().all(|l| l == "ne\u{0301}e"),
+        "history keeps combining marks: {:?}",
+        range.lines
+    );
+}
+
 /// Snapshot as text, for asserting on the replayed mode sequences.
 fn snapshot_text(m: &TerminalModel) -> String {
     String::from_utf8(m.snapshot()).unwrap()

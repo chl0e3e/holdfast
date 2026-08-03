@@ -288,6 +288,25 @@ event reset wiped the "already handled" flag. The forwarder now resets on
 keydown/keyup instead and consumes the flag per insertion; verified in real
 Chromium (typed space sends exactly one, picker inserts still forwarded).
 
+Zero-width characters sheared attach snapshots (2026-08-03, server /
+holdfastd v0.0.2): the Unicode-11 width fix below left one class uncovered —
+upstream avt 0.18 (the server-side terminal model) gives zero-width
+characters (combining marks, ZWJ, VS16) a full cell, so each one advanced
+the model's cursor a column no real terminal advances. Zalgo-style IRC
+messages shifted every later wrap point in the model, and every subsequent
+attach/reload replayed a sheared screen with interleaved stale rows (the
+live view stayed correct: raw PTY bytes bypass the model). avt is now
+vendored at `vendor/avt` (workspace `[patch.crates-io]`) with zero-width
+characters attached to the preceding cell without cursor movement — matching
+wcwidth and xterm.js — bounded at 3 retained marks per cell (T9); `dump()`
+replays them and never emits REP across them. Reproduce: `cargo test -p
+hf-terminal-model` (combining/VS16/ZWJ wrap parity + snapshot round-trips)
+and `cargo test` in `vendor/avt` (upstream suite incl. dump round-trip
+property tests). Known remaining gap: emoji added after Unicode 11 (e.g.
+U+1FAE0) are 2 cells in the model but 1 in the clients' Unicode-11 table;
+closing it needs a client width provider generated from unicode-width's
+tables. Drop the vendored fork when upstream avt handles zero-width.
+
 Unicode widths (2026-08-03, desktop v0.0.6 + web): xterm.js defaults to a
 Unicode 6 width table where most emoji are one cell, but the server model
 (avt/unicode-width) and the shell's wcwidth make them two — so any emoji on
