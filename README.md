@@ -301,7 +301,13 @@ the add-server form is now read as `https://` (previously it could never
 connect, and failed as a *login* error), and the `auth-required` status is
 carried in `bootstrap()` rather than only as an event, so a password server
 prompts at launch instead of leaving every action refused with
-"authentication required". Multi-server is genuinely concurrent — one
+"authentication required". Follow-up (2026-08-03): pressing Enter in the
+password field activated the dialog's *Cancel* button — HTML implicit
+submission fires the first submit button in tree order, and Cancel came
+first — so the password was silently discarded and login only worked by
+clicking the button. Cancel is now `type=button` in both the login and
+add-server dialogs (the headless core path was re-verified end-to-end
+against a live PAM daemon with `--example authprobe`). Multi-server is genuinely concurrent — one
 supervisor and one QUIC/HTTP3 connection per server; reproduce against your
 own hosts with
 `cargo run -p hf-client-core --example multiserver -- <url> <user> <key> ...`.

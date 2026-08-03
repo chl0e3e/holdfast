@@ -30,7 +30,10 @@
         <label>SSH key path <input id="srv-key" placeholder="C:\Users\me\.ssh\id_ed25519 (empty = password login)" /></label>
         <p class="hint">Username + key: SSH auth. Username only: password login (asked on connect). Both empty: loopback dev daemons.</p>
         <menu>
-          <button value="cancel">Cancel</button>
+          <!-- type=button, NOT a submit: the first submit button in a form is
+               what Enter activates, so a submit-Cancel placed first silently
+               swallowed Enter-confirmed input. -->
+          <button type="button" id="srv-cancel">Cancel</button>
           <button id="srv-submit" value="default">Add</button>
         </menu>
       </form>
@@ -43,7 +46,7 @@
         <p id="login-error" class="hint" hidden></p>
         <label>Password <input id="login-password" type="password" autocomplete="current-password" /></label>
         <menu>
-          <button value="cancel">Cancel</button>
+          <button type="button" id="login-cancel">Cancel</button>
           <button value="default">Log in</button>
         </menu>
       </form>

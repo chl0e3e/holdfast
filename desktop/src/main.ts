@@ -47,6 +47,11 @@ class App implements TabDelegate {
     document.getElementById("terminate")!.onclick = () => void this.terminateActive();
     document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
     document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
+    // Cancel buttons are type=button (see index.html); close their dialogs here.
+    document.getElementById("srv-cancel")!.onclick = () =>
+      (document.getElementById("add-server-dialog") as HTMLDialogElement).close();
+    document.getElementById("login-cancel")!.onclick = () =>
+      (document.getElementById("login-dialog") as HTMLDialogElement).close();
     window.addEventListener("resize", () => this.active?.fit.fit());
 
     await this.subscribeAndBootstrap();
