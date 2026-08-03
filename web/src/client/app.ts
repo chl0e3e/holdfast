@@ -10,6 +10,7 @@
 import { create } from "@bufbuild/protobuf";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import {
   AttachShellSchema,
   AuthenticateSchema,
@@ -110,9 +111,20 @@ class Tab {
     // or image addons, so OSC 52 clipboard writes and OSC 8 auto-hyperlinks
     // are inert. The window title (OSC 0/2) is sanitized before it reaches the
     // tab label; it is never written to document.title.
-    this.term = new Terminal({ scrollback: 10_000, fontSize: app.fontSize, convertEol: false });
+    this.term = new Terminal({
+      scrollback: 10_000,
+      fontSize: app.fontSize,
+      convertEol: false,
+      allowProposedApi: true, // Terminal.unicode is a "proposed" API
+    });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
+    // xterm.js defaults to a Unicode 6 width table where most emoji are one
+    // cell; the server model (avt/unicode-width) and the shell's wcwidth say
+    // two. Any disagreement shifts every wrap point when a screen snapshot
+    // is replayed on reattach, garbling apps like weechat.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = "11";
     this.term.open(this.panel);
     // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
     this.panel.addEventListener("wheel", (event) => {

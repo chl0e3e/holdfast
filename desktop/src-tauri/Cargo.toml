@@ -8,7 +8,7 @@
 [package]
 name = "hf-desktop"
 description = "Holdfast desktop client: multi-session, multi-server tabbed terminals (Tauri 2 + xterm.js)."
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"

@@ -288,6 +288,15 @@ event reset wiped the "already handled" flag. The forwarder now resets on
 keydown/keyup instead and consumes the flag per insertion; verified in real
 Chromium (typed space sends exactly one, picker inserts still forwarded).
 
+Unicode widths (2026-08-03, desktop v0.0.6 + web): xterm.js defaults to a
+Unicode 6 width table where most emoji are one cell, but the server model
+(avt/unicode-width) and the shell's wcwidth make them two — so any emoji on
+screen shifted every wrap point when the attach snapshot was replayed,
+garbling full-screen apps (reported as a mangled weechat after roaming).
+Both clients now activate `@xterm/addon-unicode11`; wrap parity with the
+server model is asserted in a headless-Chromium check (10+2 wrapped wide
+glyphs on a 20-column row).
+
 WebView2 drops raw Tauri IPC (2026-08-03, desktop v0.0.5): on Windows the
 desktop terminal rendered black and swallowed every keystroke — WebView2
 delivers a raw `invoke` body as JSON (each keystroke died with "requires a

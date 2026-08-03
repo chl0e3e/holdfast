@@ -4,6 +4,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 
@@ -80,9 +81,19 @@ export class Tab {
     // Safe defaults (threat model T9): no clipboard/web-links/image addons,
     // so OSC 52 writes and OSC 8 auto-hyperlinks are inert. The window title
     // is sanitized and only ever shown as the tab's own textContent.
-    this.term = new Terminal({ scrollback: 10_000, fontSize: app.fontSize, convertEol: false });
+    this.term = new Terminal({
+      scrollback: 10_000,
+      fontSize: app.fontSize,
+      convertEol: false,
+      allowProposedApi: true, // Terminal.unicode is a "proposed" API
+    });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
+    // Unicode 11 widths, matching the server model and wcwidth — see the
+    // web client (app.ts) for the full story; a width disagreement garbles
+    // every snapshot replay.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = "11";
     this.term.open(this.panel);
     // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
     this.panel.addEventListener("wheel", (event) => {
