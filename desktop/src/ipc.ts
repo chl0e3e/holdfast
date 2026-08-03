@@ -1,7 +1,9 @@
 // Typed bridge to the Rust side (ADR 0019). Terminal output arrives on a
-// per-attachment raw Channel (first message = screen snapshot, then live PTY
-// bytes); input goes up as a raw-body command with the shell address in
-// headers. Everything else is ordinary JSON commands and events.
+// per-attachment Channel as base64 strings (first message = screen snapshot,
+// then live PTY bytes); input goes up as a plain byte array. WebView2
+// delivers raw invoke bodies as JSON and drops raw channel payloads, so the
+// byte paths must stay JSON-safe. Everything else is ordinary JSON commands
+// and events.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -80,16 +82,14 @@ export const ipc = {
     rows: number,
     onOutput: (bytes: Uint8Array) => void,
   ) => {
-    const output = new Channel<ArrayBuffer>();
-    output.onmessage = (buffer) => onOutput(new Uint8Array(buffer));
+    const output = new Channel<string>();
+    output.onmessage = (b64) =>
+      onOutput(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
     return invoke<AttachReply>("attach_shell", { server, shell, cols, rows, output });
   },
 
-  /** Raw hot path: bytes in the body, shell address in headers. */
   shellInput: (server: string, shell: string, bytes: Uint8Array) =>
-    invoke<void>("shell_input", bytes, {
-      headers: { "x-hf-server": server, "x-hf-shell": shell },
-    }),
+    invoke<void>("shell_input", { server, shell, data: Array.from(bytes) }),
 
   resizeShell: (server: string, shell: string, cols: number, rows: number) =>
     invoke<void>("resize_shell", { server, shell, cols, rows }),

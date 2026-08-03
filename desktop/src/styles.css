@@ -89,8 +89,11 @@ button.active { background: var(--accent); color: #0b0d10; border-color: var(--a
 #status[data-kind="warn"] { color: var(--warn); }
 #status[data-kind="err"] { color: var(--err); }
 
-#panels { flex: 1; min-height: 0; position: relative; }
-.panel { position: absolute; inset: 0; padding: 4px; }
+/* overflow clipped: xterm sizes its screen from rows*cellHeight, and on
+   fractional-DPI displays the rounding can exceed the panel — unclipped it
+   grows the document, adding a page scrollbar under the terminal's own. */
+#panels { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.panel { position: absolute; inset: 0; padding: 4px; overflow: hidden; }
 .panel .xterm { height: 100%; }
 
 dialog {

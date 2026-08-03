@@ -1572,9 +1572,10 @@ dependencies = [
 
 [[package]]
 name = "hf-desktop"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "hf-client-core",
  "serde",
  "serde_json",

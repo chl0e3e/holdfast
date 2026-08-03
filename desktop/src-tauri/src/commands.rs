@@ -1,14 +1,18 @@
 //! Tauri command surface (ADR 0019): thin async wrappers over
 //! `hf_client_core::Core`.
 //!
-//! Hot paths avoid JSON: shell output flows down a per-attachment
-//! `tauri::ipc::Channel` as raw payloads (first message = the screen
-//! snapshot, then live PTY bytes verbatim); input arrives as a raw-body
-//! command with the shell address in request headers.
+//! Terminal bytes travel in JSON-safe encodings: output flows down a
+//! per-attachment `tauri::ipc::Channel` as base64 strings (first message =
+//! the screen snapshot, then live PTY bytes), input as a plain byte-array
+//! argument. WebView2 delivers raw invoke bodies as JSON and drops raw
+//! channel payloads (observed 2026-08-03: every keystroke rejected with
+//! "requires a raw body", snapshots never rendered), so the raw hot path
+//! cannot be used on Windows.
 
+use base64::Engine as _;
 use hf_client_core::{AttachInfo, BootstrapView, HistoryPage, ServerConfig};
 use serde::Serialize;
-use tauri::ipc::{Channel, InvokeResponseBody, Request};
+use tauri::ipc::Channel;
 use tauri::State;
 use tokio::sync::mpsc;
 
@@ -91,7 +95,7 @@ pub async fn attach_shell(
     shell: String,
     cols: u16,
     rows: u16,
-    output: Channel<InvokeResponseBody>,
+    output: Channel<String>,
 ) -> CmdResult<AttachReply> {
     let (sink_tx, mut sink_rx) = mpsc::channel::<Vec<u8>>(OUTPUT_QUEUE);
     let info: AttachInfo = state
@@ -106,14 +110,15 @@ pub async fn attach_shell(
         oldest_history_line_id: info.oldest_history_line_id,
         newest_history_line_id: info.newest_history_line_id,
     };
+    let b64 = base64::engine::general_purpose::STANDARD;
     tauri::async_runtime::spawn(async move {
         // Always sent, even when empty: the frontend relies on "first
         // channel message = snapshot" to delimit redraw from live output.
-        if output.send(InvokeResponseBody::Raw(info.snapshot)).is_err() {
+        if output.send(b64.encode(&info.snapshot)).is_err() {
             return;
         }
         while let Some(bytes) = sink_rx.recv().await {
-            if output.send(InvokeResponseBody::Raw(bytes)).is_err() {
+            if output.send(b64.encode(&bytes)).is_err() {
                 break; // webview side gone (tab closed)
             }
         }
@@ -121,26 +126,18 @@ pub async fn attach_shell(
     Ok(reply)
 }
 
-/// Raw-body input: bytes in the body, shell address in headers
-/// (`x-hf-server`, `x-hf-shell`) — no JSON/base64 on the keystroke path.
+/// Keystroke path. `data` rides in the JSON args (see module docs for why
+/// not a raw body); keystrokes are tiny, so the overhead is noise.
 #[tauri::command]
-pub async fn shell_input(state: State<'_, AppState>, request: Request<'_>) -> CmdResult<()> {
-    let header = |name: &str| -> CmdResult<String> {
-        request
-            .headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .ok_or_else(|| format!("missing {name} header"))
-    };
-    let server = header("x-hf-server")?;
-    let shell = header("x-hf-shell")?;
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("shell_input requires a raw body".into());
-    };
+pub async fn shell_input(
+    state: State<'_, AppState>,
+    server: String,
+    shell: String,
+    data: Vec<u8>,
+) -> CmdResult<()> {
     state
         .core
-        .shell_input(&server, &shell, bytes.clone())
+        .shell_input(&server, &shell, data)
         .await
         .map_err(err)
 }

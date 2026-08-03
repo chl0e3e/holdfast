@@ -288,6 +288,19 @@ event reset wiped the "already handled" flag. The forwarder now resets on
 keydown/keyup instead and consumes the flag per insertion; verified in real
 Chromium (typed space sends exactly one, picker inserts still forwarded).
 
+WebView2 drops raw Tauri IPC (2026-08-03, desktop v0.0.5): on Windows the
+desktop terminal rendered black and swallowed every keystroke — WebView2
+delivers a raw `invoke` body as JSON (each keystroke died with "requires a
+raw body") and never delivers raw `Channel` payloads (the attach snapshot
+and live PTY bytes silently vanished). Both terminal byte paths are now
+JSON-safe: input as a plain byte-array argument, output as base64 channel
+strings. Diagnosed against a live daemon in the Windows VM rig with state
+smuggled out through the store file; the Linux core path was never at fault
+(`cargo run -p hf-client-core --example inputprobe` proves it end-to-end).
+Panels also clip overflow now: xterm sizes its screen from rows×cellHeight,
+and fractional-DPI rounding could spill past the panel, growing the page
+under the terminal's own scrollbar.
+
 Terminal font size (2026-08-03): both clients grew an adjustable font size —
 `A−`/`A+` toolbar buttons or Ctrl+scroll over the terminal, persisted in
 localStorage (8–40px, default 14). xterm.js draws emoji at cell size, so a
