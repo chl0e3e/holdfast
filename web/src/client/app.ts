@@ -38,6 +38,7 @@ import {
 } from "./transport.js";
 import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
+import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 1;
@@ -109,10 +110,16 @@ class Tab {
     // or image addons, so OSC 52 clipboard writes and OSC 8 auto-hyperlinks
     // are inert. The window title (OSC 0/2) is sanitized before it reaches the
     // tab label; it is never written to document.title.
-    this.term = new Terminal({ scrollback: 10_000, fontSize: 14, convertEol: false });
+    this.term = new Terminal({ scrollback: 10_000, fontSize: app.fontSize, convertEol: false });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this.panel);
+    // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
+    this.panel.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      app.adjustFontSize(event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
     // Reset before xterm.js's own key handlers (capture on an ancestor always
     // runs first). On keydown/keyup, NOT the input event: xterm.js handles
     // space in `keypress`, whose leftover input event fires after onData — a
@@ -225,13 +232,27 @@ class App {
   channelToTab = new Map<number, Tab>();
   backoffMs = 1000;
   status = document.getElementById("status")!;
+  fontSize = loadFontSize();
 
   async start(): Promise<void> {
     document.getElementById("new-shell")!.onclick = () => void this.newShell();
     document.getElementById("detach")!.onclick = () => this.detachActive();
     document.getElementById("terminate")!.onclick = () => void this.terminateActive();
+    document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
+    document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
     window.addEventListener("resize", () => this.active?.fit.fit());
     await this.connect();
+  }
+
+  /// One font size for all tabs, persisted. Emoji render at cell size, so
+  /// this is also the only "make emoji readable" knob.
+  adjustFontSize(delta: number): void {
+    const size = clampFontSize(this.fontSize + delta);
+    if (size === this.fontSize) return;
+    this.fontSize = size;
+    saveFontSize(size);
+    for (const tab of this.tabs) tab.term.options.fontSize = size;
+    this.active?.fit.fit();
   }
 
   setStatus(text: string, kind: "ok" | "warn" | "err"): void {

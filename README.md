@@ -288,6 +288,11 @@ event reset wiped the "already handled" flag. The forwarder now resets on
 keydown/keyup instead and consumes the flag per insertion; verified in real
 Chromium (typed space sends exactly one, picker inserts still forwarded).
 
+Terminal font size (2026-08-03): both clients grew an adjustable font size —
+`A−`/`A+` toolbar buttons or Ctrl+scroll over the terminal, persisted in
+localStorage (8–40px, default 14). xterm.js draws emoji at cell size, so a
+bigger font is also the only way to make them readable.
+
 Password login (ADR 0016 addendum, 2026-07-27): a server record with a
 username and no key path authenticates by password, prompted on connect and
 never persisted — only the issued grant is stored. Two launch bugs found by

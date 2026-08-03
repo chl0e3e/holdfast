@@ -9,7 +9,7 @@
     "proto:generate": "buf generate ../protocol",
     "spike:encoding": "tsx src/spike/encoding-spike.ts",
     "build": "npm run proto:generate && esbuild src/client/app.ts --bundle --outdir=dist --format=esm --sourcemap && cp public/index.html dist/ && cp node_modules/@xterm/xterm/css/xterm.css dist/",
-    "test": "tsx src/spike/terminal-safety.test.ts && tsx src/client/transport.test.ts && tsx src/client/inserted-text.test.ts"
+    "test": "tsx src/spike/terminal-safety.test.ts && tsx src/client/transport.test.ts && tsx src/client/inserted-text.test.ts && tsx src/client/font-size.test.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.6.0",

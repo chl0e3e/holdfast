@@ -15,6 +15,7 @@ import {
 } from "./ipc.js";
 import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
+import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 
 const HISTORY_PAGE_LINES = 200;
 
@@ -38,13 +39,31 @@ class App implements TabDelegate {
   elsewhere = new Map<string, Map<string, HTMLButtonElement>>();
   /** Server key the login dialog is currently prompting for. */
   loginFor: string | null = null;
+  fontSize = loadFontSize();
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();
     document.getElementById("detach")!.onclick = () => void this.detachActive();
     document.getElementById("terminate")!.onclick = () => void this.terminateActive();
+    document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
+    document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
     window.addEventListener("resize", () => this.active?.fit.fit());
 
+    await this.subscribeAndBootstrap();
+  }
+
+  /// One font size for all tabs, persisted. Emoji render at cell size, so
+  /// this is also the only "make emoji readable" knob.
+  adjustFontSize(delta: number): void {
+    const size = clampFontSize(this.fontSize + delta);
+    if (size === this.fontSize) return;
+    this.fontSize = size;
+    saveFontSize(size);
+    for (const tab of this.tabs) tab.term.options.fontSize = size;
+    this.active?.fit.fit();
+  }
+
+  private async subscribeAndBootstrap(): Promise<void> {
     await subscribe({
       serverStatus: (e) => {
         const group = this.groups.get(e.server);

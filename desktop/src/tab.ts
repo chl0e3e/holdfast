@@ -19,6 +19,9 @@ const LIVE_BUFFER_CAP = 2 * 1024 * 1024; // re-render buffer bound (spec §8 spi
 
 /** What a Tab needs from the app (avoids a circular import). */
 export interface TabDelegate {
+  /** Shared, persisted terminal font size (see font-size.ts). */
+  fontSize: number;
+  adjustFontSize(delta: number): void;
   select(tab: Tab): void;
   sendInput(tab: Tab, data: string): void;
   sendResize(tab: Tab, cols: number, rows: number): void;
@@ -77,10 +80,16 @@ export class Tab {
     // Safe defaults (threat model T9): no clipboard/web-links/image addons,
     // so OSC 52 writes and OSC 8 auto-hyperlinks are inert. The window title
     // is sanitized and only ever shown as the tab's own textContent.
-    this.term = new Terminal({ scrollback: 10_000, fontSize: 14, convertEol: false });
+    this.term = new Terminal({ scrollback: 10_000, fontSize: app.fontSize, convertEol: false });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this.panel);
+    // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
+    this.panel.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      app.adjustFontSize(event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
     // Reset before xterm.js's own key handlers (capture on an ancestor always
     // runs first). On keydown/keyup, NOT the input event: xterm.js handles
     // space in `keypress`, whose leftover input event fires after onData — a
