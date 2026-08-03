@@ -102,7 +102,15 @@ class App implements TabDelegate {
           case "attached":
             break; // attach() drives the live transition itself
           case "detached":
-            if (tab.state === "live") tab.setState("reconnecting");
+            // Server-initiated drop (ERR_TOO_SLOW after an output burst) or
+            // transport death. The connection is often still healthy, so try
+            // to reattach immediately for a fresh snapshot — attach() is
+            // guarded against overlap and a failed attempt falls back to the
+            // next `connected` retry loop.
+            if (tab.state === "live") {
+              tab.setState("reconnecting");
+              void this.attach(tab);
+            }
             break;
           case "orphaned":
             tab.setState("orphaned");
@@ -318,8 +326,15 @@ class App implements TabDelegate {
       tab.oldestAvailable = reply.oldestHistoryLineId;
       tab.historyExhausted = reply.newestHistoryLineId === 0;
       tab.setState("live");
-      if (!tab.historyExhausted) await this.fetchOlderHistory(tab, true);
+      // Render the snapshot NOW: until this reset+redraw runs, live output
+      // would composite over whatever stale frame the terminal held — the
+      // burst-reattach shear. History arrives in the background.
       tab.render();
+      if (!tab.historyExhausted) {
+        void this.fetchOlderHistory(tab, true)
+          .then(() => tab.render())
+          .catch(() => {});
+      }
     } catch (error) {
       // The Rust side classified the failure: unrecoverable ones arrive as
       // shell-state events (orphaned/exited) which may have already updated

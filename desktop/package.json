@@ -1,6 +1,6 @@
 {
   "name": "holdfast-desktop",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "private": true,
   "description": "Holdfast desktop client frontend (xterm.js tabs inside Tauri 2).",
   "type": "module",

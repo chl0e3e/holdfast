@@ -150,6 +150,15 @@ pub fn spawn_pumps(
                     emit(&ctx, ShellStateEvent::Exited, Some(e.exit_code)).await;
                     break;
                 }
+                // ERR_TOO_SLOW (spec §8/§13): the server dropped this
+                // attachment because output overran the bounded queue. The
+                // shell keeps running; surface a detach so the frontend can
+                // reattach for a fresh snapshot instead of wedging on a
+                // stale frame.
+                Some(Msg::Error(e)) if e.code == hf_protocol::pb::ErrorCode::ErrTooSlow as i32 => {
+                    emit(&ctx, ShellStateEvent::Detached, None).await;
+                    break;
+                }
                 _ => {}
             }
         }

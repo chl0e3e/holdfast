@@ -23,6 +23,9 @@ rand.workspace = true
 dirs.workspace = true
 
 # The integration tests spawn a real daemon, which is unix-only (pty, pam).
+[dev-dependencies]
+hf-terminal-model = { path = "../terminal-model" }
+
 [target.'cfg(unix)'.dev-dependencies]
 hf-daemon = { path = "../daemon" }
 hf-auth = { path = "../auth" }

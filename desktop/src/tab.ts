@@ -55,6 +55,9 @@ export class Tab {
   liveChunks: Uint8Array[] = [];
   liveBytes = 0;
   liveOverflowed = false;
+  /** False between attach and the first render(): live bytes are buffered
+   *  but not written, so they can never composite over a stale frame. */
+  presented = false;
   /** Guards against overlapping attach attempts. */
   attaching = false;
 
@@ -173,7 +176,7 @@ export class Tab {
   }
 
   appendLive(data: Uint8Array): void {
-    this.term.write(data);
+    if (this.presented) this.term.write(data);
     this.liveChunks.push(data);
     this.liveBytes += data.length;
     while (this.liveBytes > LIVE_BUFFER_CAP && this.liveChunks.length > 1) {
@@ -183,6 +186,7 @@ export class Tab {
   }
 
   resetForAttach(): void {
+    this.presented = false;
     this.awaitingSnapshot = true;
     this.snapshot = new Uint8Array();
     this.historyLines = [];
@@ -196,6 +200,7 @@ export class Tab {
 
   /** Full re-render: history, spacer, server snapshot, then live output. */
   render(): void {
+    this.presented = true;
     this.term.reset();
     if (this.historyLines.length > 0) {
       const note = this.historyExhausted || this.oldestFetched <= this.oldestAvailable

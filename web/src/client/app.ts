@@ -91,6 +91,9 @@ class Tab {
   liveChunks: Uint8Array[] = [];
   liveBytes = 0;
   liveOverflowed = false;
+  /// False between attach and the first render(): live bytes are buffered
+  /// but not written, so they can never composite over a stale frame.
+  presented = false;
 
   constructor(shellId: Uint8Array, name: string, app: App) {
     this.shellId = shellId;
@@ -200,7 +203,7 @@ class Tab {
   }
 
   appendLive(data: Uint8Array): void {
-    this.term.write(data);
+    if (this.presented) this.term.write(data);
     this.liveChunks.push(data);
     this.liveBytes += data.length;
     while (this.liveBytes > LIVE_BUFFER_CAP && this.liveChunks.length > 1) {
@@ -212,6 +215,7 @@ class Tab {
   /// Full re-render: fetched history, spacer to push it into scrollback,
   /// server snapshot, then everything received live since attach.
   render(): void {
+    this.presented = true;
     this.term.reset();
     if (this.historyLines.length > 0) {
       const note = this.historyExhausted || this.oldestFetched <= this.oldestAvailable
@@ -612,11 +616,28 @@ class App {
     tab.liveChunks = [];
     tab.liveBytes = 0;
     tab.liveOverflowed = false;
+    tab.presented = false;
     tab.setState("live");
 
-    // Initial lazy history page, then render history + snapshot together.
-    if (!tab.historyExhausted) await this.fetchOlderHistory(tab, true);
+    // Render the snapshot NOW: until this reset+redraw runs, live output
+    // composites over whatever stale frame the terminal held, which is
+    // exactly how a burst-triggered reattach used to shear the screen.
+    // History arrives in the background and re-renders when ready.
     tab.render();
+    if (!tab.historyExhausted) {
+      void this.fetchOlderHistory(tab, true)
+        .then(() => tab.render())
+        .catch(() => {});
+    }
+  }
+
+  /// Reattach a live tab the server force-detached (ERR_TOO_SLOW): fetch a
+  /// fresh snapshot under the stored rotated token. The shell is still
+  /// running; only the attachment died.
+  async reattachDropped(tab: Tab): Promise<void> {
+    const entry = loadStored().find((s) => s.id === b64.enc(tab.shellId));
+    if (!entry) return;
+    await this.attachShell(tab.shellId, b64.dec(entry.token), tab.name);
   }
 
   async fetchOlderHistory(tab: Tab, initial = false): Promise<void> {
@@ -741,6 +762,21 @@ class App {
         break;
       case "shellExited":
         if (tab) this.markExited(tab, `exited (code ${env.message.value.exitCode})`);
+        break;
+      case "error":
+        // ERR_TOO_SLOW (spec §8): the server dropped this attachment because
+        // output overran its bounded queue (e.g. an IRC art-spam burst). The
+        // shell is fine — reattach for a fresh snapshot instead of leaving a
+        // wedged tab that still claims to be live.
+        if (
+          tab &&
+          tab.state === "live" &&
+          env.message.value.code === ErrorCode.ERR_TOO_SLOW
+        ) {
+          this.channelToTab.delete(tab.channel);
+          tab.setState("reconnecting");
+          void this.reattachDropped(tab);
+        }
         break;
       case "ping":
         this.transport?.send(channel, envelope({

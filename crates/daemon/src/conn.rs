@@ -895,6 +895,7 @@ impl Conn {
                 std::thread::Builder::new()
                     .name("hf-attach-forward".into())
                     .spawn(move || {
+                        let mut exited = false;
                         for event in events.iter() {
                             let envelope = match event {
                                 AttachmentEvent::Output(data) => Envelope {
@@ -903,20 +904,40 @@ impl Conn {
                                     shell_id: vec![],
                                     message: Some(Msg::TerminalOutput(pb::TerminalOutput { data })),
                                 },
-                                AttachmentEvent::Exited(exit) => Envelope {
-                                    request_id: 0,
-                                    server_id: vec![],
-                                    shell_id: vec![],
-                                    message: Some(Msg::ShellExited(pb::ShellExited {
-                                        exit_code: exit.exit_code as i32,
-                                        signaled: !exit.success,
-                                        signal: String::new(),
-                                    })),
-                                },
+                                AttachmentEvent::Exited(exit) => {
+                                    exited = true;
+                                    Envelope {
+                                        request_id: 0,
+                                        server_id: vec![],
+                                        shell_id: vec![],
+                                        message: Some(Msg::ShellExited(pb::ShellExited {
+                                            exit_code: exit.exit_code as i32,
+                                            signaled: !exit.success,
+                                            signal: String::new(),
+                                        })),
+                                    }
+                                }
                             };
                             if out.blocking_send((channel, envelope)).is_err() {
-                                break;
+                                return;
                             }
+                        }
+                        // Event channel closed without an exit: session-core
+                        // force-detached this attachment (slow consumer, spec
+                        // §8) or it was torn down on another path. Say so on
+                        // the wire (ERR_TOO_SLOW, spec §13) so the client can
+                        // reattach for a fresh snapshot instead of wedging on
+                        // a stale frame. Clients that detached deliberately
+                        // no longer route this channel, so the frame is inert
+                        // for them.
+                        if !exited {
+                            let envelope = error_envelope(
+                                0,
+                                pb::ErrorCode::ErrTooSlow,
+                                "attachment dropped: output overran the slow-consumer bound",
+                                true,
+                            );
+                            let _ = out.blocking_send((channel, envelope));
                         }
                     })
                     .expect("spawn forwarder");

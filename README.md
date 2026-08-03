@@ -303,6 +303,26 @@ upgrade). `@xterm/addon-unicode11` is removed from both clients. Reproduce:
 `npm test` in `web/` (width parity spot checks incl. post-U11 emoji and
 zero-width join semantics).
 
+Output bursts wedged live sessions (2026-08-03, holdfastd v0.0.3 + desktop
+v0.0.8 + web): spec §8 detaches an attachment whose bounded queue overflows
+(128 × ≤8 KiB chunks), and §8 says the wire layer reports `ERR_TOO_SLOW` —
+but nothing ever sent it: the daemon's forwarder just ended, so after a big
+enough burst (an IRC art-spam flood amplified by weechat redraws outruns a
+rendering client) the tab froze on a stale frame while still claiming to be
+live, and the *next* manual reattach composited live output over that stale
+frame while the initial history fetch blocked the reset+redraw — the
+"interleaved stale rows" screenshots. Three changes: the daemon now sends
+`ERR_TOO_SLOW` when an attachment's event channel closes without an exit;
+both clients treat it as "reattach now for a fresh snapshot" (client-core
+surfaces it as a Detached shell-state event); and both clients render the
+snapshot immediately on attach — history loads in the background, and live
+bytes are buffered, never written, until the first post-attach render, so
+nothing can composite over a stale frame. Reproduce: stage a multi-MB text
+file as `~/o-art-msgs.txt` for the shell account, then `cargo run -p
+hf-client-core --example zwburst -- <url> <user> <key>` — PASS requires the
+Detached signal plus a clean reattach snapshot (verified against a live
+daemon; a pre-fix daemon fails with a silent close).
+
 Zero-width characters sheared attach snapshots (2026-08-03, server /
 holdfastd v0.0.2): the Unicode-11 width fix below left one class uncovered —
 upstream avt 0.18 (the server-side terminal model) gives zero-width
