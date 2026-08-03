@@ -1543,7 +1543,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hf-auth"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "hf-client-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "hf-native-client"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "hf-protocol"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "prost",
