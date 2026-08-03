@@ -3,7 +3,12 @@ name: ci
 on:
   push:
   pull_request:
-  workflow_dispatch: # manual: also builds the desktop NSIS installer
+  workflow_dispatch: # manual: also builds the desktop exe (installer opt-in)
+    inputs:
+      installer:
+        description: "Also bundle the NSIS installer (slower; for releases)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 6 * * 1" # weekly, catches newly disclosed advisories
 jobs:
@@ -73,11 +78,16 @@ jobs:
       - run: npm ci
         working-directory: desktop
       - run: cargo install tauri-cli --version ^2 --locked
-      # NSIS bundling paused for faster iteration — restore plain
-      # `cargo tauri build` (and the bundle/nsis path below) for a release.
-      - run: cargo tauri build --no-bundle
+      # NSIS bundling is opt-in (dispatch input) so iteration builds stay fast.
+      - if: ${{ !inputs.installer }}
+        run: cargo tauri build --no-bundle
+        working-directory: desktop
+      - if: ${{ inputs.installer }}
+        run: cargo tauri build
         working-directory: desktop
       - uses: actions/upload-artifact@v4
         with:
           name: holdfast-desktop-nsis
-          path: desktop/src-tauri/target/release/hf-desktop.exe
+          path: |
+            desktop/src-tauri/target/release/hf-desktop.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe

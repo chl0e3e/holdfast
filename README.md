@@ -307,7 +307,7 @@ submission fires the first submit button in tree order, and Cancel came
 first — so the password was silently discarded and login only worked by
 clicking the button. Cancel is now `type=button` in both the login and
 add-server dialogs (the headless core path was re-verified end-to-end
-against a live PAM daemon with `--example authprobe`). Multi-server is genuinely concurrent — one
+against a live PAM daemon with `--example authprobe`); shipped in v0.0.4. Multi-server is genuinely concurrent — one
 supervisor and one QUIC/HTTP3 connection per server; reproduce against your
 own hosts with
 `cargo run -p hf-client-core --example multiserver -- <url> <user> <key> ...`.
