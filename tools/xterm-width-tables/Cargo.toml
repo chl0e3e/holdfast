@@ -1,0 +1,13 @@
+[package]
+name = "hf-xterm-width-tables"
+description = "Generates the clients' xterm.js width provider from the same unicode-width tables the server model (vendored avt) uses, so wrap points agree end to end."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Same requirement avt declares, so the workspace lock resolves both to one
+# version and the generated tables can never drift from the server model.
+unicode-width = "0.1.13"

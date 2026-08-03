@@ -21,6 +21,7 @@ members = [
     "crates/native-client",
     "crates/client-core",
     "crates/ssh-adapter",
+    "tools/xterm-width-tables",
     "spikes/webtransport-echo",
     "spikes/pty-spike",
     "spikes/encoding-spike",

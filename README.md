@@ -288,6 +288,21 @@ event reset wiped the "already handled" flag. The forwarder now resets on
 keydown/keyup instead and consumes the flag per insertion; verified in real
 Chromium (typed space sends exactly one, picker inserts still forwarded).
 
+Width parity generated from the server's table (2026-08-03, desktop v0.0.7 +
+web): the zero-width fix below closed one width-divergence class; the other
+remained — emoji added after Unicode 11 (U+1F972, the U+1FAE0 melting-face
+block, …) are 2 cells in the server model (unicode-width ≈ Unicode 15.1) but
+1 cell in the clients' `@xterm/addon-unicode11` table, so one such emoji in
+scrollback sheared every snapshot replay by a column (same symptom in mosh,
+whose frozen wcwidth predates these emoji). Instead of chasing tables, both
+clients now load a width provider GENERATED from the exact `unicode-width`
+version the vendored avt resolves in Cargo.lock: `cargo run -p
+hf-xterm-width-tables` writes `web/src/client/server-width.ts` and
+`desktop/src/server-width.ts` (committed; regenerate after any unicode-width
+upgrade). `@xterm/addon-unicode11` is removed from both clients. Reproduce:
+`npm test` in `web/` (width parity spot checks incl. post-U11 emoji and
+zero-width join semantics).
+
 Zero-width characters sheared attach snapshots (2026-08-03, server /
 holdfastd v0.0.2): the Unicode-11 width fix below left one class uncovered —
 upstream avt 0.18 (the server-side terminal model) gives zero-width
@@ -302,10 +317,9 @@ wcwidth and xterm.js — bounded at 3 retained marks per cell (T9); `dump()`
 replays them and never emits REP across them. Reproduce: `cargo test -p
 hf-terminal-model` (combining/VS16/ZWJ wrap parity + snapshot round-trips)
 and `cargo test` in `vendor/avt` (upstream suite incl. dump round-trip
-property tests). Known remaining gap: emoji added after Unicode 11 (e.g.
-U+1FAE0) are 2 cells in the model but 1 in the clients' Unicode-11 table;
-closing it needs a client width provider generated from unicode-width's
-tables. Drop the vendored fork when upstream avt handles zero-width.
+property tests). The post-Unicode-11 emoji gap this note originally left
+open is closed by the generated width provider above (desktop v0.0.7).
+Drop the vendored fork when upstream avt handles zero-width.
 
 Unicode widths (2026-08-03, desktop v0.0.6 + web): xterm.js defaults to a
 Unicode 6 width table where most emoji are one cell, but the server model

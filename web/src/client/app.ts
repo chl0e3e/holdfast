@@ -10,7 +10,7 @@
 import { create } from "@bufbuild/protobuf";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
 import {
   AttachShellSchema,
   AuthenticateSchema,
@@ -119,12 +119,12 @@ class Tab {
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
-    // xterm.js defaults to a Unicode 6 width table where most emoji are one
-    // cell; the server model (avt/unicode-width) and the shell's wcwidth say
-    // two. Any disagreement shifts every wrap point when a screen snapshot
-    // is replayed on reattach, garbling apps like weechat.
-    this.term.loadAddon(new Unicode11Addon());
-    this.term.unicode.activeVersion = "11";
+    // Cell widths must match the server model exactly — the provider is
+    // GENERATED from the same unicode-width table avt uses (the Unicode-11
+    // addon previously used here disagreed on post-U11 emoji, shearing
+    // snapshot replays). See tools/xterm-width-tables.
+    this.term.loadAddon(new ServerWidthAddon());
+    this.term.unicode.activeVersion = SERVER_WIDTH_VERSION;
     this.term.open(this.panel);
     // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
     this.panel.addEventListener("wheel", (event) => {

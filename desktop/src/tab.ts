@@ -4,7 +4,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
 import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 
@@ -89,11 +89,11 @@ export class Tab {
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
-    // Unicode 11 widths, matching the server model and wcwidth — see the
-    // web client (app.ts) for the full story; a width disagreement garbles
-    // every snapshot replay.
-    this.term.loadAddon(new Unicode11Addon());
-    this.term.unicode.activeVersion = "11";
+    // Cell widths GENERATED from the server model's unicode-width table —
+    // see the web client (app.ts) and tools/xterm-width-tables; any width
+    // disagreement garbles every snapshot replay.
+    this.term.loadAddon(new ServerWidthAddon());
+    this.term.unicode.activeVersion = SERVER_WIDTH_VERSION;
     this.term.open(this.panel);
     // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
     this.panel.addEventListener("wheel", (event) => {
