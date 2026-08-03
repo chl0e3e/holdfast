@@ -281,6 +281,12 @@ xterm.js drops such an insertion when it has seen a keydown without a
 matching keyup — exactly what the picker causes by taking focus mid-chord —
 so both clients now forward what it declined, without double-sending ordinary
 keystrokes. Pastes still go through the paste-confirmation guard.
+Follow-up (2026-08-03): the first cut doubled every space — the one printable
+key xterm.js handles in `keypress` (it claims keydown only for `keyCode >=
+48`), so its leftover `input` event fired *after* onData and the per-input-
+event reset wiped the "already handled" flag. The forwarder now resets on
+keydown/keyup instead and consumes the flag per insertion; verified in real
+Chromium (typed space sends exactly one, picker inserts still forwarded).
 
 Password login (ADR 0016 addendum, 2026-07-27): a server record with a
 username and no key path authenticates by password, prompted on connect and

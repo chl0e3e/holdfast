@@ -30,7 +30,11 @@ term.open(panel);
 
 const withFix = !location.search.includes("control");
 const inserted = new InsertedTextForwarder();
-if (withFix) panel.addEventListener("input", () => inserted.beginInputEvent(), true);
+if (withFix) {
+  const beginKey = () => inserted.beginKeyEvent();
+  panel.addEventListener("keydown", beginKey, true);
+  panel.addEventListener("keyup", beginKey, true);
+}
 term.onData((data) => {
   inserted.noteTerminalData();
   sent.push(data);

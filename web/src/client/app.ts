@@ -113,9 +113,13 @@ class Tab {
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this.panel);
-    // Reset before xterm.js's own textarea listener (capture on an ancestor
-    // always runs first), so `inserted` describes this event alone.
-    this.panel.addEventListener("input", () => this.inserted.beginInputEvent(), true);
+    // Reset before xterm.js's own key handlers (capture on an ancestor always
+    // runs first). On keydown/keyup, NOT the input event: xterm.js handles
+    // space in `keypress`, whose leftover input event fires after onData — a
+    // per-input-event reset there doubled every space.
+    const beginKey = () => this.inserted.beginKeyEvent();
+    this.panel.addEventListener("keydown", beginKey, true);
+    this.panel.addEventListener("keyup", beginKey, true);
     this.term.onData((data) => {
       this.inserted.noteTerminalData();
       app.sendInput(this, data);
