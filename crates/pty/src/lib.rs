@@ -92,6 +92,16 @@ impl PtyProcess {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(&config.args);
         cmd.env("TERM", "xterm-256color");
+        // A shell with no locale at all runs under POSIX/ASCII and locale-aware
+        // programs (screen, ncurses) render every non-ASCII char as `?`; the
+        // clients only speak UTF-8, so guarantee at least a UTF-8 locale.
+        // C.UTF-8 is built into glibc — no locale generation required.
+        let locale_keys = ["LANG", "LC_ALL", "LC_CTYPE"];
+        let inherited = locale_keys.iter().any(|k| std::env::var_os(k).is_some());
+        let configured = config.env.iter().any(|(k, _)| locale_keys.contains(&k.as_str()));
+        if !inherited && !configured {
+            cmd.env("LANG", "C.UTF-8");
+        }
         for (k, v) in &config.env {
             cmd.env(k, v);
         }

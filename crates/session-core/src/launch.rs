@@ -30,6 +30,9 @@ use crate::{SessionError, ShellResourceLimits};
 const SETPRIV: &str = "/usr/bin/setpriv";
 /// `prlimit` path (util-linux). Absolute for the same reason as `setpriv`.
 const PRLIMIT: &str = "/usr/bin/prlimit";
+/// `env` path (coreutils), used to re-establish a locale after
+/// `setpriv --reset-env` scrubs the environment. Absolute like the others.
+const ENV: &str = "/usr/bin/env";
 /// Fallback shell when the client did not specify a command and we are wrapping
 /// (we cannot pass `None`/`$SHELL` through `setpriv`; `$SHELL` would be the
 /// daemon user's shell anyway, not the target account's).
@@ -52,10 +55,31 @@ pub struct Launch {
     pub args: Vec<String>,
 }
 
+/// Locale variables the dropped shell must keep. `setpriv --reset-env` scrubs
+/// the environment down to TERM/HOME/SHELL/USER/LOGNAME/PATH — without a
+/// locale the shell runs under POSIX/ASCII, and locale-aware programs replace
+/// every non-ASCII character with `?` (e.g. `screen -x` opens an ASCII display
+/// and transcodes a UTF-8 weechat to `?` per emoji). Forward the daemon's own
+/// LANG/LC_ALL/LC_CTYPE; if it has none, fall back to C.UTF-8, which glibc
+/// ships without locale generation.
+fn locale_env() -> Vec<String> {
+    let kept: Vec<String> = ["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| format!("{key}={value}")))
+        .collect();
+    if kept.is_empty() {
+        vec!["LANG=C.UTF-8".to_string()]
+    } else {
+        kept
+    }
+}
+
 /// Build the `setpriv` wrapper argv for a resolved account. Pure and
 /// unit-testable: it never touches the host account database. `program` is the
-/// shell/command to run under the target account.
-fn setpriv_wrap(ids: AccountIds, program: &str, args: &[String]) -> Launch {
+/// shell/command to run under the target account; `locale` is the list of
+/// `KEY=value` locale assignments re-injected via `env(1)` after the reset
+/// (empty = no `env` wrapper).
+fn setpriv_wrap(ids: AccountIds, locale: &[String], program: &str, args: &[String]) -> Launch {
     let mut wrapped = vec![
         "--reuid".to_string(),
         ids.uid.to_string(),
@@ -81,8 +105,12 @@ fn setpriv_wrap(ids: AccountIds, program: &str, args: &[String]) -> Launch {
         // Start from a clean environment for the dropped process.
         "--reset-env".to_string(),
         "--".to_string(),
-        program.to_string(),
     ];
+    if !locale.is_empty() {
+        wrapped.push(ENV.to_string());
+        wrapped.extend(locale.iter().cloned());
+    }
+    wrapped.push(program.to_string());
     wrapped.extend(args.iter().cloned());
     Launch {
         program: Some(SETPRIV.to_string()),
@@ -205,7 +233,13 @@ pub(crate) fn build_launch(
     }
 
     let program = command.filter(|c| !c.is_empty()).unwrap_or(DEFAULT_SHELL);
-    Ok(prlimit_wrap(limits, setpriv_wrap(ids, program, args)))
+    // Missing env(1) only costs the locale re-injection, never the shell.
+    let locale = if std::path::Path::new(ENV).exists() {
+        locale_env()
+    } else {
+        Vec::new()
+    };
+    Ok(prlimit_wrap(limits, setpriv_wrap(ids, &locale, program, args)))
 }
 
 #[cfg(test)]
@@ -268,6 +302,7 @@ mod tests {
                 uid: 1001,
                 gid: 2002,
             },
+            &[],
             "/bin/bash",
             &["-c".into(), "id".into()],
         );
@@ -294,11 +329,42 @@ mod tests {
     }
 
     #[test]
+    fn setpriv_reinjects_locale_via_env_wrapper() {
+        // --reset-env scrubs LANG; the env(1) shim must restore it between the
+        // `--` separator and the command so the shell is not left in the POSIX
+        // (ASCII) locale, where screen/ncurses render non-ASCII as `?`.
+        let l = setpriv_wrap(
+            AccountIds {
+                uid: 1001,
+                gid: 2002,
+            },
+            &["LANG=C.UTF-8".to_string()],
+            "/bin/bash",
+            &[],
+        );
+        let args: Vec<&str> = l.args.iter().map(String::as_str).collect();
+        let sep = args.iter().position(|a| *a == "--").unwrap();
+        assert_eq!(&args[sep..], ["--", ENV, "LANG=C.UTF-8", "/bin/bash"]);
+    }
+
+    #[test]
+    fn locale_env_never_empty() {
+        // Whatever the daemon's own environment, the dropped shell always gets
+        // at least one locale assignment (C.UTF-8 needs no locale generation).
+        let vars = locale_env();
+        assert!(!vars.is_empty());
+        assert!(vars.iter().all(|v| {
+            v.starts_with("LANG=") || v.starts_with("LC_ALL=") || v.starts_with("LC_CTYPE=")
+        }));
+    }
+
+    #[test]
     fn setpriv_wrap_defaults_are_absolute_paths() {
         // Guard against a hostile PATH: both the wrapper and the reference to it
         // are absolute.
         assert!(SETPRIV.starts_with('/'));
         assert!(PRLIMIT.starts_with('/'));
+        assert!(ENV.starts_with('/'));
         assert!(DEFAULT_SHELL.starts_with('/'));
     }
 

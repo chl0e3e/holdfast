@@ -275,6 +275,23 @@ failures (ADR 0018), and client keepalive (ADR 0020). See
 `desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
 Linux container lacks a webview toolchain).
 
+Privilege-dropped shells lost their locale (2026-08-04, holdfastd v0.0.4):
+every non-ASCII character rendered as `?` in a weechat-under-screen session —
+reported as "emojis show as ?" right after the v0.0.3 restart forced fresh
+attaches. Not a rendering bug (the model round-trips emoji byte-for-byte:
+`cargo test -p hf-terminal-model --test emoji_snapshot_probe`): `setpriv
+--reset-env` scrubs LANG/LC_* from every dropped shell, leaving it in the
+POSIX/ASCII locale, so `screen -x` from such a shell opens an ASCII display
+and screen itself transcodes the UTF-8 weechat to one `?` per glyph before
+holdfast ever sees the bytes. The launcher now re-injects the daemon's
+LANG/LC_ALL/LC_CTYPE — falling back to `C.UTF-8`, which glibc provides
+without locale generation — through an absolute-path `env(1)` shim inside
+the setpriv argv, and the PTY layer applies the same fallback when a
+non-dropped daemon has no locale at all. Screen displays attached from a
+pre-fix shell keep their ASCII encoding until reattached from a fixed one.
+Reproduce: `cargo test -p hf-session-core` (argv shape + non-empty locale),
+or live: open a shell and check `locale` reports a UTF-8 codeset.
+
 Emoji and character pickers (2026-07-28): text inserted by a picker (Windows
 `Win+.`, the browser's emoji menu) reaches the terminal in both clients.
 xterm.js drops such an insertion when it has seen a keydown without a
