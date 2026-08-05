@@ -11,6 +11,7 @@ import { create } from "@bufbuild/protobuf";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
+import { findLinks, LinkPopover, loadDockerwmBase, rowText } from "./links.js";
 import {
   AttachShellSchema,
   AuthenticateSchema,
@@ -186,6 +187,31 @@ class Tab {
     });
     // Paste guard: a paste carrying newlines/control chars can inject commands.
     this.panel.addEventListener("paste", (event) => app.handlePaste(this, event));
+    // URLs in output get a hover popover with explicit open actions (T9: no
+    // auto-open, full destination shown). Hover detection works even when the
+    // application owns the mouse (weechat mouse mode), where click-to-open
+    // can't: clicks are forwarded to the app, popover buttons are plain DOM.
+    this.term.registerLinkProvider({
+      provideLinks: (bufferLineNumber, callback) => {
+        const line = this.term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!line) return callback(undefined);
+        const row = rowText({
+          length: line.length,
+          getCell: (x) => line.getCell(x),
+        });
+        const links = findLinks(row.text).map((found) => ({
+          range: {
+            start: { x: row.cols[found.start]! + 1, y: bufferLineNumber },
+            end: { x: row.cols[found.end - 1]! + 1, y: bufferLineNumber },
+          },
+          text: found.url,
+          activate: (event: MouseEvent, url: string) => app.linkPopover.show(event, url),
+          hover: (event: MouseEvent, url: string) => app.linkPopover.show(event, url),
+          leave: () => app.linkPopover.scheduleHide(),
+        }));
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
     this.setState("connecting");
   }
 
@@ -249,6 +275,7 @@ class App {
   backoffMs = 1000;
   status = document.getElementById("status")!;
   fontSize = loadFontSize();
+  linkPopover = new LinkPopover(loadDockerwmBase());
 
   async start(): Promise<void> {
     document.getElementById("new-shell")!.onclick = () => void this.newShell();

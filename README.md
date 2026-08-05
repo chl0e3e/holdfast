@@ -275,6 +275,22 @@ failures (ADR 0018), and client keepalive (ADR 0020). See
 `desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
 Linux container lacks a webview toolchain).
 
+Terminal link popover (2026-08-05, web): URLs in output are detected
+client-side (http/https only — OSC 8 hyperlinks stay inert per T9) and
+hovering one shows a popover with the full destination and two explicit
+actions: open directly, or open in a disposable dockerwm browser
+(`<dockerwm>/newswall/open?url=…`, dockerwm's cookie-authenticated page that
+provisions a sandboxed container and forwards to its viewer). A popover
+instead of click-to-open because weechat's mouse mode owns the terminal's
+clicks — xterm.js forwards them to the application — while hover detection
+stays client-side; the buttons are ordinary DOM outside the mouse capture.
+Nothing auto-opens, and the URL is shown verbatim (textContent) before any
+navigation. The dockerwm base defaults to `https://docker.asylum.st`;
+override or disable via localStorage key `holdfast.dockerwm.url` (empty
+string hides the button). Wide/cluster glyphs before a URL are mapped
+cell-accurately (`rowText`); URLs wrapped by weechat's own line-breaking are
+not rejoined. Reproduce: `npm test` in `web/` (links.test.ts).
+
 Privilege-dropped shells lost their locale (2026-08-04, holdfastd v0.0.4):
 every non-ASCII character rendered as `?` in a weechat-under-screen session —
 reported as "emojis show as ?" right after the v0.0.3 restart forced fresh
