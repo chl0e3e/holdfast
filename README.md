@@ -275,7 +275,8 @@ failures (ADR 0018), and client keepalive (ADR 0020). See
 `desktop/README.md`; the Tauri layer builds on Windows/CI (this repo's
 Linux container lacks a webview toolchain).
 
-Terminal link popover (2026-08-05, web): URLs in output are detected
+Terminal link popover (2026-08-05, web + desktop v0.0.9): URLs in output
+are detected
 client-side (http/https only — OSC 8 hyperlinks stay inert per T9) and
 hovering one shows a popover with the full destination and two explicit
 actions: open directly, or open in a disposable dockerwm browser
@@ -285,7 +286,11 @@ instead of click-to-open because weechat's mouse mode owns the terminal's
 clicks — xterm.js forwards them to the application — while hover detection
 stays client-side; the buttons are ordinary DOM outside the mouse capture.
 Nothing auto-opens, and the URL is shown verbatim (textContent) before any
-navigation. The dockerwm base defaults to `https://docker.asylum.st`;
+navigation. On desktop the webview has no working window.open, so the
+buttons invoke a Rust `open_external` command that re-validates the scheme
+(hostile output must not reach other URL-scheme handlers) and hands the URL
+to the OS default browser via the `open` crate. The dockerwm base defaults
+to `https://docker.asylum.st`;
 override or disable via localStorage key `holdfast.dockerwm.url` (empty
 string hides the button). Wide/cluster glyphs before a URL are mapped
 cell-accurately (`rowText`); URLs wrapped by weechat's own line-breaking are

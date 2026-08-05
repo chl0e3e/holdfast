@@ -7,6 +7,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
 import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
+import { findLinks, rowText, type LinkPopover } from "./links.js";
 
 export type TabState =
   | "connecting"
@@ -22,6 +23,8 @@ const LIVE_BUFFER_CAP = 2 * 1024 * 1024; // re-render buffer bound (spec §8 spi
 export interface TabDelegate {
   /** Shared, persisted terminal font size (see font-size.ts). */
   fontSize: number;
+  /** Shared hover popover for URLs in output (see links.ts). */
+  linkPopover: LinkPopover;
   adjustFontSize(delta: number): void;
   select(tab: Tab): void;
   sendInput(tab: Tab, data: string): void;
@@ -150,6 +153,31 @@ export class Tab {
     });
     // Paste guard (T9): newline/control-char pastes need confirmation.
     this.panel.addEventListener("paste", (event) => app.handlePaste(this, event));
+    // URLs in output get a hover popover with explicit open actions (T9: no
+    // auto-open, full destination shown). Hover detection works even when the
+    // application owns the mouse (weechat mouse mode), where click-to-open
+    // can't: clicks are forwarded to the app, popover buttons are plain DOM.
+    this.term.registerLinkProvider({
+      provideLinks: (bufferLineNumber, callback) => {
+        const line = this.term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!line) return callback(undefined);
+        const row = rowText({
+          length: line.length,
+          getCell: (x) => line.getCell(x),
+        });
+        const links = findLinks(row.text).map((found) => ({
+          range: {
+            start: { x: row.cols[found.start]! + 1, y: bufferLineNumber },
+            end: { x: row.cols[found.end - 1]! + 1, y: bufferLineNumber },
+          },
+          text: found.url,
+          activate: (event: MouseEvent, url: string) => app.linkPopover.show(event, url),
+          hover: (event: MouseEvent, url: string) => app.linkPopover.show(event, url),
+          leave: () => app.linkPopover.scheduleHide(),
+        }));
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
     this.setState("connecting");
   }
 

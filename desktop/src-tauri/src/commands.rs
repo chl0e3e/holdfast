@@ -208,3 +208,20 @@ pub async fn rename_shell(
         .await
         .map_err(err)
 }
+
+/// Open an http(s) URL in the OS default browser (terminal link popover).
+/// The scheme is validated HERE, not just in the frontend: terminal output
+/// is attacker-controlled (T9) and a compromised webview must not be able
+/// to launch arbitrary programs through custom URL scheme handlers.
+#[tauri::command]
+pub async fn open_external(url: String) -> CmdResult<()> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("only http(s) URLs can be opened".into());
+    }
+    // `open::that` can block on the spawned handler; keep it off the runtime.
+    tauri::async_runtime::spawn_blocking(move || open::that(url))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}

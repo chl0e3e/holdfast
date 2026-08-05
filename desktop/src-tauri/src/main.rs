@@ -58,6 +58,7 @@ fn main() {
             commands::request_history,
             commands::forget_shell,
             commands::rename_shell,
+            commands::open_external,
         ])
         .run(tauri::generate_context!())
         .expect("error while running holdfast desktop");

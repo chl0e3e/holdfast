@@ -115,3 +115,42 @@ dialog input {
 }
 dialog .hint { color: var(--dim); font-size: 12px; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; }
+
+/* Hover popover for URLs in terminal output (links.ts). */
+#link-popover {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 44rem;
+  padding: 5px 8px;
+  background: var(--bg-raised);
+  border: 1px solid #000;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+#link-popover[hidden] { display: none; }
+
+.link-popover-url {
+  color: var(--accent);
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30rem;
+}
+
+#link-popover button {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#link-popover button:hover { border-color: var(--accent); }

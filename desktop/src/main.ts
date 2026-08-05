@@ -16,6 +16,7 @@ import {
 import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
+import { LinkPopover, loadDockerwmBase } from "./links.js";
 
 const HISTORY_PAGE_LINES = 200;
 
@@ -40,6 +41,11 @@ class App implements TabDelegate {
   /** Server key the login dialog is currently prompting for. */
   loginFor: string | null = null;
   fontSize = loadFontSize();
+  // Navigation goes through the Rust side: the webview has no working
+  // window.open, and open_external re-validates the scheme (T9).
+  linkPopover = new LinkPopover(loadDockerwmBase(), (url) => {
+    void ipc.openExternal(url).catch(() => {});
+  });
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();

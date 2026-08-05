@@ -108,6 +108,10 @@ export const ipc = {
 
   renameShell: (server: string, shell: string, name: string) =>
     invoke<void>("rename_shell", { server, shell, name }),
+
+  /** Open an http(s) URL in the OS default browser (scheme re-validated in
+   *  Rust — hostile terminal output must not reach other scheme handlers). */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
 };
 
 export type Events = {
