@@ -1,6 +1,6 @@
 # Holdfast desktop client
 
-Multi-session, multi-server tabbed terminal client (ADR 0019): Tauri 2 +
+Multi-shell, multi-server tabbed terminal client (ADR 0019): Tauri 2 +
 xterm.js on top of the GUI-free `hf-client-core` crate. Windows is the
 first shipping target; Linux/macOS work with the same code.
 
@@ -29,7 +29,11 @@ tokens recover via idempotency keys (ADR 0018).
 Frontend only (works anywhere with Node):
 
 ```bash
-cd desktop && npm install && npm run typecheck && npm run build
+cd desktop
+npm ci
+npm test
+npm run typecheck
+npm run build
 ```
 
 Full app (needs a webview toolchain):
@@ -63,3 +67,30 @@ replaced.
 3. Quit the app, restart it: all three tabs come back live, screens intact.
 4. Kill the network briefly: tabs show `reconnecting`, then recover.
 5. Terminate one shell; restart the app: it stays gone, the others return.
+6. Hover a tab: its tooltip identifies title, shell, server, state and shell ID.
+   Close the exited tab with its `×`; it disappears without a confirmation.
+7. Close a live tab and accept the warning: the attachment closes but the
+   shell keeps running. Restart Holdfast and confirm its tab reappears.
+
+### Terminal burst, scrolling and resize regression
+
+With a shell attached, reproduce a large ordered burst:
+
+```bash
+seq 1 200000
+```
+
+PASS requires the tab either to render the ordered output or transparently
+reattach to a clean authoritative snapshot; it must not show partial/stale
+rows from another shell. Then produce at least 1,000 quieter lines, scroll to
+the top, and keep scrolling upward. Each history page must preserve the viewed
+rows instead of snapping to the bottom. Finally maximize and restore the
+window: the xterm viewport must reach the right edge of its black panel and
+the document itself must have no horizontal or vertical scrollbar.
+
+The bounded replay/history policy and close-state decisions are covered by:
+
+```bash
+cd desktop
+npm test
+```

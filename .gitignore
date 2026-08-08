@@ -10,3 +10,6 @@ web/dist/
 desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/src-tauri/.msquic/
+desktop/src-tauri/resources/windows/msquic.dll
+spikes/*/target/

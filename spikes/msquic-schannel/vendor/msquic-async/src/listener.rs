@@ -1,0 +1,381 @@
+use crate::connection::Connection;
+
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "msquic-seera")]
+use seera_msquic as msquic;
+
+use std::collections::VecDeque;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+
+use thiserror::Error;
+use tracing::{error, info, trace};
+
+/// Listener for incoming connections.
+pub struct Listener {
+    inner: Arc<ListenerInner>,
+    msquic_listener: msquic::Listener,
+}
+
+impl Listener {
+    /// Create a new listener.
+    pub fn new(
+        registration: &msquic::Registration,
+        configuration: msquic::Configuration,
+    ) -> Result<Self, ListenError> {
+        let inner = Arc::new(ListenerInner::new(configuration));
+        let inner_in_ev = inner.clone();
+        let msquic_listener = msquic::Listener::open(registration, move |_, ev| match ev {
+            msquic::ListenerEvent::NewConnection { info, connection } => {
+                inner_in_ev.handle_event_new_connection(info, connection)
+            }
+            msquic::ListenerEvent::StopComplete {
+                app_close_in_progress,
+            } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+        })
+        .map_err(ListenError::OtherError)?;
+        trace!("Listener({:p}) new", inner);
+        Ok(Self {
+            inner,
+            msquic_listener,
+        })
+    }
+
+    /// Start the listener.
+    pub fn start<T: AsRef<[msquic::BufferRef]>>(
+        &self,
+        alpn: &T,
+        local_address: Option<SocketAddr>,
+    ) -> Result<(), ListenError> {
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        match exclusive.state {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {
+                return Err(ListenError::AlreadyStarted);
+            }
+        }
+        let local_address: Option<msquic::Addr> = local_address.map(|x| x.into());
+        self.msquic_listener
+            .start(alpn.as_ref(), local_address.as_ref())
+            .map_err(ListenError::OtherError)?;
+        exclusive.state = ListenerState::StartComplete;
+        Ok(())
+    }
+
+    /// Start the listener on a specified port.
+    pub fn start_on_port<T: AsRef<[msquic::BufferRef]>>(
+        &self,
+        alpn: &T,
+        local_port: Option<u16>,
+    ) -> Result<(), ListenError> {
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        match exclusive.state {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {
+                return Err(ListenError::AlreadyStarted);
+            }
+        }
+        let local_address: Option<msquic::Addr> = local_port.map(|x| {
+            let mut addr = msquic::Addr::from(SocketAddr::from(([0, 0, 0, 0], x)));
+            addr.ipv4.sin_family = msquic::ffi::QUIC_ADDRESS_FAMILY_UNSPEC as u16;
+            addr
+        });
+        self.msquic_listener
+            .start(alpn.as_ref(), local_address.as_ref())
+            .map_err(ListenError::OtherError)?;
+        exclusive.state = ListenerState::StartComplete;
+        Ok(())
+    }
+
+    /// Accept a new connection.
+    pub fn accept(&self) -> Accept<'_> {
+        Accept(self)
+    }
+
+    /// Poll to accept a new connection.
+    pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
+        trace!("Listener({:p}) poll_accept", self);
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+
+        if !exclusive.new_connections.is_empty() {
+            return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
+        }
+
+        match exclusive.state {
+            ListenerState::Open => {
+                return Poll::Ready(Err(ListenError::NotStarted));
+            }
+            ListenerState::StartComplete | ListenerState::Shutdown => {}
+            ListenerState::ShutdownComplete => {
+                return Poll::Ready(Err(ListenError::Finished));
+            }
+        }
+        exclusive.new_connection_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
+    /// Stop the listener.
+    pub fn stop(&self) -> Stop<'_> {
+        Stop(self)
+    }
+
+    /// Poll to stop the listener.
+    pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
+        trace!("Listener({:p}) poll_stop", self);
+        let mut call_stop = false;
+        {
+            let mut exclusive = self.inner.exclusive.lock().unwrap();
+
+            match exclusive.state {
+                ListenerState::Open => {
+                    return Poll::Ready(Err(ListenError::NotStarted));
+                }
+                ListenerState::StartComplete => {
+                    call_stop = true;
+                    exclusive.state = ListenerState::Shutdown;
+                }
+                ListenerState::Shutdown => {}
+                ListenerState::ShutdownComplete => {
+                    return Poll::Ready(Ok(()));
+                }
+            }
+            exclusive.shutdown_complete_waiters.push(cx.waker().clone());
+        }
+        if call_stop {
+            self.msquic_listener.stop();
+        }
+        Poll::Pending
+    }
+
+    /// Get the local address the listener is bound to.
+    pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
+        self.msquic_listener
+            .get_local_addr()
+            .map(|addr| addr.as_socket().expect("not a socket address"))
+            .map_err(|_| ListenError::Failed)
+    }
+
+    /// Get the port the listener is bound to.
+    pub fn local_port(&self) -> Result<u16, ListenError> {
+        self.msquic_listener
+            .get_local_addr()
+            .map(|addr| addr.port())
+            .map_err(|_| ListenError::Failed)
+    }
+
+    /// Set the SSL key log file for new connections.
+    pub fn set_sslkeylog_file(&self, file: std::fs::File) -> Result<(), ListenError> {
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        if exclusive.sslkeylog_file.is_some() {
+            return Err(ListenError::SslKeyLogFileAlreadySet);
+        }
+        exclusive.sslkeylog_file = Some(file);
+        Ok(())
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        trace!("Listener(Inner: {:p}) dropping", self.inner);
+    }
+}
+
+struct ListenerInner {
+    exclusive: Mutex<ListenerInnerExclusive>,
+    shared: ListenerInnerShared,
+}
+
+struct ListenerInnerExclusive {
+    state: ListenerState,
+    new_connections: VecDeque<Connection>,
+    new_connection_waiters: Vec<Waker>,
+    shutdown_complete_waiters: Vec<Waker>,
+    sslkeylog_file: Option<std::fs::File>,
+}
+unsafe impl Sync for ListenerInnerExclusive {}
+unsafe impl Send for ListenerInnerExclusive {}
+
+struct ListenerInnerShared {
+    configuration: msquic::Configuration,
+}
+unsafe impl Sync for ListenerInnerShared {}
+unsafe impl Send for ListenerInnerShared {}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ListenerState {
+    Open,
+    StartComplete,
+    Shutdown,
+    ShutdownComplete,
+}
+
+impl ListenerInner {
+    fn new(configuration: msquic::Configuration) -> Self {
+        Self {
+            exclusive: Mutex::new(ListenerInnerExclusive {
+                state: ListenerState::Open,
+                new_connections: VecDeque::new(),
+                new_connection_waiters: Vec::new(),
+                shutdown_complete_waiters: Vec::new(),
+                sslkeylog_file: None,
+            }),
+            shared: ListenerInnerShared { configuration },
+        }
+    }
+
+    fn handle_event_new_connection(
+        &self,
+        _info: msquic::NewConnectionInfo<'_>,
+        #[cfg(feature = "msquic-2-5")] connection: msquic::ConnectionRef,
+        #[cfg(not(feature = "msquic-2-5"))] connection: msquic::Connection,
+    ) -> Result<(), msquic::Status> {
+        trace!("Listener({:p}) New connection", self);
+
+        let mut exclusive = self.exclusive.lock().unwrap();
+
+        let (sslkeylog_file, tls_secrets) = if let Some(file) = exclusive.sslkeylog_file.as_ref() {
+            let sslkeylog_file = match file.try_clone() {
+                Ok(f) => {
+                    info!(
+                        "Listener({:p}) SSL key log file set for new connection",
+                        self
+                    );
+                    Some(f)
+                }
+                Err(e) => {
+                    error!(
+                        "Listener({:p}) Failed to clone SSL key log file: {}",
+                        self, e
+                    );
+                    None
+                }
+            };
+
+            if sslkeylog_file.is_none() {
+                (None, None)
+            } else {
+                // Create a QUIC_TLS_SECRETS structure with zeroed fields
+                let tls_secrets = Box::new(msquic::ffi::QUIC_TLS_SECRETS {
+                    SecretLength: 0,
+                    ClientRandom: [0; 32],
+                    IsSet: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1 {
+                        _bitfield_align_1: [0; 0],
+                        _bitfield_1: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1::new_bitfield_1(
+                            0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                        ),
+                    },
+                    ClientEarlyTrafficSecret: [0; 64],
+                    ClientHandshakeTrafficSecret: [0; 64],
+                    ServerHandshakeTrafficSecret: [0; 64],
+                    ClientTrafficSecret0: [0; 64],
+                    ServerTrafficSecret0: [0; 64],
+                });
+                unsafe {
+                    msquic::Api::set_param(
+                        connection.as_raw(),
+                        msquic::ffi::QUIC_PARAM_CONN_TLS_SECRETS,
+                        std::mem::size_of::<msquic::ffi::QUIC_TLS_SECRETS>() as u32,
+                        tls_secrets.as_ref() as *const _ as *const _,
+                    )
+                }?;
+                (sslkeylog_file, Some(tls_secrets))
+            }
+        } else {
+            (None, None)
+        };
+        connection.set_configuration(&self.shared.configuration)?;
+        #[cfg(feature = "msquic-2-5")]
+        let new_conn =
+            Connection::from_raw(unsafe { connection.as_raw() }, tls_secrets, sslkeylog_file);
+        #[cfg(not(feature = "msquic-2-5"))]
+        let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file);
+
+        exclusive.new_connections.push_back(new_conn);
+        exclusive
+            .new_connection_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    fn handle_event_stop_complete(
+        &self,
+        app_close_in_progress: bool,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "Listener({:p}) Stop complete: app_close_in_progress={}",
+            self,
+            app_close_in_progress
+        );
+        {
+            let mut exclusive = self.exclusive.lock().unwrap();
+            exclusive.state = ListenerState::ShutdownComplete;
+
+            exclusive
+                .new_connection_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+
+            exclusive
+                .shutdown_complete_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+            trace!(
+                "Listener({:p}) new_connections's len={}",
+                self,
+                exclusive.new_connections.len()
+            );
+        }
+        // unsafe {
+        //     Arc::from_raw(self as *const _);
+        // }
+        Ok(())
+    }
+}
+
+impl Drop for ListenerInner {
+    fn drop(&mut self) {
+        trace!("ListenerInner({:p}) dropping", self);
+    }
+}
+
+/// Future generated by `[Listener::accept()]`.
+pub struct Accept<'a>(&'a Listener);
+
+impl Future for Accept<'_> {
+    type Output = Result<Connection, ListenError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_accept(cx)
+    }
+}
+
+/// Future generated by `[Listener::stop()]`.
+pub struct Stop<'a>(&'a Listener);
+
+impl Future for Stop<'_> {
+    type Output = Result<(), ListenError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_stop(cx)
+    }
+}
+
+#[derive(Debug, Error, Clone)]
+pub enum ListenError {
+    #[error("Not started yet")]
+    NotStarted,
+    #[error("already started")]
+    AlreadyStarted,
+    #[error("finished")]
+    Finished,
+    #[error("failed")]
+    Failed,
+    #[error("SSL key log file already set")]
+    SslKeyLogFileAlreadySet,
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
+}

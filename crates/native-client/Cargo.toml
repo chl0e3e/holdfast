@@ -16,7 +16,6 @@ path = "src/lib.rs"
 
 [dependencies]
 hf-protocol = { path = "../protocol" }
-wtransport.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -28,11 +27,27 @@ rand.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+wtransport.workspace = true
+
 # The hf CLI binary is unix-only (raw mode, SIGWINCH); the lib stays portable.
 # Verify with: cargo check -p hf-native-client --lib --target x86_64-pc-windows-msvc
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 libc.workspace = true
+
+# Windows desktop builds use MsQuic's Schannel TLS provider. These dependencies
+# are target-only: Linux/macOS and holdfastd remain on wtransport/quinn/rustls.
+# `msquic` deliberately uses the official prebuilt DLL (`find`); see
+# desktop/scripts/prepare-msquic.ps1 and ADR 0022.
+[target.'cfg(windows)'.dependencies]
+bytes.workspace = true
+h3 = { workspace = true, features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes"] }
+http.workspace = true
+msquic = { version = "2.5.1-beta", default-features = false, features = ["find"] }
+msquic-async = { path = "../../vendor/msquic-async-schannel", default-features = false, features = ["msquic-2-5", "tokio"] }
+sha2.workspace = true
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }

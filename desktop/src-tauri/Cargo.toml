@@ -7,8 +7,8 @@
 
 [package]
 name = "hf-desktop"
-description = "Holdfast desktop client: multi-session, multi-server tabbed terminals (Tauri 2 + xterm.js)."
-version = "0.0.9"
+description = "Holdfast desktop client: multi-shell, multi-server tabbed terminals (Tauri 2 + xterm.js)."
+version = "0.0.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
@@ -29,3 +29,8 @@ open = "5"
 
 [profile.release]
 lto = "thin"
+
+# Dependency patches only apply from a workspace root. The desktop crate is a
+# standalone workspace, so repeat the root's narrowly-scoped H3 client patch.
+[patch.crates-io]
+h3 = { path = "../../vendor/h3-wt-client" }

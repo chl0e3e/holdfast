@@ -17,8 +17,16 @@ import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 import { LinkPopover, loadDockerwmBase } from "./links.js";
+import {
+  attachmentAction,
+  closeBehavior,
+  detachedEventAction,
+  emptyWorkspace,
+  shouldAttachWhenConnected,
+} from "./ui-state.js";
 
 const HISTORY_PAGE_LINES = 200;
+const CLOSED_SHELL_CAP = 1_024;
 
 type ServerGroup = {
   key: string;
@@ -34,7 +42,15 @@ class App implements TabDelegate {
   groups = new Map<string, ServerGroup>();
   active: Tab | null = null;
   status = document.getElementById("status")!;
+  attachmentAction = document.getElementById("attachment-action") as HTMLButtonElement;
+  terminateAction = document.getElementById("terminate") as HTMLButtonElement;
+  emptyState = document.getElementById("empty-state")!;
   resizeTimers = new Map<Tab, ReturnType<typeof setTimeout>>();
+  private resizeFrame: number | null = null;
+  private panelObserver: ResizeObserver | null = null;
+  /** Tabs deliberately closed during this run. Bounded so authoritative
+   *  server updates do not immediately recreate them as "elsewhere". */
+  private closedShells = new Set<string>();
   /** Running shells on a server we hold no resume token for (opened by
    *  another client): server key → shell hex → its dim button. */
   elsewhere = new Map<string, Map<string, HTMLButtonElement>>();
@@ -49,8 +65,9 @@ class App implements TabDelegate {
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();
-    document.getElementById("detach")!.onclick = () => void this.detachActive();
-    document.getElementById("terminate")!.onclick = () => void this.terminateActive();
+    document.getElementById("empty-primary")!.onclick = () => this.emptyPrimaryAction();
+    this.attachmentAction.onclick = () => void this.toggleAttachment();
+    this.terminateAction.onclick = () => void this.terminateActive();
     document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
     document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
     // Cancel buttons are type=button (see index.html); close their dialogs here.
@@ -58,9 +75,19 @@ class App implements TabDelegate {
       (document.getElementById("add-server-dialog") as HTMLDialogElement).close();
     document.getElementById("login-cancel")!.onclick = () =>
       (document.getElementById("login-dialog") as HTMLDialogElement).close();
-    window.addEventListener("resize", () => this.active?.fit.fit());
+    window.addEventListener("resize", () => this.scheduleFit());
+    this.panelObserver = new ResizeObserver(() => this.scheduleFit());
+    this.panelObserver.observe(document.getElementById("panels")!);
 
     await this.subscribeAndBootstrap();
+  }
+
+  tabStateChanged(tab: Tab): void {
+    if (tab === this.active) this.syncChrome();
+  }
+
+  serverDisplayName(server: string): string {
+    return this.groups.get(server)?.displayName ?? server.slice(0, 8);
   }
 
   /// One font size for all tabs, persisted. Emoji render at cell size, so
@@ -87,10 +114,7 @@ class App implements TabDelegate {
         if (e.status === "connected") {
           // Bring back every tab that lost its attachment while we were away.
           for (const tab of this.tabs) {
-            if (
-              tab.server === e.server &&
-              (tab.state === "reconnecting" || tab.state === "detached" || tab.state === "connecting")
-            ) {
+            if (tab.server === e.server && shouldAttachWhenConnected(tab.state)) {
               void this.attach(tab);
             }
           }
@@ -103,24 +127,28 @@ class App implements TabDelegate {
       },
       shellState: (e) => {
         const tab = this.findTab(e.server, e.shell);
-        if (!tab) return;
+        if (!tab || tab.closing) return;
         switch (e.state) {
           case "attached":
             break; // attach() drives the live transition itself
           case "detached":
+            if (detachedEventAction(tab.state, tab.detaching) === "mark-detached") {
+              tab.setState("detached");
+              break;
+            }
             // Server-initiated drop (ERR_TOO_SLOW after an output burst) or
             // transport death. The connection is often still healthy, so try
             // to reattach immediately for a fresh snapshot — attach() is
             // guarded against overlap and a failed attempt falls back to the
             // next `connected` retry loop.
-            if (tab.state === "live") {
+            if (detachedEventAction(tab.state, false) === "reattach") {
               tab.setState("reconnecting");
               void this.attach(tab);
             }
             break;
           case "orphaned":
             tab.setState("orphaned");
-            tab.term.write("\r\n\x1b[31m[token unrecoverable — Terminate to kill, or close the tab]\x1b[0m\r\n");
+            tab.appendNotice("\r\n\x1b[31m[token unrecoverable — Terminate to kill, or close the tab]\x1b[0m\r\n");
             break;
           case "exited":
             this.markExited(tab, e.exitCode !== undefined ? `exited (code ${e.exitCode})` : "exited");
@@ -157,6 +185,7 @@ class App implements TabDelegate {
     } else {
       this.refreshStatusLine();
     }
+    this.syncChrome();
   }
 
   ensureGroup(server: Pick<ServerView, "key" | "displayName">): ServerGroup {
@@ -164,7 +193,7 @@ class App implements TabDelegate {
     if (group) return group;
     const container = document.createElement("div");
     container.className = "server-group";
-    const label = document.createElement("span");
+    const label = document.createElement("button");
     label.className = "server-label";
     label.textContent = server.displayName;
     label.dataset.status = "connecting";
@@ -175,7 +204,8 @@ class App implements TabDelegate {
     const slot = document.createElement("span");
     slot.style.display = "contents";
     const newShell = document.createElement("button");
-    newShell.textContent = "+";
+    newShell.textContent = "New";
+    newShell.className = "new-shell";
     newShell.title = `New shell on ${server.displayName}`;
     newShell.onclick = () => void this.newShell(server.key);
     const remove = document.createElement("button");
@@ -194,6 +224,7 @@ class App implements TabDelegate {
       slot,
     };
     this.groups.set(server.key, group);
+    this.syncChrome();
     return group;
   }
 
@@ -225,6 +256,7 @@ class App implements TabDelegate {
     const next = this.tabs[0];
     if (!this.active && next) this.select(next);
     this.refreshStatusLine();
+    this.syncChrome();
   }
 
   renameTab(tab: Tab): void {
@@ -246,6 +278,7 @@ class App implements TabDelegate {
   ensureTab(server: string, shell: string, name: string): Tab {
     let tab = this.findTab(server, shell);
     if (tab) return tab;
+    this.closedShells.delete(this.shellKey(server, shell));
     const group = this.groups.get(server);
     if (!group) throw new Error(`no group for server ${server}`);
     tab = new Tab(server, shell, name, group.slot, this);
@@ -263,6 +296,11 @@ class App implements TabDelegate {
     if (!group) return;
     const running = new Set<string>();
     for (const row of rows) {
+      const closedKey = this.shellKey(server, row.shell);
+      if (this.closedShells.has(closedKey)) {
+        if (row.state !== "running") this.closedShells.delete(closedKey);
+        continue;
+      }
       if (row.state !== "running") {
         const tab = this.findTab(server, row.shell);
         if (tab && tab.state !== "exited") this.markExited(tab, "exited while away");
@@ -317,18 +355,20 @@ class App implements TabDelegate {
   }
 
   async attach(tab: Tab): Promise<void> {
-    if (tab.attaching || tab.state === "exited" || tab.state === "orphaned") return;
+    if (tab.closing || tab.attaching || tab.state === "exited" || tab.state === "orphaned") return;
     tab.attaching = true;
+    this.syncChrome();
     try {
       tab.fit.fit();
-      tab.resetForAttach();
+      const generation = tab.resetForAttach();
       const reply = await ipc.attachShell(
         tab.server,
         tab.shell,
         tab.term.cols,
         tab.term.rows,
-        (bytes) => tab.onChannelMessage(bytes),
+        (bytes) => tab.onChannelMessage(bytes, generation),
       );
+      if (tab.closing) return;
       tab.oldestAvailable = reply.oldestHistoryLineId;
       tab.historyExhausted = reply.newestHistoryLineId === 0;
       tab.setState("live");
@@ -353,6 +393,7 @@ class App implements TabDelegate {
       console.warn(`attach ${tab.shell.slice(0, 8)}:`, error);
     } finally {
       tab.attaching = false;
+      this.syncChrome();
     }
   }
 
@@ -372,33 +413,35 @@ class App implements TabDelegate {
   async fetchOlderHistory(tab: Tab, initial = false): Promise<void> {
     if (tab.fetchingHistory || tab.historyExhausted || tab.state !== "live") return;
     if (!initial && tab.oldestFetched === 0) return;
+    const generation = tab.attachmentGeneration;
     tab.fetchingHistory = true;
     try {
       const page = await ipc.requestHistory(tab.server, tab.shell, tab.oldestFetched, HISTORY_PAGE_LINES);
+      if (tab.closing || generation !== tab.attachmentGeneration || tab.state !== "live") return;
       if (page.lines.length === 0) {
         tab.historyExhausted = true;
         return;
       }
-      tab.historyLines = [...page.lines, ...tab.historyLines];
+      tab.prependHistory(page.lines);
       tab.oldestFetched = page.firstLineId;
       if (page.truncatedByEviction || page.firstLineId <= tab.oldestAvailable) {
         tab.historyExhausted = true;
       }
-      if (!initial) tab.render();
+      if (!initial) tab.render(true);
     } catch {
       // History is a nicety; the live screen is already correct.
     } finally {
-      tab.fetchingHistory = false;
+      if (generation === tab.attachmentGeneration) tab.fetchingHistory = false;
     }
   }
 
   sendInput(tab: Tab, data: string): void {
-    if (tab.state !== "live") return;
+    if (tab.closing || tab.state !== "live") return;
     void ipc.shellInput(tab.server, tab.shell, new TextEncoder().encode(data));
   }
 
   sendResize(tab: Tab, cols: number, rows: number): void {
-    if (tab.state !== "live") return;
+    if (tab.closing || tab.state !== "live") return;
     // Debounce: drags produce floods; the Rust writer coalesces further.
     const existing = this.resizeTimers.get(tab);
     if (existing) clearTimeout(existing);
@@ -421,21 +464,114 @@ class App implements TabDelegate {
   }
 
   select(tab: Tab): void {
+    if (tab.closing) return;
     this.active = tab;
     for (const t of this.tabs) {
-      t.panel.style.display = t === tab ? "block" : "none";
-      t.button.classList.toggle("active", t === tab);
+      t.setActive(t === tab);
     }
-    tab.fit.fit();
-    tab.term.focus();
+    this.scheduleFit();
+    requestAnimationFrame(() => tab.term.focus());
+    this.syncChrome();
   }
 
-  async detachActive(): Promise<void> {
+  closeTab(tab: Tab): void {
+    void this.closeTabNow(tab);
+  }
+
+  private async closeTabNow(tab: Tab): Promise<void> {
+    if (tab.closing) return;
+    const behavior = closeBehavior(tab.state);
+    if (
+      behavior.confirmRunning &&
+      !confirm(
+        `Close ${tab.name}?\n\nThe shell keeps running on ${this.serverDisplayName(tab.server)}, ` +
+          `and its tab will return the next time Holdfast starts.`,
+      )
+    ) {
+      return;
+    }
+
+    tab.closing = true;
+    tab.detaching = true;
+    this.syncChrome();
+    try {
+      if (behavior.detach) await ipc.detachShell(tab.server, tab.shell);
+      // Running-shell close is intentionally reversible: retain its resume
+      // token so restarting the client can reopen it. Exited/orphaned tabs
+      // have nothing useful to resume and are forgotten permanently.
+      if (behavior.forget) await ipc.forgetShell(tab.server, tab.shell);
+    } catch (error) {
+      tab.closing = false;
+      tab.detaching = false;
+      this.setStatus(`close failed: ${error}`, "err");
+      this.syncChrome();
+      return;
+    }
+
+    this.rememberClosed(tab.server, tab.shell);
+    const elsewhere = this.elsewhere.get(tab.server)?.get(tab.shell);
+    elsewhere?.remove();
+    this.elsewhere.get(tab.server)?.delete(tab.shell);
+    const oldIndex = this.tabs.indexOf(tab);
+    const wasActive = this.active === tab;
+    const timer = this.resizeTimers.get(tab);
+    if (timer) clearTimeout(timer);
+    this.resizeTimers.delete(tab);
+    this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+    if (wasActive) this.active = null;
+    tab.dispose();
+    if (wasActive) {
+      const next = this.tabs[Math.min(Math.max(oldIndex, 0), this.tabs.length - 1)];
+      if (next) this.select(next);
+    }
+    this.syncChrome();
+  }
+
+  recoverTerminal(tab: Tab): void {
+    // render() may detect overflow inside attach() just before that method's
+    // finally block clears `attaching`; defer one microtask so recovery is not
+    // mistaken for an overlapping user attach.
+    queueMicrotask(() => void this.recoverTerminalNow(tab));
+  }
+
+  private async recoverTerminalNow(tab: Tab): Promise<void> {
+    if (tab.closing || tab.attaching || tab.detaching || tab.state === "exited" || tab.state === "orphaned") {
+      return;
+    }
+    tab.detaching = true;
+    tab.setState("reconnecting");
+    try {
+      // A fresh attachment supplies an authoritative snapshot and drops any
+      // xterm parser backlog whose bounded local replay could not cover it.
+      await ipc.detachShell(tab.server, tab.shell);
+    } catch (error) {
+      console.warn(`render recovery detach ${tab.shell.slice(0, 8)}:`, error);
+    } finally {
+      tab.detaching = false;
+    }
+    if (!tab.closing) await this.attach(tab);
+  }
+
+  async toggleAttachment(): Promise<void> {
     const tab = this.active;
-    if (!tab || tab.state !== "live") return;
-    await ipc.detachShell(tab.server, tab.shell);
-    tab.setState("detached");
-    tab.term.write("\r\n\x1b[2m[detached — shell keeps running; restart the app to reattach]\x1b[0m\r\n");
+    if (!tab || tab.attaching || tab.detaching) return;
+    if (tab.state === "detached") {
+      await this.attach(tab);
+      return;
+    }
+    if (tab.state !== "live") return;
+    tab.detaching = true;
+    this.syncChrome();
+    try {
+      await ipc.detachShell(tab.server, tab.shell);
+      tab.setState("detached");
+      tab.appendNotice("\r\n\x1b[2m[detached — shell keeps running; choose Attach when ready]\x1b[0m\r\n");
+    } catch (error) {
+      this.setStatus(`detach failed: ${error}`, "err");
+    } finally {
+      tab.detaching = false;
+      this.syncChrome();
+    }
   }
 
   async terminateActive(): Promise<void> {
@@ -454,7 +590,7 @@ class App implements TabDelegate {
 
   markExited(tab: Tab, how: string): void {
     tab.setState("exited");
-    tab.term.write(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
+    tab.appendNotice(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
   }
 
   addServerDialog(): void {
@@ -543,9 +679,67 @@ class App implements TabDelegate {
     const connected = groups.filter((g) => g.status === "connected").length;
     if (groups.length === 0) return;
     this.setStatus(
-      `${connected}/${groups.length} servers connected`,
+      connected === groups.length
+        ? `${connected} server${connected === 1 ? "" : "s"} connected`
+        : `${connected} of ${groups.length} servers connected`,
       connected === groups.length ? "ok" : "warn",
     );
+  }
+
+  private emptyPrimaryAction(): void {
+    if (this.groups.size === 0) {
+      this.addServerDialog();
+      return;
+    }
+    const server = [...this.groups.values()].find((group) => group.status === "connected")
+      ?? this.groups.values().next().value;
+    if (server) void this.newShell(server.key);
+  }
+
+  private scheduleFit(): void {
+    if (this.resizeFrame !== null) return;
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      const tab = this.active;
+      if (!tab || tab.closing || tab.panel.clientWidth === 0 || tab.panel.clientHeight === 0) return;
+      tab.fit.fit();
+    });
+  }
+
+  private shellKey(server: string, shell: string): string {
+    return `${server}:${shell}`;
+  }
+
+  private rememberClosed(server: string, shell: string): void {
+    const key = this.shellKey(server, shell);
+    this.closedShells.delete(key);
+    this.closedShells.add(key);
+    while (this.closedShells.size > CLOSED_SHELL_CAP) {
+      const oldest = this.closedShells.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.closedShells.delete(oldest);
+    }
+  }
+
+  /** Keep shell actions and the empty workspace synchronized with the active
+   *  tab. This closes the old dead-end where Detach offered no Attach path. */
+  private syncChrome(): void {
+    const tab = this.active;
+    this.emptyState.hidden = tab !== null;
+    if (!tab) {
+      const configured = this.groups.size > 0;
+      const empty = emptyWorkspace(configured);
+      document.getElementById("empty-title")!.textContent = empty.title;
+      document.getElementById("empty-copy")!.textContent = empty.copy;
+      document.getElementById("empty-primary")!.textContent = empty.action;
+    }
+
+    const busy = (tab?.attaching ?? false) || (tab?.detaching ?? false);
+    const action = attachmentAction(tab?.state ?? null, busy);
+    this.attachmentAction.textContent = action.label;
+    this.attachmentAction.disabled = !action.enabled;
+    this.attachmentAction.title = action.title;
+    this.terminateAction.disabled = !tab || tab.state === "exited" || busy;
   }
 }
 

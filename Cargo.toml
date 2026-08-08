@@ -3,9 +3,16 @@ resolver = "2"
 # The desktop app is its own workspace: building it needs platform GUI
 # toolchains (WebView2 on Windows, webkit2gtk on Linux) that must not become
 # a prerequisite for `cargo test --workspace` on the core repo.
-# vendor/avt is the patched avt fork (see [patch.crates-io] below); excluded
-# so its own test/bench dev-deps stay out of the workspace graph.
-exclude = ["desktop/src-tauri", "vendor/avt"]
+# Patched third-party crates are excluded so their own test/bench dev-deps stay
+# out of the workspace graph. h3-wt-client and msquic-async-schannel are used
+# only by hf-native-client's Windows transport (ADR 0022).
+exclude = [
+    "desktop/src-tauri",
+    "vendor/avt",
+    "vendor/h3-wt-client",
+    "vendor/msquic-async-schannel",
+    "spikes/msquic-schannel",
+]
 members = [
     "crates/protocol",
     "crates/daemon",
@@ -82,6 +89,9 @@ zeroize = "1"
 # matching wcwidth and xterm.js. Drop when upstream avt handles zero-width.
 [patch.crates-io]
 avt = { path = "vendor/avt" }
+# h3 0.0.8 cannot advertise WebTransport from a client without this one-method
+# patch. It remains wire-compatible with the daemon's h3-quinn server.
+h3 = { path = "vendor/h3-wt-client" }
 
 # Crate dependency direction (enforced by review until tooling exists):
 #   protocol, terminal-model, pty        -> no HTTP/QUIC imports

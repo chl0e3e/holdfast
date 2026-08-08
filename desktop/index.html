@@ -8,46 +8,70 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <header id="topbar">
-      <div id="tabs"></div>
-      <div id="actions">
-        <button id="font-smaller" title="Smaller text (or Ctrl+scroll)">A&minus;</button>
-        <button id="font-larger" title="Larger text (or Ctrl+scroll)">A+</button>
-        <button id="add-server" title="Add a server">+ server</button>
-        <button id="detach" title="Detach: shell keeps running">detach</button>
-        <button id="terminate" title="Terminate: kill the shell">terminate</button>
+    <header id="chrome">
+      <div id="appbar">
+        <div id="brand" aria-label="Holdfast">
+          <span id="brand-mark" aria-hidden="true"><span></span></span>
+          <span id="brand-name">Holdfast</span>
+        </div>
+        <div id="status" data-kind="warn" role="status" aria-live="polite">Starting…</div>
+        <div id="global-actions" class="button-row">
+          <div class="button-cluster" aria-label="Terminal text size">
+            <button id="font-smaller" class="icon-button" title="Smaller text (or Ctrl+scroll)" aria-label="Smaller terminal text">A&minus;</button>
+            <button id="font-larger" class="icon-button" title="Larger text (or Ctrl+scroll)" aria-label="Larger terminal text">A+</button>
+          </div>
+          <button id="add-server" class="primary-button" title="Add a server"><span aria-hidden="true">+</span> Server</button>
+        </div>
       </div>
-      <div id="status" data-kind="warn">starting…</div>
+      <div id="workspacebar">
+        <nav id="tabs" aria-label="Servers and shells"></nav>
+        <div id="shell-actions" class="button-row">
+          <button id="attachment-action" disabled>Detach</button>
+          <button id="terminate" class="danger-button" title="Terminate: kill the shell" disabled>Terminate</button>
+        </div>
+      </div>
     </header>
-    <main id="panels"></main>
+    <main id="panels">
+      <section id="empty-state">
+        <div class="empty-mark" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">Roaming terminal</p>
+        <h1 id="empty-title">Connect your first server</h1>
+        <p id="empty-copy">Add a Holdfast daemon, then open a shell that stays put while you roam.</p>
+        <button id="empty-primary" class="primary-button">Add server</button>
+      </section>
+    </main>
 
     <dialog id="add-server-dialog">
       <form method="dialog" id="add-server-form">
+        <p class="eyebrow">Connection</p>
         <h2>Add server</h2>
-        <label>URL <input id="srv-url" placeholder="https://host or http://127.0.0.1:8080" required /></label>
-        <label>Name <input id="srv-name" placeholder="display name" /></label>
-        <label>Username <input id="srv-user" placeholder="username" /></label>
-        <label>SSH key path <input id="srv-key" placeholder="C:\Users\me\.ssh\id_ed25519 (empty = password login)" /></label>
-        <p class="hint">Username + key: SSH auth. Username only: password login (asked on connect). Both empty: loopback dev daemons.</p>
+        <label><span>URL</span><input id="srv-url" placeholder="https://host or http://127.0.0.1:8080" required autofocus /></label>
+        <label><span>Name</span><input id="srv-name" placeholder="Display name" /></label>
+        <div class="form-grid">
+          <label><span>Username</span><input id="srv-user" placeholder="Username" /></label>
+          <label><span>SSH key path</span><input id="srv-key" placeholder="C:\Users\me\.ssh\id_ed25519" /></label>
+        </div>
+        <p class="hint">Use a username and key for SSH authentication, or leave the key empty for password login. Leave both empty only for a loopback development daemon.</p>
         <menu>
           <!-- type=button, NOT a submit: the first submit button in a form is
                what Enter activates, so a submit-Cancel placed first silently
                swallowed Enter-confirmed input. -->
           <button type="button" id="srv-cancel">Cancel</button>
-          <button id="srv-submit" value="default">Add</button>
+          <button id="srv-submit" class="primary-button" value="default">Add server</button>
         </menu>
       </form>
     </dialog>
 
     <dialog id="login-dialog">
       <form method="dialog" id="login-form">
+        <p class="eyebrow">Authentication</p>
         <h2>Log in</h2>
         <p id="login-target"></p>
         <p id="login-error" class="hint" hidden></p>
-        <label>Password <input id="login-password" type="password" autocomplete="current-password" /></label>
+        <label><span>Password</span><input id="login-password" type="password" autocomplete="current-password" /></label>
         <menu>
           <button type="button" id="login-cancel">Cancel</button>
-          <button value="default">Log in</button>
+          <button class="primary-button" value="default">Log in</button>
         </menu>
       </form>
     </dialog>

@@ -1,0 +1,7 @@
+/target
+/build
+bin
+obj
+.vscode
+.reviews
+.paw

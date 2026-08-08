@@ -7,7 +7,10 @@
 //! tokens rotate on every attach and must be re-persisted by the caller
 //! (see [`state`]).
 
+#[cfg(windows)]
+mod schannel_adapter;
 pub mod state;
+mod transport;
 
 use std::io::Read;
 use std::time::Duration;
@@ -18,11 +21,10 @@ use hf_protocol::framing::{encode_frame, FrameDecoder};
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use hf_protocol::{FRAME_BYTES_DEFAULT, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use wtransport::tls::Sha256Digest;
-use wtransport::{ClientConfig, Endpoint, RecvStream, SendStream};
+use transport::{connect_webtransport, RecvStream, SendStream};
 // Re-exported so drivers built on [`ServerConn::into_parts`]/[`attach_shell`]
-// need no direct wtransport dependency.
-pub use wtransport::Connection;
+// do not depend on a platform TLS/QUIC implementation.
+pub use transport::Connection;
 
 const T: Duration = Duration::from_secs(10);
 const SSH_PRIVATE_KEY_MAX_BYTES: u64 = 64 * 1024;
@@ -46,7 +48,7 @@ pub struct Chan {
 
 impl Chan {
     async fn open(connection: &Connection) -> Result<Chan> {
-        let (send, recv) = connection.open_bi().await?.await?;
+        let (send, recv) = connection.open_bi().await?;
         Ok(Chan {
             send,
             recv,
@@ -92,17 +94,19 @@ impl Chan {
 
 /// Minimal HTTP/1.1 GET for the daemon's dev info endpoint (loopback use).
 async fn http_get(base: &str, path: &str) -> Result<String> {
-    let host_port = base
-        .strip_prefix("http://")
-        .ok_or_else(|| anyhow!("server URL must start with https:// or http:// (got {base})"))?
-        .trim_end_matches('/');
-    let mut stream = tokio::net::TcpStream::connect(host_port)
+    let (host, port) = host_and_port(base, "http://", 80)?;
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let mut stream = tokio::net::TcpStream::connect((host.as_str(), port))
         .await
-        .with_context(|| format!("connect {host_port}"))?;
-    let host = host_port.split(':').next().unwrap_or(host_port);
+        .with_context(|| format!("connect {authority}"))?;
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
         )
         .await?;
     let mut response = Vec::new();
@@ -180,31 +184,9 @@ pub async fn connect(http_base: &str) -> Result<ServerConn> {
 ///   HTTP/3 endpoint (default port 443) and validate the certificate through
 ///   WebPKI, exactly like a browser. No bootstrap request is needed.
 pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerConn> {
-    let (connection, hash) = if let Some(rest) = http_base.strip_prefix("https://") {
-        let rest = rest.trim_end_matches('/');
-        let url = match rest.rsplit_once(':') {
-            Some((_, port)) if port.chars().all(|c| c.is_ascii_digit()) => {
-                format!("https://{rest}/")
-            }
-            _ => format!("https://{rest}:443/"),
-        };
-        let endpoint = Endpoint::client(
-            ClientConfig::builder()
-                .with_bind_default()
-                .with_native_certs()
-                .build(),
-        )?;
-        let connection = endpoint
-            .connect(&url)
-            .await
-            .context("webtransport connect")?;
-        // Channel binding (ADR 0008): hash of the leaf certificate WebPKI
-        // validation just authenticated.
-        let digest = connection
-            .peer_identity()
-            .and_then(|chain| chain.as_slice().first().map(|c| c.hash()))
-            .ok_or_else(|| anyhow!("server presented no certificate"))?;
-        (connection, *digest.as_ref())
+    let (host, port, expected_hash) = if http_base.starts_with("https://") {
+        let (host, port) = host_and_port(http_base, "https://", 443)?;
+        (host, port, None)
     } else {
         let info: serde_json::Value =
             serde_json::from_str(&http_get(http_base, "/webtransport-info").await?)
@@ -220,26 +202,10 @@ pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerCon
             .try_into()
             .map_err(|_| anyhow!("cert hash must be 32 bytes"))?;
 
-        let host = http_base
-            .strip_prefix("http://")
-            .unwrap_or(http_base)
-            .split(':')
-            .next()
-            .unwrap_or("127.0.0.1")
-            .to_string();
-
-        let endpoint = Endpoint::client(
-            ClientConfig::builder()
-                .with_bind_default()
-                .with_server_certificate_hashes([Sha256Digest::new(hash)])
-                .build(),
-        )?;
-        let connection = endpoint
-            .connect(format!("https://{host}:{port}/"))
-            .await
-            .context("webtransport connect")?;
-        (connection, hash)
+        let (host, _) = host_and_port(http_base, "http://", 80)?;
+        (host, port, Some(hash))
     };
+    let (connection, hash) = connect_webtransport(&host, port, expected_hash).await?;
 
     let mut control = Chan::open(&connection).await?;
     control
@@ -272,6 +238,50 @@ pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerCon
         hello,
         next_request: 1,
     })
+}
+
+/// Parse the deliberately small server URL surface accepted by the native
+/// clients: an origin only, with an optional numeric port. Paths, userinfo,
+/// fragments, and query strings are rejected instead of being reinterpreted.
+fn host_and_port(base: &str, scheme: &str, default_port: u16) -> Result<(String, u16)> {
+    let authority = base
+        .strip_prefix(scheme)
+        .ok_or_else(|| anyhow!("server URL must start with https:// or http:// (got {base})"))?
+        .trim_end_matches('/');
+    if authority.is_empty()
+        || authority.contains('/')
+        || authority.contains('@')
+        || authority.contains('?')
+        || authority.contains('#')
+    {
+        bail!("server URL must contain only a host and optional port");
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, suffix) = rest
+            .split_once(']')
+            .ok_or_else(|| anyhow!("unterminated IPv6 address in server URL"))?;
+        if host.is_empty() {
+            bail!("server URL host is empty");
+        }
+        let port = match suffix.strip_prefix(':') {
+            Some(value) if !value.is_empty() => value.parse().context("invalid server port")?,
+            Some(_) => bail!("server port is empty"),
+            None if suffix.is_empty() => default_port,
+            None => bail!("invalid text after IPv6 host"),
+        };
+        return Ok((host.to_string(), port));
+    }
+    if authority.matches(':').count() > 1 {
+        bail!("IPv6 addresses in server URLs must be enclosed in brackets");
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !port.is_empty() => Ok((
+            host.to_string(),
+            port.parse().context("invalid server port")?,
+        )),
+        Some(_) => bail!("server URL host or port is empty"),
+        None => Ok((authority.to_string(), default_port)),
+    }
 }
 
 /// Run the authentication exchange; returns the grant the daemon issues
@@ -553,7 +563,9 @@ pub async fn attach_shell(
     cols: u16,
     rows: u16,
 ) -> Result<AttachedShell, AttachError> {
-    let mut chan = Chan::open(connection).await.map_err(AttachError::Transport)?;
+    let mut chan = Chan::open(connection)
+        .await
+        .map_err(AttachError::Transport)?;
     let mut env = plain(Msg::AttachShell(pb::AttachShell {
         resume_token: token.to_vec(),
         cols: cols as u32,
@@ -580,7 +592,7 @@ pub async fn attach_shell(
                 code: pb::ErrorCode::try_from(code).unwrap_or(pb::ErrorCode::ErrInternal),
                 retryable,
                 message,
-            })
+            });
         }
     };
     Ok(AttachedShell {
@@ -777,6 +789,41 @@ impl AttachmentReader {
                 Some(Msg::Ping(p)) => return Ok(ShellEvent::Ping(p.nonce)),
                 _ => continue,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::host_and_port;
+
+    #[test]
+    fn parses_origin_only_server_urls() {
+        assert_eq!(
+            host_and_port("https://holdfast.example", "https://", 443).unwrap(),
+            ("holdfast.example".to_string(), 443)
+        );
+        assert_eq!(
+            host_and_port("https://holdfast.example:4444/", "https://", 443).unwrap(),
+            ("holdfast.example".to_string(), 4444)
+        );
+        assert_eq!(
+            host_and_port("https://[2001:db8::1]:4444", "https://", 443).unwrap(),
+            ("2001:db8::1".to_string(), 4444)
+        );
+    }
+
+    #[test]
+    fn rejects_paths_userinfo_and_malformed_ports() {
+        for url in [
+            "https://host/path",
+            "https://user@host",
+            "https://host:",
+            "https://host:nope",
+            "https://[2001:db8::1",
+            "https://2001:db8::1",
+        ] {
+            assert!(host_and_port(url, "https://", 443).is_err(), "{url}");
         }
     }
 }

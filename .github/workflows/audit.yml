@@ -45,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: pwsh ./desktop/scripts/prepare-msquic.ps1
       - run: cargo check -p hf-native-client --lib --locked
       - run: cargo check -p hf-client-core --locked
 
@@ -60,6 +61,8 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
+        working-directory: desktop
+      - run: npm test
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
@@ -85,6 +88,10 @@ jobs:
       - if: ${{ inputs.installer }}
         run: cargo tauri build
         working-directory: desktop
+      - run: |
+          $deps = & $env:DUMPBIN_EXE /dependents desktop/src-tauri/target/release/hf-desktop.exe | Out-String
+          if ($deps -notmatch "msquic\.dll") { throw "desktop exe does not import msquic.dll" }
+          if ($deps -match "msquic\.sys") { throw "desktop exe still imports the broken msquic.sys name" }
       - uses: actions/upload-artifact@v4
         with:
           name: holdfast-desktop-nsis

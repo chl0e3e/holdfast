@@ -275,6 +275,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "c-types"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cdd721bd07cbda73f51e6a380ebfa4f02346f8b889e1ee92942350fefd16414"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "cairo-rs"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -593,13 +603,29 @@ dependencies = [
 
 [[package]]
 name = "ctor"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec09e802f5081de6157da9a75701d6c713d8dc3ba52571fd4bd25f412644e8a6"
+dependencies = [
+ "ctor-proc-macro 0.0.6",
+ "dtor 0.0.6",
+]
+
+[[package]]
+name = "ctor"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "352d39c2f7bef1d6ad73db6f5160efcaed66d94ef8c6c573a8410c00bf909a98"
 dependencies = [
- "ctor-proc-macro",
- "dtor",
+ "ctor-proc-macro 0.0.7",
+ "dtor 0.3.0",
 ]
+
+[[package]]
+name = "ctor-proc-macro"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "ctor-proc-macro"
@@ -870,12 +896,27 @@ dependencies = [
 
 [[package]]
 name = "dtor"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97cbdf2ad6846025e8e25df05171abfb30e3ababa12ee0a0e44b9bbe570633a8"
+dependencies = [
+ "dtor-proc-macro 0.0.5",
+]
+
+[[package]]
+name = "dtor"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1057d6c64987086ff8ed0fd3fbf377a6b7d205cc7715868cd401705f715cbe4"
 dependencies = [
- "dtor-proc-macro",
+ "dtor-proc-macro 0.0.6",
 ]
+
+[[package]]
+name = "dtor-proc-macro"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
 name = "dtor-proc-macro"
@@ -1503,6 +1544,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "h3"
+version = "0.0.8"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1572,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "hf-desktop"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1591,17 +1644,24 @@ version = "0.0.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bytes",
  "dirs",
+ "h3",
  "hf-auth",
  "hf-protocol",
+ "http",
  "libc",
+ "msquic",
+ "msquic-async",
  "nix",
  "rand 0.9.5",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ssh-key",
  "thiserror 2.0.19",
  "tokio",
+ "windows-sys 0.61.2",
  "wtransport",
 ]
 
@@ -1726,7 +1786,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -2318,6 +2378,34 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "msquic"
+version = "2.5.1-beta"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bea65fda5241a20053862abd4fc4e8ce92a08b5471a3ce26714d02fe42ebd6f6"
+dependencies = [
+ "bitflags 2.13.1",
+ "c-types",
+ "ctor 0.4.3",
+ "libc",
+ "socket2 0.5.10",
+]
+
+[[package]]
+name = "msquic-async"
+version = "0.4.1"
+dependencies = [
+ "bytes",
+ "futures-io",
+ "hex",
+ "libc",
+ "msquic",
+ "rangemap",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3190,7 +3278,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2",
+ "socket2 0.6.5",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -3228,7 +3316,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -3337,6 +3425,12 @@ checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "rangemap"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
 
 [[package]]
 name = "raw-window-handle"
@@ -3968,6 +4062,16 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -4431,7 +4535,7 @@ dependencies = [
  "anyhow",
  "brotli",
  "cargo_metadata",
- "ctor",
+ "ctor 0.8.0",
  "dom_query",
  "dunce",
  "glob",
@@ -4599,7 +4703,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.5",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -5682,7 +5786,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pki-types",
  "sha2 0.11.0",
- "socket2",
+ "socket2 0.6.5",
  "thiserror 2.0.19",
  "time",
  "tokio",

@@ -1,0 +1,84 @@
+# Standalone workspace (excluded from the repo root): msquic builds the MsQuic
+# C library from source via cmake, and the question this spike answers is
+# Windows/Schannel-only. Neither belongs in `cargo test --workspace` on the
+# core repo. Same rationale as desktop/src-tauri.
+[workspace]
+
+[package]
+name = "spike-msquic-schannel"
+description = "Phase 0 spike: can a Schannel-backed MsQuic client reproduce the ADR 0008 channel binding?"
+edition = "2021"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[lib]
+name = "spike_msquic_schannel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "certprobe"
+path = "src/main.rs"
+
+# Stage 2: channel binding through the h3 layer + the WebTransport handshake.
+[[bin]]
+name = "wtprobe"
+path = "src/wtprobe.rs"
+
+# Stage 3: a WebTransport bidi stream carrying holdfast's own protocol, over
+# our own h3::quic adapter rather than msquic-h3.
+[[bin]]
+name = "stage3"
+path = "src/stage3.rs"
+
+# msquic's default `src` feature CANNOT build from crates.io on Windows: the
+# platform CMakeLists unconditionally compiles datapath_raw_xdp_win.c and
+# includes submodules/xdp-for-windows/published/external, a git submodule the
+# published .crate does not vendor. It fails with
+#   datapath_raw_xdp_win.c(16,1): fatal error C1083: 'xdp/wincommon.h'
+# So we use `find`, which links a prebuilt msquic. Despite the name it does not
+# require vcpkg — it only probes $VCPKG_ROOT/installed/x64-windows for
+# bin/msquic.dll, bin/msquic.pdb and lib/msquic.lib, which spike.ps1 populates
+# from Microsoft's official Microsoft.Native.Quic.MsQuic.Schannel NuGet package.
+# That package is the Schannel-flavoured build, which is the whole point.
+#
+# msquic-h3 0.0.7 pins h3 0.0.8 — the same version the daemon speaks through
+# h3-quinn 0.0.10 — so stage 2 needs no vendoring. Not depended on yet: stage 1
+# deliberately stops below HTTP/3.
+# msquic-h3 is vendored and patched: upstream exposes no route to the msquic
+# connection it owns, which the ADR 0008 channel binding needs. The patch is a
+# single accessor, marked in vendor/msquic-h3/msquic-h3/src/connection.rs.
+# Vendored inside the spike on purpose - nothing in the main repo commits to
+# carrying this fork until stage 2 proves the mechanism.
+[dependencies]
+msquic = { version = "2.5.1-beta", default-features = false, features = ["find"] }
+msquic-h3 = { path = "vendor/msquic-h3", default-features = false, features = ["native-find"] }
+# The stream/webtransport/proto modules a transport backend needs are gated
+# behind this feature. The name is h3's own warning that the surface is
+# unstable: a port pins h3 exactly and re-checks on every bump.
+h3 = { version = "0.0.8", features = [
+    "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
+] }
+# Vendored for one accessor: the ADR 0008 channel binding needs GetParam on the
+# live msquic handle, which upstream keeps private.
+msquic-async = { path = "vendor/msquic-async", default-features = false, features = ["msquic-2-5", "tokio"] }
+# The real protocol crate, so stage 3 proves wire compatibility rather than an
+# approximation of it. Compiles its .proto with protox (pure Rust, no protoc).
+hf-protocol = { path = "../../crates/protocol" }
+http = "1"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+sha2 = "0.10"
+base64 = "0.22"
+serde_json = "1"
+anyhow = "1"
+
+# h3 is vendored and patched too: its client builder has no
+# `enable_webtransport`, so an h3 client advertises ENABLE_WEBTRANSPORT=0 and
+# h3-webtransport's server refuses the session with H3_SETTINGS_ERROR
+# ("webtransport is not supported by client", server.rs:90). This must be a
+# [patch.crates-io] rather than a path dep: the vendored msquic-h3 also depends
+# on h3, and both have to resolve to the SAME crate instance or the
+# h3::quic trait impls will not line up.
+[patch.crates-io]
+h3 = { path = "vendor/h3" }

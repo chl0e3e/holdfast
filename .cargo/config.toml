@@ -1,0 +1,5 @@
+[env]
+# `desktop/scripts/prepare-msquic.ps1` creates this vcpkg-shaped tree from the
+# pinned Microsoft Schannel NuGet package. A repository-relative value makes
+# it visible both to the root client crates and the standalone Tauri workspace.
+VCPKG_ROOT = { value = "desktop/src-tauri/.msquic/vcpkg", relative = true, force = true }

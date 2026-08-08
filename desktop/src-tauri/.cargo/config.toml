@@ -1,0 +1,4 @@
+[env]
+# The standalone desktop workspace does not inherit the repository workspace's
+# Cargo environment. Its Windows bootstrap creates this tree before Rust runs.
+VCPKG_ROOT = { value = ".msquic/vcpkg", relative = true, force = true }

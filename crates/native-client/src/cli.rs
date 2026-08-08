@@ -3,10 +3,13 @@ use std::io::{Read, Write};
 use anyhow::{anyhow, bail, Result};
 use hf_native_client::state::{self, hex, unhex, ShellEntry};
 use hf_native_client::{
-    attach_failure_action, connect_with, AttachError, AttachedShell, AuthMethod, FailureAction,
-    ServerConn, ShellEvent,
+    attach_failure_action, connect_with, AttachedShell, AuthMethod, FailureAction, ServerConn,
+    ShellEvent,
 };
 use hf_protocol::pb;
+
+#[cfg(test)]
+use hf_native_client::AttachError;
 
 /// Connection options shared by every command (global flags).
 #[derive(Clone)]
