@@ -116,6 +116,8 @@ pub struct ServerView {
     pub key: String,
     pub url: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
     pub shells: Vec<ShellView>,
     /// Present connection status. Status events emitted before the GUI
     /// subscribes (e.g. `auth-required` milliseconds after spawn) are
@@ -223,6 +225,7 @@ impl Core {
                         key,
                         url: record.url,
                         display_name: record.display_name,
+                        username: record.username,
                         shells: record
                             .shells
                             .into_iter()
@@ -461,6 +464,7 @@ mod view_tests {
                 key: "abc".into(),
                 url: "https://host".into(),
                 display_name: "host".into(),
+                username: Some("alice".into()),
                 shells: vec![],
                 status: Some(ServerStatus::AuthRequired),
                 status_detail: Some("authentication failed".into()),
@@ -471,6 +475,7 @@ mod view_tests {
         assert_eq!(server["status"], "auth-required");
         assert_eq!(server["statusDetail"], "authentication failed");
         assert_eq!(server["displayName"], "host");
+        assert_eq!(server["username"], "alice");
 
         // Absent status must be omitted, not null: the GUI tests truthiness.
         let view = BootstrapView {
@@ -478,6 +483,7 @@ mod view_tests {
                 key: "abc".into(),
                 url: "https://host".into(),
                 display_name: "host".into(),
+                username: None,
                 shells: vec![],
                 status: None,
                 status_detail: None,

@@ -94,3 +94,22 @@ The bounded replay/history policy and close-state decisions are covered by:
 cd desktop
 npm test
 ```
+
+### Windows password-login regression
+
+Build the Windows executable with the Schannel MsQuic package prepared by
+`scripts/prepare-msquic.ps1`, add a production server by its full hostname and
+configure a username without an SSH key. The login prompt must show both the
+hostname and saved username. Submit a deliberately incorrect password once:
+
+- `holdfastd` must audit `AuthenticationFailed`, proving the credential reached
+  the daemon through Schannel, HTTP/3 and WebTransport;
+- the dialog must say `Password rejected`, not repeat an unexplained prompt;
+- a TLS, DNS or stream-setup failure must instead say that the password was not
+  checked.
+
+The transport-neutral correct/wrong-password and grant restart paths run with:
+
+```bash
+cargo test -p hf-client-core password_login_and_grant_only_restart --locked
+```

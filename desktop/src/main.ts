@@ -31,6 +31,7 @@ const CLOSED_SHELL_CAP = 1_024;
 type ServerGroup = {
   key: string;
   displayName: string;
+  username?: string;
   status: ServerStatus;
   container: HTMLElement;
   label: HTMLElement;
@@ -188,7 +189,7 @@ class App implements TabDelegate {
     this.syncChrome();
   }
 
-  ensureGroup(server: Pick<ServerView, "key" | "displayName">): ServerGroup {
+  ensureGroup(server: Pick<ServerView, "key" | "displayName" | "username">): ServerGroup {
     let group = this.groups.get(server.key);
     if (group) return group;
     const container = document.createElement("div");
@@ -218,6 +219,7 @@ class App implements TabDelegate {
     group = {
       key: server.key,
       displayName: server.displayName,
+      username: server.username,
       status: "connecting",
       container,
       label,
@@ -612,7 +614,11 @@ class App implements TabDelegate {
             user.value.trim() || undefined,
             key.value.trim() || undefined,
           );
-          this.ensureGroup({ key: server, displayName: name.value.trim() || trimmedUrl });
+          this.ensureGroup({
+            key: server,
+            displayName: name.value.trim() || trimmedUrl,
+            username: user.value.trim() || undefined,
+          });
           this.refreshStatusLine();
         } catch (error) {
           this.setStatus(`add server failed: ${error}`, "err");
@@ -640,7 +646,9 @@ class App implements TabDelegate {
     }
     this.loginFor = server;
     document.getElementById("login-target")!.textContent =
-      `${group.displayName} needs a password to connect.`;
+      group.username
+        ? `Log in to ${group.displayName} as ${group.username}.`
+        : `${group.displayName} needs a password to connect.`;
     error.hidden = !detail;
     error.textContent = detail ?? "";
     const form = document.getElementById("login-form") as HTMLFormElement;

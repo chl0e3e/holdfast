@@ -13,6 +13,7 @@ export type ServerView = {
   key: string;
   url: string;
   displayName: string;
+  username?: string;
   shells: ShellView[];
   /** Status at bootstrap time — set when the core emitted one before the
    *  frontend subscribed (e.g. auth-required right after launch). */

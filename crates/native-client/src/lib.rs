@@ -170,6 +170,15 @@ pub enum AuthMethod {
     Password { username: String, password: String },
 }
 
+/// The daemon received an authentication exchange and explicitly rejected
+/// it.  Callers use this marker to distinguish a bad credential from a
+/// transport/TLS failure that happened before the credential was judged.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct AuthenticationRejected {
+    pub message: String,
+}
+
 /// Connect, negotiate and authenticate (dev grant) against a daemon.
 pub async fn connect(http_base: &str) -> Result<ServerConn> {
     connect_with(http_base, AuthMethod::Dev).await
@@ -414,7 +423,10 @@ fn ensure_ok(result: &pb::AuthenticationResult) -> Result<()> {
     if result.ok {
         Ok(())
     } else {
-        bail!("authentication failed: {}", result.error_message);
+        Err(AuthenticationRejected {
+            message: result.error_message.clone(),
+        }
+        .into())
     }
 }
 

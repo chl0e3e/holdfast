@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use hf_native_client::{
-    attach_failure_action, attach_shell, connect_with, AuthMethod, Chan, Connection, FailureAction,
-    ServerConn,
+    attach_failure_action, attach_shell, connect_with, AuthMethod, AuthenticationRejected, Chan,
+    Connection, FailureAction, ServerConn,
 };
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -281,7 +281,13 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
                 // reconnecting cannot succeed, so instead of the backoff loop
                 // we surface `AuthRequired` and wait for the GUI's Login.
                 if attempted_password || e.downcast_ref::<PasswordRequired>().is_some() {
-                    let detail = attempted_password.then(|| e.to_string());
+                    let detail = attempted_password.then(|| {
+                        if e.downcast_ref::<AuthenticationRejected>().is_some() {
+                            format!("Password rejected: {e}")
+                        } else {
+                            format!("Could not connect; the password was not checked: {e}")
+                        }
+                    });
                     ctx.emit_status(ServerStatus::AuthRequired, detail).await;
                     loop {
                         match rx.recv().await {

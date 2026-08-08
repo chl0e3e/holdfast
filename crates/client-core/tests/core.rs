@@ -357,7 +357,7 @@ async fn password_login_and_grant_only_restart() {
         .await
         .expect("rejected attempt must explain itself");
     assert!(
-        detail.contains("authentication failed"),
+        detail == "Password rejected: authentication failed",
         "unexpected detail: {detail}"
     );
 

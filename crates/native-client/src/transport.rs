@@ -186,6 +186,9 @@ mod platform {
         let session_lifetime = Arc::clone(&lifetime);
         tokio::spawn(async move {
             let _lifetime = session_lifetime;
+            // Dropping the final SendRequest closes the h3 driver. Retain it
+            // while this WebTransport session opens its own streams.
+            let _requests = requests;
             let _connect = connect;
             let _ = session_cancel.changed().await;
         });
