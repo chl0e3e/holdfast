@@ -1371,6 +1371,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hf-launch"
+version = "0.0.4"
+dependencies = [
+ "nix 0.31.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hf-native-client"
 version = "0.0.4"
 dependencies = [
@@ -1413,6 +1421,7 @@ dependencies = [
 name = "hf-pty"
 version = "0.0.4"
 dependencies = [
+ "nix 0.31.3",
  "portable-pty",
  "thiserror 2.0.18",
 ]
@@ -1421,12 +1430,26 @@ dependencies = [
 name = "hf-session-core"
 version = "0.0.4"
 dependencies = [
+ "hf-launch",
  "hf-protocol",
  "hf-pty",
+ "hf-spawner",
  "hf-terminal-model",
  "nix 0.31.3",
  "rand 0.9.5",
  "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hf-spawner"
+version = "0.0.4"
+dependencies = [
+ "hf-launch",
+ "hf-pty",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -1971,6 +1994,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2106,6 +2138,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.1",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

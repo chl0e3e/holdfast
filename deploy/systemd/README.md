@@ -78,10 +78,49 @@ would break ordinary use here:
   protection comes from the minimal capability set instead.
 - **`MemoryDenyWriteExecute` / restrictive `SystemCallFilter`** break common
   interpreters and JITs a user may legitimately run.
+- **`CapabilityBoundingSet=`** is inherited by every descendant and can never be
+  widened again, so a bounding set on a unit that forks shells also applies to
+  them: `sudo` still yields uid 0, but without
+  `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER`, so `apt`, `passwd`, `ping` and
+  `mount` fail with `EPERM`, and the launcher cannot undo it — the ratchet is
+  applied before the daemon ever runs. This is the constraint ADR 0024 removes
+  by moving shell launching out of the daemon (see below), which is what lets
+  the multi-user unit carry a bounding set again.
 
 Each unit therefore keeps the hardening that does **not** interfere with
 interactive shells (kernel-tunable/module protection, address-family and
-realtime restriction, a minimal capability bounding set) and drops the rest.
+realtime restriction) and drops the rest.
+
+## The spawner split (ADR 0024)
+
+`holdfastd` does not fork shells. It connects to `holdfast-spawner.socket`, and
+systemd — PID 1 — forks one `holdfast-spawner@.service` per connection to do the
+launch. Because that helper is a child of PID 1 rather than of the daemon, its
+capability bounding set is independent:
+
+| | `holdfastd.service` (multi-user) | `holdfast-spawner@.service` |
+|---|---|---|
+| Bounding set | `CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH` | full (inherited by the shell) |
+| Ambient | same two | `CAP_SETUID CAP_SETGID CAP_KILL` |
+| Exposed to | the network | a `0600` socket owned by `holdfast` |
+
+The network-facing process is therefore *more* restricted than before the split:
+`CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` are no longer in its ambient set at
+all. `systemd-run` would have avoided the extra unit, but polkit denies it to an
+unprivileged service account, and a polkit rule allowing it would grant more
+than the capabilities it replaced.
+
+Authorization is checked on both sides. The daemon applies its `--account`
+policy; the spawner independently enforces its own `--allow-account` list,
+verifies the peer's uid with `SO_PEERCRED`, and refuses uid 0 outright — so a
+compromised daemon still cannot obtain a shell as an arbitrary account. **Keep
+the spawner's `--allow-account` flags in step with the daemon's `--account`
+mappings**, or shells for the missing accounts fail with `ERR_FORBIDDEN`.
+
+Both units join `holdfast.slice`, which carries the aggregate `TasksMax=` and
+memory ceilings (ADR 0009). Those must live on the slice now: the shells are no
+longer in the daemon's cgroup, so a `TasksMax=` on the daemon unit would bound
+only the daemon.
 
 ## Customizing
 

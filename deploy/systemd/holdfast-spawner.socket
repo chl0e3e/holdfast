@@ -1,0 +1,35 @@
+# Socket that the daemon connects to for each new shell (ADR 0024).
+#
+# Accept=yes means systemd — PID 1 — forks one holdfast-spawner@.service per
+# connection. That is the entire point of the design: the shell that instance
+# launches inherits *its* capability bounding set, not the daemon's, so `sudo`
+# works as in a normal login while the daemon's unit stays locked down.
+#
+# SOCK_SEQPACKET (ListenSequentialPacket=) gives the protocol datagram
+# boundaries, so neither side has to frame messages, and it carries SCM_RIGHTS
+# for handing the PTY master back to the daemon.
+#
+# Install:
+#   sudo install -Dm644 holdfast-spawner.socket /etc/systemd/system/holdfast-spawner.socket
+#   sudo systemctl daemon-reload && sudo systemctl enable --now holdfast-spawner.socket
+
+[Unit]
+Description=Holdfast privileged shell spawner socket
+PartOf=holdfastd.service
+
+[Socket]
+ListenSequentialPacket=/run/holdfast/spawn.sock
+Accept=yes
+# Only the daemon's own account may ask for a shell. The spawner *also* checks
+# SO_PEERCRED (--peer-user), so neither the socket mode nor the credential check
+# is load-bearing alone.
+SocketUser=holdfast
+SocketGroup=holdfast
+SocketMode=0600
+DirectoryMode=0755
+# One connection per shell, so this bounds concurrent shell *launches*, not
+# live shells; it exists to stop a spin loop forking helpers without limit.
+MaxConnections=64
+
+[Install]
+WantedBy=sockets.target

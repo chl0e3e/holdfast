@@ -5,6 +5,7 @@
 //! this crate and connects its output to the terminal model.
 
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::mpsc::Receiver;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -59,6 +60,42 @@ pub struct ExitSummary {
     pub exit_code: u32,
 }
 
+// TIOCSWINSZ on an adopted master fd — the same call portable-pty makes for a
+// locally opened PTY, which we cannot reach through its `MasterPty` trait.
+nix::ioctl_write_ptr_bad!(set_winsize, nix::libc::TIOCSWINSZ, nix::pty::Winsize);
+
+/// A shell process this crate did not fork, driven over some out-of-band
+/// channel instead of by `waitpid`.
+///
+/// The privileged spawner (ADR 0024) is the only implementor: shells launched
+/// from it are children of a PID 1-forked helper, not of the daemon, so the
+/// daemon cannot reap or signal them directly and asks the helper instead.
+/// Implementations must keep `kill` idempotent — session-core calls it on
+/// paths where the shell may already have exited.
+pub trait RemoteChild {
+    /// Non-blocking exit check; `None` while still running.
+    fn try_wait(&mut self) -> Result<Option<ExitSummary>, PtyError>;
+    /// Block until the shell exits, and ensure it leaves no zombie.
+    fn wait(&mut self) -> Result<ExitSummary, PtyError>;
+    /// Forcibly terminate the shell. Idempotent.
+    fn kill(&mut self) -> Result<(), PtyError>;
+    fn process_id(&self) -> Option<u32>;
+}
+
+/// Where the PTY master came from: either portable-pty opened it here, or it
+/// arrived over a unix socket from the spawner.
+enum MasterHandle {
+    Local(Box<dyn MasterPty + Send>),
+    Adopted(OwnedFd),
+}
+
+/// Who owns the shell process: this crate, or the spawner on the other end of
+/// a control connection.
+enum ChildHandle {
+    Local(Box<dyn Child + Send + Sync>),
+    Remote(Box<dyn RemoteChild + Send + Sync>),
+}
+
 /// A live PTY with its child process.
 ///
 /// Output arrives on the channel returned by [`PtyProcess::take_output`], in
@@ -66,8 +103,8 @@ pub struct ExitSummary {
 /// explicit 64-chunk / 512-KiB bound; session-core drains it into the bounded
 /// terminal model and separately enforces each attachment's output bound.
 pub struct PtyProcess {
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    master: MasterHandle,
+    child: ChildHandle,
     writer: Box<dyn Write + Send>,
     output: Option<Receiver<Vec<u8>>>,
 }
@@ -138,9 +175,49 @@ impl PtyProcess {
             .expect("spawn PTY reader thread");
 
         Ok(PtyProcess {
-            master: pair.master,
-            child,
+            master: MasterHandle::Local(pair.master),
+            child: ChildHandle::Local(child),
             writer,
+            output: Some(rx),
+        })
+    }
+
+    /// Wrap a PTY master fd opened by another process, whose shell that process
+    /// owns (ADR 0024).
+    ///
+    /// The fd is duplicated for the reader thread and the writer, so this type
+    /// still owns everything it touches. Behaviour is identical to [`spawn`]
+    /// from every caller's point of view — the difference is only who forked
+    /// the shell, and therefore who can reap and signal it.
+    ///
+    /// [`spawn`]: PtyProcess::spawn
+    pub fn adopt(
+        master: OwnedFd,
+        child: Box<dyn RemoteChild + Send + Sync>,
+    ) -> Result<PtyProcess, PtyError> {
+        let writer = std::fs::File::from(master.try_clone()?);
+        let mut reader = std::fs::File::from(master.try_clone()?);
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CHUNKS);
+        std::thread::Builder::new()
+            .name("hf-pty-reader".into())
+            .spawn(move || {
+                let mut buf = [0u8; 8192];
+                // A PTY master reports EIO (not EOF) once the last slave closes;
+                // `read` returning an error ends the loop either way, which
+                // disconnects the channel exactly as the local path does.
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn PTY reader thread");
+
+        Ok(PtyProcess {
+            master: MasterHandle::Adopted(master),
+            child: ChildHandle::Remote(child),
+            writer: Box::new(writer),
             output: Some(rx),
         })
     }
@@ -159,55 +236,85 @@ impl PtyProcess {
 
     /// Resize the PTY; delivers SIGWINCH to the foreground process group.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), PtyError> {
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| PtyError::Resize(e.to_string()))
+        match &self.master {
+            MasterHandle::Local(master) => master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| PtyError::Resize(e.to_string())),
+            // Same ioctl portable-pty performs, on the fd the spawner sent.
+            // SIGWINCH reaches the shell because the kernel delivers it to the
+            // terminal's foreground process group, regardless of who forked it.
+            MasterHandle::Adopted(fd) => {
+                let size = nix::pty::Winsize {
+                    ws_row: rows,
+                    ws_col: cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                // SAFETY: `fd` is an open PTY master owned by this struct and
+                // `size` is a valid, fully initialized winsize.
+                unsafe { set_winsize(fd.as_raw_fd(), &size) }
+                    .map(|_| ())
+                    .map_err(|e| PtyError::Resize(e.to_string()))
+            }
+        }
     }
 
     /// Non-blocking exit check; `None` while still running.
     pub fn try_wait(&mut self) -> Result<Option<ExitSummary>, PtyError> {
-        Ok(self
-            .child
-            .try_wait()
-            .map_err(PtyError::Io)?
-            .map(|s| ExitSummary {
-                success: s.success(),
-                exit_code: s.exit_code(),
-            }))
+        match &mut self.child {
+            ChildHandle::Local(child) => {
+                Ok(child.try_wait().map_err(PtyError::Io)?.map(|s| ExitSummary {
+                    success: s.success(),
+                    exit_code: s.exit_code(),
+                }))
+            }
+            ChildHandle::Remote(child) => child.try_wait(),
+        }
     }
 
     /// Block until the child exits and is reaped (no zombie remains).
     pub fn wait(&mut self) -> Result<ExitSummary, PtyError> {
-        let status = self.child.wait().map_err(PtyError::Io)?;
-        Ok(ExitSummary {
-            success: status.success(),
-            exit_code: status.exit_code(),
-        })
+        match &mut self.child {
+            ChildHandle::Local(child) => {
+                let status = child.wait().map_err(PtyError::Io)?;
+                Ok(ExitSummary {
+                    success: status.success(),
+                    exit_code: status.exit_code(),
+                })
+            }
+            ChildHandle::Remote(child) => child.wait(),
+        }
     }
 
     /// Forcibly terminate the child. Idempotent; always follow with
     /// [`PtyProcess::wait`] to reap.
     pub fn kill(&mut self) -> Result<(), PtyError> {
         const ESRCH: i32 = 3;
-        match self.child.kill() {
-            Ok(()) => Ok(()),
-            // Already exited/reaped: killing is idempotent (spec §9).
-            Err(e)
-                if e.kind() == std::io::ErrorKind::InvalidInput
-                    || e.raw_os_error() == Some(ESRCH) =>
-            {
-                Ok(())
-            }
-            Err(e) => Err(PtyError::Io(e)),
+        match &mut self.child {
+            ChildHandle::Local(child) => match child.kill() {
+                Ok(()) => Ok(()),
+                // Already exited/reaped: killing is idempotent (spec §9).
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::InvalidInput
+                        || e.raw_os_error() == Some(ESRCH) =>
+                {
+                    Ok(())
+                }
+                Err(e) => Err(PtyError::Io(e)),
+            },
+            ChildHandle::Remote(child) => child.kill(),
         }
     }
 
     pub fn process_id(&self) -> Option<u32> {
-        self.child.process_id()
+        match &self.child {
+            ChildHandle::Local(child) => child.process_id(),
+            ChildHandle::Remote(child) => child.process_id(),
+        }
     }
 }

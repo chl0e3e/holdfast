@@ -154,6 +154,17 @@ async fn main() -> anyhow::Result<()> {
                 // AmbientCapabilities=CAP_SETUID CAP_SETGID).
                 config.session.privilege_drop = true;
             }
+            "--spawner-socket" => {
+                // Launch shells through the PID 1-forked helper listening here,
+                // so they inherit a full capability bounding set while this
+                // process keeps a tight one (ADR 0024). Combine with
+                // --drop-privileges; without it the socket is never consulted.
+                config.session.spawner_socket = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--spawner-socket needs a path"))?
+                        .into(),
+                );
+            }
             "--shell-max-processes" => {
                 let value: u64 = args
                     .next()
@@ -264,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             other => anyhow::bail!(
-                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --shell-idle-ttl <seconds>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --grant-key <path>, --server-id <srv_hex>)"
+                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --shell-idle-ttl <seconds>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --grant-key <path>, --server-id <srv_hex>, --spawner-socket <path>)"
             ),
         }
     }
@@ -275,6 +286,13 @@ async fn main() -> anyhow::Result<()> {
 
     if pam_service.is_some() && password_users.is_empty() {
         anyhow::bail!("--pam-service requires at least one --password-auth <user>");
+    }
+    if config.session.spawner_socket.is_some() && !config.session.privilege_drop {
+        // Refuse rather than silently ignore it: an operator who configured a
+        // spawner expects shells to come from it, and a unit that quietly falls
+        // back to the in-process path would hand every shell the daemon's own
+        // (tight) capability bounding set — the exact breakage ADR 0024 fixes.
+        anyhow::bail!("--spawner-socket requires --drop-privileges");
     }
     if !password_users.is_empty() {
         // Password-only deployments still leave dev-auth: an empty SshKeys

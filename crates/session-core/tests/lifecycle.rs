@@ -451,11 +451,15 @@ fn shell_and_attachment_limits_are_enforced() {
 
 #[test]
 fn shell_process_inherits_hard_resource_limits() {
+    // `prlimit` cannot *raise* a hard limit without CAP_SYS_RESOURCE, so the
+    // requested value has to sit at or below this process's own ceiling —
+    // otherwise the shell dies at exec with EPERM. That is not hypothetical:
+    // running the suite inside a holdfast-served shell inherits the daemon's
+    // --shell-max-processes (512 by default), well under any fixed constant.
+    let nproc = current_hard_nproc().min(4_096);
     let mgr = ShellManager::new(SessionCoreConfig {
         shell_resource_limits: ShellResourceLimits {
-            // Kept comfortably above the host test user's current process
-            // count: RLIMIT_NPROC is per real uid, not per shell, on Linux.
-            max_processes: 4_096,
+            max_processes: nproc,
             max_open_files: 333,
             max_core_bytes: 0,
         },
@@ -469,13 +473,27 @@ fn shell_process_inherits_hard_resource_limits() {
     // `ulimit` is a bash builtin, so these checks do not need to fork while
     // inspecting the inherited hard ceilings.
     mgr.write_input(&opened.shell_id, b"ulimit -Hu\r").unwrap();
-    read_until(&attachment, "4096");
+    read_until(&attachment, &nproc.to_string());
     mgr.write_input(&opened.shell_id, b"ulimit -Hn\r").unwrap();
     read_until(&attachment, "333");
     mgr.write_input(&opened.shell_id, b"ulimit -Hc\r").unwrap();
     read_until(&attachment, "0");
 
     mgr.terminate(&opened.shell_id).unwrap();
+}
+
+/// This process's hard `RLIMIT_NPROC`, the ceiling a shell's own limit must
+/// stay under.
+fn current_hard_nproc() -> u64 {
+    let out = std::process::Command::new("bash")
+        .args(["-c", "ulimit -Hu"])
+        .output()
+        .expect("query the current hard process limit");
+    let text = String::from_utf8_lossy(&out.stdout);
+    match text.trim() {
+        "unlimited" => u64::MAX,
+        value => value.parse().expect("a numeric hard process limit"),
+    }
 }
 
 #[test]

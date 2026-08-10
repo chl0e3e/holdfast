@@ -1,0 +1,19 @@
+[package]
+name = "hf-spawner"
+description = "Privileged shell spawner: protocol, client, and the holdfast-spawner helper."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "holdfast-spawner"
+path = "src/bin/holdfast-spawner.rs"
+
+[dependencies]
+hf-launch = { path = "../launch" }
+hf-pty = { path = "../pty" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror.workspace = true
+nix = { workspace = true, features = ["socket", "uio", "process", "signal", "term", "user", "fs"] }

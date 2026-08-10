@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 hf-protocol = { path = "../protocol" }
+hf-launch = { path = "../launch" }
+hf-spawner = { path = "../spawner" }
 hf-pty = { path = "../pty" }
 hf-terminal-model = { path = "../terminal-model" }
 thiserror.workspace = true

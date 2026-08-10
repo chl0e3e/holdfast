@@ -1,18 +1,26 @@
 //! Resource-limited and privilege-dropped launch construction (threat models
-//! T6/T12; ADRs 0009 and 0007).
+//! T6/T12; ADRs 0009, 0007 and 0024).
 //!
-//! Authorization (which account a user may request) lives in [`crate::policy`].
-//! Once an account is resolved, this module builds the argv that actually
-//! launches the shell under that account's uid/gid, by wrapping the command in
+//! Authorization (which account a user may request) lives in `hf-session-core`'s
+//! `policy` module. Once an account is resolved, this module builds the argv
+//! that actually launches the shell under that account's uid/gid, by wrapping
+//! the command in
 //! `setpriv(1)` (util-linux): it sets the gid, initializes the account's
 //! supplementary groups, sets the uid, and resets the environment — the full,
 //! well-audited drop sequence — with no PAM and no password.
 //!
+//! This lives in its own crate because two very differently privileged
+//! processes build the same argv: the daemon (when running the in-process
+//! launch path) and `holdfast-spawner`, the socket-activated helper that PID 1
+//! forks so shells escape the daemon's capability bounding set (ADR 0024). The
+//! helper must not pull in the daemon's PTY, terminal-model and networking
+//! dependencies, so the argv builder is shared rather than duplicated.
+//!
 //! Every shell first receives hard process/file/core limits through
-//! `/usr/bin/prlimit`. The uid/gid drop is only attempted when
-//! [`SessionCoreConfig::privilege_drop`] is enabled *and* the resolved account
-//! differs from the daemon's own user. It is fail-closed in two layers, so the
-//! shell is never silently run under the wrong (more-privileged) account:
+//! `/usr/bin/prlimit`. The uid/gid drop is only attempted when privilege drop
+//! is enabled *and* the resolved account differs from the launching process's
+//! own user. It is fail-closed in two layers, so the shell is never silently
+//! run under the wrong (more-privileged) account:
 //!
 //! - **At build time** (here): invalid limits, a missing account, or an absent
 //!   `prlimit`/`setpriv` binary is an error before any process is spawned.
@@ -21,10 +29,37 @@
 //!   and aborts with a non-zero status when it fails — it never execs the shell
 //!   under the daemon's identity. The shell therefore fails to start rather
 //!   than running unprivileged-fallback as the daemon's user.
-//!
-//! [`SessionCoreConfig::privilege_drop`]: crate::SessionCoreConfig::privilege_drop
 
-use crate::{SessionError, ShellResourceLimits};
+/// Why a launch could not be built. Deliberately only two shapes: the caller
+/// must treat either as "do not open the shell". `hf-session-core` converts
+/// these into its own `LaunchError` (`Forbidden` stays `Forbidden`, so a
+/// client still cannot distinguish an absent account from an unauthorized one).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LaunchError {
+    #[error("not authorized to run a shell under the requested account")]
+    Forbidden,
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+/// Hard per-shell limits applied through `prlimit` before any uid/gid switch,
+/// so they survive the drop and cannot be raised by the shell (ADR 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellResourceLimits {
+    pub max_processes: u64,
+    pub max_open_files: u64,
+    pub max_core_bytes: u64,
+}
+
+impl Default for ShellResourceLimits {
+    fn default() -> ShellResourceLimits {
+        ShellResourceLimits {
+            max_processes: 512,
+            max_open_files: 1_024,
+            max_core_bytes: 0,
+        }
+    }
+}
 
 /// `setpriv` path. Absolute so a hostile `PATH` cannot substitute it.
 const SETPRIV: &str = "/usr/bin/setpriv";
@@ -96,6 +131,10 @@ fn setpriv_wrap(ids: AccountIds, locale: &[String], program: &str, args: &[Strin
         // shell would inherit CAP_SETUID and could switch back to another uid.
         // The capability *bounding set* is deliberately left intact so ordinary
         // setuid-root programs (sudo, ping, su) work as in a normal login shell.
+        // Note that clearing it here would be impossible to undo: the bounding
+        // set is a one-way ratchet inherited by every descendant, which is why
+        // shells are launched from the PID 1-forked spawner rather than from the
+        // daemon, whose own bounding set is tight (ADR 0024).
         // When the daemon runs as root these sets are already empty, so this is
         // a harmless no-op there.
         "--inh-caps".to_string(),
@@ -140,17 +179,17 @@ fn prlimit_wrap(limits: ShellResourceLimits, launch: Launch) -> Launch {
 }
 
 /// Resolve a Unix account name to its uid/gid via the host account database
-/// (`getpwnam`). Returns [`SessionError::Forbidden`] if the account does not
+/// (`getpwnam`). Returns [`LaunchError::Forbidden`] if the account does not
 /// exist — the client must not learn whether an allowed-but-absent account is
 /// missing versus merely unauthorized.
-fn resolve_account_ids(name: &str) -> Result<AccountIds, SessionError> {
+pub fn resolve_account_ids(name: &str) -> Result<AccountIds, LaunchError> {
     match nix::unistd::User::from_name(name) {
         Ok(Some(user)) => Ok(AccountIds {
             uid: user.uid.as_raw(),
             gid: user.gid.as_raw(),
         }),
-        Ok(None) => Err(SessionError::Forbidden),
-        Err(e) => Err(SessionError::Internal(format!(
+        Ok(None) => Err(LaunchError::Forbidden),
+        Err(e) => Err(LaunchError::Internal(format!(
             "account lookup failed: {e}"
         ))),
     }
@@ -169,23 +208,23 @@ fn own_uid() -> u32 {
 /// - enabled and the account resolves to a *different* uid → wrap with
 ///   `setpriv` so the shell runs under that account.
 ///
-/// When wrapping, a missing `setpriv` binary is an [`SessionError::Internal`];
-/// a missing account is [`SessionError::Forbidden`]. The caller must treat any
+/// When wrapping, a missing `setpriv` binary is an [`LaunchError::Internal`];
+/// a missing account is [`LaunchError::Forbidden`]. The caller must treat any
 /// error as "do not open the shell" — there is no unprivileged fallback.
-pub(crate) fn build_launch(
+pub fn build_launch(
     privilege_drop: bool,
     limits: ShellResourceLimits,
     account: Option<&str>,
     command: Option<&str>,
     args: &[String],
-) -> Result<Launch, SessionError> {
+) -> Result<Launch, LaunchError> {
     if limits.max_processes == 0 || limits.max_open_files == 0 {
-        return Err(SessionError::Internal(
+        return Err(LaunchError::Internal(
             "shell process and open-file limits must be greater than zero".into(),
         ));
     }
     if !std::path::Path::new(PRLIMIT).exists() {
-        return Err(SessionError::Internal(format!(
+        return Err(LaunchError::Internal(format!(
             "shell resource limits require {PRLIMIT}, but it is not present"
         )));
     }
@@ -227,7 +266,7 @@ pub(crate) fn build_launch(
     }
 
     if !std::path::Path::new(SETPRIV).exists() {
-        return Err(SessionError::Internal(format!(
+        return Err(LaunchError::Internal(format!(
             "privilege drop requested for account {name:?} but {SETPRIV} is not present"
         )));
     }
@@ -374,13 +413,13 @@ mod tests {
         invalid.max_processes = 0;
         assert!(matches!(
             build_launch(false, invalid, None, Some("bash"), &[]),
-            Err(SessionError::Internal(_))
+            Err(LaunchError::Internal(_))
         ));
         invalid = limits();
         invalid.max_open_files = 0;
         assert!(matches!(
             build_launch(false, invalid, None, Some("bash"), &[]),
-            Err(SessionError::Internal(_))
+            Err(LaunchError::Internal(_))
         ));
     }
 
@@ -397,7 +436,7 @@ mod tests {
     #[test]
     fn resolve_missing_account_is_forbidden() {
         let err = resolve_account_ids("definitely-not-a-real-account-xyzzy").unwrap_err();
-        assert!(matches!(err, SessionError::Forbidden));
+        assert!(matches!(err, LaunchError::Forbidden));
     }
 
     #[test]

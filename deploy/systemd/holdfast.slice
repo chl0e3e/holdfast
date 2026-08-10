@@ -1,0 +1,19 @@
+# Aggregate containment for the whole Holdfast deployment (ADR 0009).
+#
+# Since ADR 0024 the daemon and the shells live in *different* units: shells are
+# forked by PID 1 into per-connection `holdfast-spawner@.service` instances, so
+# a TasksMax= on the daemon's unit no longer bounds them. Both units join this
+# slice, which restores a single ceiling across the daemon and every shell it
+# serves — the property the multi-user unit's own TasksMax= used to provide.
+#
+# Per-account RLIMIT_NPROC and per-process NOFILE/core limits are still applied
+# by the spawner (via prlimit) before setpriv changes uid/gid; this is the
+# cgroup-level backstop underneath them.
+
+[Unit]
+Description=Holdfast daemon and shells
+
+[Slice]
+TasksMax=2048
+MemoryHigh=50%
+MemoryMax=75%

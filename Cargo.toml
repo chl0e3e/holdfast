@@ -19,6 +19,8 @@ members = [
     "crates/transport",
     "crates/terminal-model",
     "crates/session-core",
+    "crates/launch",
+    "crates/spawner",
     "crates/pty",
     "crates/gateway",
     "crates/control-plane",

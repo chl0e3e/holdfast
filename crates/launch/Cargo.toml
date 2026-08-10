@@ -1,12 +1,11 @@
 [package]
-name = "hf-pty"
-description = "Linux PTY process management."
+name = "hf-launch"
+description = "Privilege-drop and resource-limit argv construction for shell launches."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-portable-pty.workspace = true
 thiserror.workspace = true
-nix = { workspace = true, features = ["term", "ioctl"] }
+nix = { workspace = true, features = ["user"] }

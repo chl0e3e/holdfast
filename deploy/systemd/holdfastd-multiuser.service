@@ -16,21 +16,33 @@
 Description=Holdfast roaming terminal daemon (multi-user, privilege drop)
 After=network-online.target
 Wants=network-online.target
+# Shells are launched through the socket-activated spawner (ADR 0024); without
+# it every OpenShell fails, so the socket must be listening first.
+Requires=holdfast-spawner.socket
+After=holdfast-spawner.socket
 
 [Service]
 Type=simple
 User=holdfast
 Group=holdfast
 
-# Just enough privilege to switch to an allowed account, plus the low-port bind.
-# CAP_SETUID/CAP_SETGID let setpriv change uid/gid; CAP_DAC_READ_SEARCH lets the
-# daemon read each user's ~/.ssh/authorized_keys at startup; CAP_KILL lets the
-# daemon terminate the shells it launched, which run under other uids after the
-# privilege drop (without it, TerminateShell fails with EPERM). The launcher
-# clears inheritable+ambient caps before exec, so NONE of these leak into the
-# shell.
-AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+# The network-facing process needs almost nothing: bind UDP 443, and read each
+# user's ~/.ssh/authorized_keys at startup. Since ADR 0024 it does not fork
+# shells at all — CAP_SETUID, CAP_SETGID and CAP_KILL moved to
+# holdfast-spawner@.service, which PID 1 forks on its behalf.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+#
+# Safe to bound now, and only now. The bounding set is inherited by every
+# descendant and can never be widened again, so while this unit forked the
+# shells, any bounding set here also applied to them: `sudo` still yielded uid 0,
+# but with no CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_FOWNER, so apt, passwd, ping and
+# mount failed with EPERM, and the launcher could not undo it. Shells now come
+# from the spawner instead, which PID 1 forks with its own (full) bounding set,
+# so this line no longer reaches them.
+#
+# Keep this in step with AmbientCapabilities above: an ambient capability outside
+# the bounding set is silently dropped, and the daemon would fail to bind :443.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
 
 ExecStart=/usr/local/bin/holdfastd \
     --bind 127.0.0.1:8080 \
@@ -39,6 +51,7 @@ ExecStart=/usr/local/bin/holdfastd \
     --wt-key /etc/holdfast/tls/privkey.pem \
     --web-root /var/lib/holdfast/web \
     --drop-privileges \
+    --spawner-socket /run/holdfast/spawn.sock \
     --ssh-auth alice /home/alice/.ssh/authorized_keys \
     --account alice alice \
     --ssh-auth bob /home/bob/.ssh/authorized_keys \
@@ -49,24 +62,23 @@ ExecStart=/usr/local/bin/holdfastd \
 Restart=on-failure
 RestartSec=2s
 
-# Aggregate containment for the daemon and all user shells (ADR 0009).
-# Per-account RLIMIT_NPROC and per-process NOFILE/core limits are also applied
-# by holdfastd before setpriv changes uid/gid.
-TasksMax=2048
-MemoryHigh=50%
-MemoryMax=75%
+# Aggregate containment for the daemon and all user shells (ADR 0009). The
+# ceiling lives on holdfast.slice, which this unit and every spawner instance
+# join: since ADR 0024 the shells are no longer in this unit's cgroup, so a
+# TasksMax= here would bound the daemon alone and silently stop containing them.
+Slice=holdfast.slice
 
 # --- Sandboxing ---
-# CRITICAL: NoNewPrivileges must stay OFF here. The shells run as real user
-# accounts and, like a normal SSH login, must be able to run setuid-root
-# programs (sudo, ping, passwd); NoNewPrivileges=yes would block all of them.
-# The daemon's own attack surface is instead bounded by the tiny capability set
-# above and the filters below.
+# NoNewPrivileges must stay OFF, though no longer for the original reason: the
+# shells moved to holdfast-spawner@.service (ADR 0024), so setuid-root programs
+# in a *shell* are that unit's concern now. What still needs it here is PAM —
+# pam_unix verifies passwords through /usr/sbin/unix_chkpwd, which is setgid
+# `shadow`, and NoNewPrivileges=yes would break --password-auth entirely.
 NoNewPrivileges=no
 PrivateTmp=no
-# Do NOT set ProtectHome/ProtectSystem=strict: the whole point is to run users'
-# shells in their own homes. Host protection here comes from the minimal
-# capability set, not filesystem sandboxing that would break interactive use.
+# Do NOT set ProtectHome/ProtectSystem=strict: the daemon reads each user's
+# ~/.ssh/authorized_keys (that is what CAP_DAC_READ_SEARCH is for), and the
+# spawner needs users' home directories to exist for their shells.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

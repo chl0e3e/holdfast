@@ -18,7 +18,6 @@
 //! here: a per-user shell/resource quota (the `max_shells` cap is global) and
 //! the idle-shell expiry reaper.
 
-mod launch;
 mod policy;
 mod token;
 
@@ -27,6 +26,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use hf_launch::LaunchError;
 use hf_protocol::ids::ShellId;
 use hf_pty::{ExitSummary, PtyConfig, PtyError, PtyProcess};
 
@@ -38,22 +38,10 @@ pub use token::ResumeToken;
 /// Hard resource limits inherited by every shell process and its descendants
 /// (threat model T6, ADR 0009). `RLIMIT_NPROC` is accounted per real Unix uid
 /// on Linux; the systemd cgroup adds an aggregate service ceiling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellResourceLimits {
-    pub max_processes: u64,
-    pub max_open_files: u64,
-    pub max_core_bytes: u64,
-}
-
-impl Default for ShellResourceLimits {
-    fn default() -> ShellResourceLimits {
-        ShellResourceLimits {
-            max_processes: 512,
-            max_open_files: 1_024,
-            max_core_bytes: 0,
-        }
-    }
-}
+///
+/// Defined in `hf-launch` and re-exported here: the privileged spawner applies
+/// the same limits without depending on this crate (ADR 0024).
+pub use hf_launch::ShellResourceLimits;
 
 /// Clamp client-supplied terminal dimensions to the safe floor the terminal
 /// model enforces, so the PTY winsize and the model never disagree and neither
@@ -83,6 +71,29 @@ pub enum SessionError {
     Internal(String),
 }
 
+/// Launch construction failures keep their meaning on the way out: `Forbidden`
+/// must not decay into `Internal`, or a client could tell an absent account
+/// from an unauthorized one by the error code alone (threat model T2).
+/// The spawner's refusals map the same way: its `Forbidden` is the backstop
+/// under this crate's own account policy, and must not surface as `Internal`.
+impl From<hf_spawner::SpawnError> for SessionError {
+    fn from(e: hf_spawner::SpawnError) -> SessionError {
+        match e {
+            hf_spawner::SpawnError::Forbidden(_) => SessionError::Forbidden,
+            other => SessionError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl From<LaunchError> for SessionError {
+    fn from(e: LaunchError) -> SessionError {
+        match e {
+            LaunchError::Forbidden => SessionError::Forbidden,
+            LaunchError::Internal(msg) => SessionError::Internal(msg),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionCoreConfig {
     /// Spec §8 default: 16. Global ceiling across all users.
@@ -109,6 +120,18 @@ pub struct SessionCoreConfig {
     /// Always-on hard limits applied by the launch wrapper before the shell is
     /// exec'd. Defaults are deliberately finite; see ADR 0009.
     pub shell_resource_limits: ShellResourceLimits,
+    /// Launch shells through the privileged spawner listening on this socket
+    /// instead of forking them here (ADR 0024).
+    ///
+    /// Shells then descend from a PID 1-forked helper rather than from the
+    /// daemon, so they get a full capability bounding set — `sudo` works as in
+    /// a normal login — while the daemon's unit keeps a tight one. Only
+    /// consulted when [`privilege_drop`] is set and an account was resolved;
+    /// `None` (the default) keeps the in-process `setpriv` path, which is what
+    /// tests and the single-user deployment use.
+    ///
+    /// [`privilege_drop`]: SessionCoreConfig::privilege_drop
+    pub spawner_socket: Option<std::path::PathBuf>,
     /// Reclaim shells that sit `Running` with zero attachments for longer
     /// than this (spec §11 "expiry policy"; threat model T6; ADR 0021).
     /// `None` (the default) disables reaping: clients are *designed* to keep
@@ -129,6 +152,7 @@ impl Default for SessionCoreConfig {
             scrollback_max_bytes: tm.max_history_bytes,
             privilege_drop: false,
             shell_resource_limits: ShellResourceLimits::default(),
+            spawner_socket: None,
             idle_shell_ttl: None,
         }
     }
@@ -284,6 +308,24 @@ impl ShellManager {
         }
     }
 
+    /// Whether this shell should be launched through the privileged spawner,
+    /// and under which account (ADR 0024).
+    ///
+    /// Only when all three hold: a socket is configured, privilege drop is on,
+    /// and an account was resolved. Anything else keeps the in-process path, so
+    /// a spawner-less deployment and the tests behave exactly as before.
+    fn spawner_target<'a>(
+        &'a self,
+        account: Option<&'a str>,
+    ) -> Option<(&'a std::path::Path, &'a str)> {
+        let socket = self.config.spawner_socket.as_deref()?;
+        if !self.config.privilege_drop {
+            return None;
+        }
+        let account = account.filter(|a| !a.is_empty())?;
+        Some((socket, account))
+    }
+
     /// Create a shell, or return the existing one for a repeated idempotency
     /// key (spec §9: retrying after a timeout must not create duplicates).
     pub fn open_shell(&self, req: &OpenShellRequest) -> Result<OpenedShell, SessionError> {
@@ -332,29 +374,46 @@ impl ShellManager {
         // Resolve how to launch: when privilege drop is enabled and the
         // account differs from the daemon's own user, this wraps the command
         // in `setpriv` (ADR 0007). Errors here (missing account, cannot switch)
-        // abort the open — never a silent unprivileged fallback.
-        let launch = launch::build_launch(
-            self.config.privilege_drop,
-            self.config.shell_resource_limits,
-            account.as_deref(),
-            req.command.as_deref(),
-            &req.args,
-        )?;
-
         // 0 means "client didn't say"; fall back to the conventional 80x24,
         // then clamp to the model's safe floor.
         let (cols, rows) = clamp_dims(
             if req.cols == 0 { 80 } else { req.cols },
             if req.rows == 0 { 24 } else { req.rows },
         );
-        let mut pty = PtyProcess::spawn(&PtyConfig {
-            program: launch.program,
-            args: launch.args,
-            env: vec![],
-            cwd: None,
-            cols,
-            rows,
-        })?;
+
+        // Two ways to reach a shell, differing only in who forks it. Either way
+        // a failure aborts the open — never a silent unprivileged fallback.
+        let mut pty = match self.spawner_target(account.as_deref()) {
+            Some((socket, account)) => {
+                let request = hf_spawner::SpawnRequest {
+                    account: account.to_string(),
+                    command: req.command.clone().filter(|c| !c.is_empty()),
+                    args: req.args.clone(),
+                    cols,
+                    rows,
+                    limits: self.config.shell_resource_limits.into(),
+                };
+                let (master, remote) = hf_spawner::spawn_shell(socket, &request)?;
+                PtyProcess::adopt(master, Box::new(remote))?
+            }
+            None => {
+                let launch = hf_launch::build_launch(
+                    self.config.privilege_drop,
+                    self.config.shell_resource_limits,
+                    account.as_deref(),
+                    req.command.as_deref(),
+                    &req.args,
+                )?;
+                PtyProcess::spawn(&PtyConfig {
+                    program: launch.program,
+                    args: launch.args,
+                    env: vec![],
+                    cwd: None,
+                    cols,
+                    rows,
+                })?
+            }
+        };
         let output = pty
             .take_output()
             .ok_or_else(|| SessionError::Internal("PTY output already taken".into()))?;

@@ -1,0 +1,56 @@
+# One privileged shell launch, forked by PID 1 (ADR 0024).
+#
+# systemd starts one instance per connection to holdfast-spawner.socket, with
+# the accepted connection as stdin. The instance launches exactly one shell and
+# exits when that shell does.
+#
+# WHY THIS UNIT EXISTS: the capability bounding set is inherited by every
+# descendant and can never be widened again. A tight CapabilityBoundingSet= on
+# holdfastd therefore also applied to the shells it forked, where it left `sudo`
+# yielding uid 0 with no CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_FOWNER — so apt,
+# passwd, ping and mount all failed with EPERM. Because this process is forked
+# by PID 1 rather than by the daemon, its bounding set is independent, and the
+# daemon's unit can be locked down without touching the shells.
+#
+# Customize the --allow-account list to match the daemon's --account mappings.
+#
+# Install:
+#   sudo install -Dm755 target/release/holdfast-spawner /usr/local/bin/holdfast-spawner
+#   sudo install -Dm644 holdfast-spawner@.service /etc/systemd/system/holdfast-spawner@.service
+
+[Unit]
+Description=Holdfast shell spawner (connection %i)
+
+[Service]
+Type=simple
+User=holdfast
+Group=holdfast
+Slice=holdfast.slice
+
+# Enough to become the target account, and to signal a shell that now runs
+# under a different uid (without CAP_KILL, terminating one fails with EPERM —
+# being its parent is not sufficient). The launcher clears the inheritable and
+# ambient sets before exec, so none of this reaches the shell.
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
+
+# CRITICAL: do NOT set CapabilityBoundingSet= or NoNewPrivileges= here. This
+# process's bounding set is the one the shell inherits, and the whole purpose of
+# splitting the spawner out is to leave it intact. Hardening belongs on
+# holdfastd.service, which is the process exposed to the network; this one reads
+# only from a 0600 socket owned by that daemon and additionally verifies the
+# peer's uid.
+NoNewPrivileges=no
+
+# stdin is the accepted connection; keep the helper's own diagnostics out of it.
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+
+ExecStart=/usr/local/bin/holdfast-spawner \
+    --peer-user holdfast \
+    --allow-account alice \
+    --allow-account bob
+
+# The shell is this process's child, so a restart would orphan it; a failed
+# launch is reported to the daemon over the socket instead.
+Restart=no
