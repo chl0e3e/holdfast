@@ -1,7 +1,15 @@
 //! Incremental UTF-8 decoding for PTY output chunks (spec §11 unit-test
 //! requirement: multi-byte sequences split across reads must render
-//! correctly). Invalid sequences become U+FFFD; an incomplete trailing
+//! correctly). Invalid sequences are DROPPED; an incomplete trailing
 //! sequence is buffered (at most 3 bytes) until the next chunk.
+//!
+//! Dropping rather than substituting U+FFFD is deliberate: xterm.js discards
+//! invalid sequences outright, so emitting a replacement character here gave
+//! the model one more occupied column than the client for every bad byte.
+//! Non-UTF-8 output is routine (latin-1 text, binary spew), and each
+//! occurrence shifted every following wrap point, shearing the attach
+//! snapshot. The two decoders must agree; the client's behaviour is upstream,
+//! so this one matches it.
 
 #[derive(Debug, Default)]
 pub struct IncrementalUtf8 {
@@ -30,9 +38,8 @@ impl IncrementalUtf8 {
                     // Safety not needed: re-slice through the checked API.
                     out.push_str(std::str::from_utf8(&rest[..valid]).unwrap());
                     match e.error_len() {
-                        // Invalid sequence of known length: replace, continue.
+                        // Invalid sequence of known length: drop it, continue.
                         Some(len) => {
-                            out.push(char::REPLACEMENT_CHARACTER);
                             rest = &rest[valid + len..];
                         }
                         // Incomplete trailing sequence: keep for next chunk.
@@ -75,9 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_bytes_become_replacement_chars() {
+    fn invalid_bytes_are_dropped_to_match_the_client_decoder() {
         let mut dec = IncrementalUtf8::new();
-        assert_eq!(dec.push(b"ok\xff\xfeok"), "ok\u{FFFD}\u{FFFD}ok");
+        assert_eq!(dec.push(b"ok\xff\xfeok"), "okok");
+    }
+
+    #[test]
+    fn invalid_bytes_consume_no_columns() {
+        // The shearing case: a latin-1 byte inside otherwise valid text must
+        // not push later characters one column right in the model.
+        let mut dec = IncrementalUtf8::new();
+        assert_eq!(dec.push(b"caf\xe9 au lait"), "caf au lait");
     }
 
     #[test]
@@ -86,6 +101,6 @@ mod tests {
         // 0xE2 0x82 starts a 3-byte sequence; 'A' is an invalid continuation.
         let first = dec.push(&[0xE2, 0x82]);
         assert_eq!(first, "", "incomplete tail buffered");
-        assert_eq!(dec.push(b"A"), "\u{FFFD}A");
+        assert_eq!(dec.push(b"A"), "A");
     }
 }

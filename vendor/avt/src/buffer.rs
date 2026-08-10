@@ -219,6 +219,42 @@ impl Buffer {
                 self.extend(old_rows - line_count, new_cols, &Pen::default());
             }
 
+            // Re-wrapping to a narrower width turns one line into several, so
+            // the buffer can end up holding more lines than the screen has
+            // rows. Absorb that growth into the blank space BELOW the cursor
+            // before anything scrolls off the top — which is what a real
+            // terminal does, and what xterm.js's reflow does on the client
+            // side. Without it the extra rows pushed the view down and the
+            // first lines of a wrapped buffer slid out of the visible screen,
+            // so narrowing a window appeared to eat the top of it.
+            //
+            // Absorb only when it actually prevents scrolling: if the
+            // re-wrapped content cannot fit however many blanks we reclaim,
+            // the screen must scroll for real and those trailing blank rows
+            // are part of it, so they stay put.
+            //
+            // This has to happen BEFORE the cursor's row is resolved, because
+            // `relative_position` reports rows relative to the view — which is
+            // anchored to the END of the buffer, so trimming afterwards would
+            // leave the cursor one row short of the text.
+            if self.lines.len() > old_rows {
+                let needed = self.lines.len() - old_rows;
+                let prospective =
+                    self.relative_position(cursor_log_pos, new_cols, old_rows);
+                let first_droppable = prospective.1.max(0) as usize + 1;
+                let available = self
+                    .lines
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .take_while(|(i, line)| *i >= first_droppable && line.is_blank())
+                    .count();
+
+                if available >= needed {
+                    self.lines.truncate(self.lines.len() - needed);
+                }
+            }
+
             let cursor_rel_pos = self.relative_position(cursor_log_pos, new_cols, old_rows);
             cursor.0 = cursor_rel_pos.0;
 

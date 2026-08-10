@@ -138,12 +138,14 @@ pub enum SgrOp {
     SetUnderline,              // 4
     SetBlink,                  // 5
     SetInverse,                // 7
+    SetInvisible,              // 8
     SetStrikethrough,          // 9
     ResetIntensity,            // 21, 22
     ResetItalic,               // 23
     ResetUnderline,            // 24
     ResetBlink,                // 25
     ResetInverse,              // 27
+    ResetInvisible,            // 28
     ResetStrikethrough,        // 29
     SetForegroundColor(Color), // 30-38
     ResetForegroundColor,      // 39
@@ -955,10 +957,15 @@ pub(crate) fn dump(funs: &[Function]) -> String {
 
 pub(crate) fn dump_sgr_color(color: Color, base: u8) -> String {
     match color {
-        Color::Indexed(c) if c < 8 => (base + c).to_string(),
-        Color::Indexed(c) if c < 16 => (base + 52 + c).to_string(),
-        Color::Indexed(c) => format!("{}:5:{}", base + 8, c),
-        Color::RGB(c) => format!("{}:2:{}:{}:{}", base + 8, c.r, c.g, c.b),
+        Color::Ansi(c) if c < 8 => (base + c).to_string(),
+        Color::Ansi(c) => (base + 52 + c.min(15)).to_string(),
+        // Semicolon form for the same reason as RGB below: universally parsed.
+        Color::Indexed(c) => format!("{};5;{}", base + 8, c),
+        // Semicolon form only. The colon form is ambiguous: `38:2:R:G:B`
+        // omits ITU T.416's colour-space slot, and a spec-following parser
+        // (xterm.js) reads R as the colour space and shifts G/B down, so
+        // rgb(255,100,0) replays as rgb(100,0,0) on every reattach.
+        Color::RGB(c) => format!("{};2;{};{};{}", base + 8, c.r, c.g, c.b),
     }
 }
 
@@ -1134,12 +1141,14 @@ fn dump_function(seq: &mut String, fun: &Function) {
                         SetUnderline => "4".to_owned(),
                         SetBlink => "5".to_owned(),
                         SetInverse => "7".to_owned(),
+                        SetInvisible => "8".to_owned(),
                         SetStrikethrough => "9".to_owned(),
                         ResetIntensity => "22".to_owned(),
                         ResetItalic => "23".to_owned(),
                         ResetUnderline => "24".to_owned(),
                         ResetBlink => "25".to_owned(),
                         ResetInverse => "27".to_owned(),
+                        ResetInvisible => "28".to_owned(),
                         ResetStrikethrough => "29".to_owned(),
                         SetForegroundColor(color) => dump_sgr_color(*color, 30),
                         ResetForegroundColor => "39".to_owned(),
@@ -1276,6 +1285,18 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                     return Some(SetUnderline);
                 }
 
+                // `CSI 4:n m` (ITU T.416 underline styles: 0 none, 1 single,
+                // 2 double, 3 curly, 4 dotted, 5 dashed). avt models a single
+                // underline attribute, so every style maps onto it; without
+                // this arm the whole parameter fell through and underlines set
+                // by the colon form vanished from snapshots.
+                [4, style] => {
+                    let op = if *style == 0 { ResetUnderline } else { SetUnderline };
+                    self.ps = &self.ps[1..];
+
+                    return Some(op);
+                }
+
                 [5] => {
                     self.ps = &self.ps[1..];
 
@@ -1286,6 +1307,12 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                     self.ps = &self.ps[1..];
 
                     return Some(SetInverse);
+                }
+
+                [8] => {
+                    self.ps = &self.ps[1..];
+
+                    return Some(SetInvisible);
                 }
 
                 [9] => {
@@ -1324,6 +1351,12 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                     return Some(ResetInverse);
                 }
 
+                [28] => {
+                    self.ps = &self.ps[1..];
+
+                    return Some(ResetInvisible);
+                }
+
                 [29] => {
                     self.ps = &self.ps[1..];
 
@@ -1331,7 +1364,7 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                 }
 
                 [param] if *param >= 30 && *param <= 37 => {
-                    let color = Color::Indexed((param - 30) as u8);
+                    let color = Color::Ansi((param - 30) as u8);
                     self.ps = &self.ps[1..];
 
                     return Some(SetForegroundColor(color));
@@ -1393,7 +1426,7 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                 }
 
                 [param] if *param >= 40 && *param <= 47 => {
-                    let color = Color::Indexed((param - 40) as u8);
+                    let color = Color::Ansi((param - 40) as u8);
                     self.ps = &self.ps[1..];
 
                     return Some(SetBackgroundColor(color));
@@ -1455,15 +1488,35 @@ impl<'a> Iterator for SgrOpsDecoder<'a> {
                     return Some(ResetBackgroundColor);
                 }
 
+                // Underline colour. avt has no underline-colour attribute, but
+                // the operands MUST still be consumed: leaving them behind made
+                // `58;5;196` re-enter the loop at `5` and emit SetBlink, so
+                // underlined text came back BLINKING after every reattach.
+                [58] => {
+                    let consumed = match self.ps.get(1).map(|p| p.parts()) {
+                        Some([2]) if self.ps.len() >= 5 => 5,
+                        Some([5]) if self.ps.len() >= 3 => 3,
+                        _ => 1,
+                    };
+
+                    self.ps = &self.ps[consumed..];
+                }
+
+                // Colon form (`58:5:n`, `58:2::r:g:b`) is self-contained, as is
+                // the reset.
+                [58, ..] | [59] => {
+                    self.ps = &self.ps[1..];
+                }
+
                 [param] if *param >= 90 && *param <= 97 => {
-                    let color = Color::Indexed((param - 90 + 8) as u8);
+                    let color = Color::Ansi((param - 90 + 8) as u8);
                     self.ps = &self.ps[1..];
 
                     return Some(SetForegroundColor(color));
                 }
 
                 [param] if *param >= 100 && *param <= 107 => {
-                    let color = Color::Indexed((param - 100 + 8) as u8);
+                    let color = Color::Ansi((param - 100 + 8) as u8);
                     self.ps = &self.ps[1..];
 
                     return Some(SetBackgroundColor(color));
@@ -1931,7 +1984,7 @@ mod tests {
 
         assert_eq!(
             parse("\x1b[31m"),
-            [Sgr(sgr_ops([SetForegroundColor(Color::Indexed(1))]))]
+            [Sgr(sgr_ops([SetForegroundColor(Color::Ansi(1))]))]
         );
 
         assert_eq!(
@@ -1953,12 +2006,12 @@ mod tests {
 
         assert_eq!(
             parse("\x1b[41m"),
-            [Sgr(sgr_ops([SetBackgroundColor(Color::Indexed(1))]))]
+            [Sgr(sgr_ops([SetBackgroundColor(Color::Ansi(1))]))]
         );
 
         assert_eq!(
             parse("\x1b[91m"),
-            [Sgr(sgr_ops([SetForegroundColor(Color::Indexed(9))]))]
+            [Sgr(sgr_ops([SetForegroundColor(Color::Ansi(9))]))]
         );
 
         assert_eq!(
@@ -1980,7 +2033,7 @@ mod tests {
 
         assert_eq!(
             parse("\x1b[104m"),
-            [Sgr(sgr_ops([SetBackgroundColor(Color::Indexed(12))]))]
+            [Sgr(sgr_ops([SetBackgroundColor(Color::Ansi(12))]))]
         );
 
         // legacy syntax for 24-bit color, within a larger sequence

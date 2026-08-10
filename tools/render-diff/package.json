@@ -1,0 +1,18 @@
+{
+  "name": "holdfast-render-diff",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Differential harness: server terminal-model snapshots vs xterm.js live rendering.",
+  "type": "module",
+  "scripts": {
+    "corpus": "node gen-corpus.mjs",
+    "diff": "tsx xterm-diff.ts"
+  },
+  "dependencies": {
+    "@xterm/headless": "^5.5.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

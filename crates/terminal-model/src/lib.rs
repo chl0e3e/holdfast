@@ -107,7 +107,20 @@ impl TerminalModel {
         let cols = cols.max(MIN_COLS);
         let rows = rows.max(MIN_ROWS);
         if (cols, rows) != (self.cols, self.rows) {
-            self.vt.resize(cols as usize, rows as usize);
+            // Narrowing re-wraps every line, which can push more lines than
+            // fit on screen; with `scrollback_limit(0)` avt hands those back
+            // exactly as it does for scrolled output. Dropping them here (the
+            // previous behaviour) deleted the text outright — it left neither
+            // the screen nor the history, so shrinking a window silently ate
+            // whole lines of a wrapped IRC buffer.
+            let changes = self.vt.resize(cols as usize, rows as usize);
+            let evicted: Vec<String> = changes
+                .scrollback
+                .map(|l| l.text().trim_end().to_string())
+                .collect();
+            for line in evicted {
+                self.history.push(line);
+            }
             self.cols = cols;
             self.rows = rows;
             self.revision += 1;

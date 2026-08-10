@@ -1198,6 +1198,10 @@ impl Terminal {
                     self.pen.set_inverse();
                 }
 
+                SetInvisible => {
+                    self.pen.set_invisible();
+                }
+
                 SetStrikethrough => {
                     self.pen.set_strikethrough();
                 }
@@ -1220,6 +1224,10 @@ impl Terminal {
 
                 ResetInverse => {
                     self.pen.unset_inverse();
+                }
+
+                ResetInvisible => {
+                    self.pen.unset_invisible();
                 }
 
                 ResetStrikethrough => {
@@ -1365,13 +1373,15 @@ impl Terminal {
         // 2. setup tab stops
 
         if self.tabs != Tabs::new(self.cols) {
-            // clear all tab stops
-            funs.push(Function::Ctc(CtcOp::ClearAll));
+            // TBC/HTS rather than CTC (`CSI Ps W`): avt parses CTC, but
+            // xterm.js does not implement it at all, so a snapshot written in
+            // that form silently restored the DEFAULT every-8-columns stops.
+            // `CSI 3 g` and `ESC H` are understood everywhere.
+            funs.push(Function::Tbc(TbcScope::All));
 
-            // set each tab stop
             for t in &self.tabs {
                 funs.push(Function::Cha(as_u16(t + 1)));
-                funs.push(Function::Ctc(CtcOp::Set));
+                funs.push(Function::Hts);
             }
         }
 
@@ -1729,6 +1739,14 @@ fn to_sgr_diff_ops(from: &Pen, to: &Pen) -> SgrOps {
 
     push_attr_diff(
         &mut ops,
+        from.is_invisible(),
+        to.is_invisible(),
+        SgrOp::SetInvisible,
+        SgrOp::ResetInvisible,
+    );
+
+    push_attr_diff(
+        &mut ops,
         from.is_strikethrough(),
         to.is_strikethrough(),
         SgrOp::SetStrikethrough,
@@ -1823,6 +1841,10 @@ fn to_sgr_ops(pen: &Pen) -> SgrOps {
 
     if pen.is_inverse() {
         ops.push(SgrOp::SetInverse);
+    }
+
+    if pen.is_invisible() {
+        ops.push(SgrOp::SetInvisible);
     }
 
     if pen.is_strikethrough() {
@@ -3093,15 +3115,21 @@ mod tests {
         assert_eq!(text(&term), "000000111111222\n222333333444444\n555|\n\n\n");
         assert_eq!(wrapped(&term), vec![true, true, false, false, false, false]);
 
+        // Holdfast fork: re-wrapping now absorbs its extra rows into the blank
+        // space below the cursor when the content still fits, instead of
+        // letting the top of the buffer scroll out of view. Upstream asserted
+        // the scrolled result ("2222333\n3334444\n44555|\n\n\n"); anchoring
+        // matches what xterm.js does on the client, and the two have to agree
+        // or every reattach after a window resize renders a different screen.
         term.resize(7, 6);
 
-        assert_eq!(text(&term), "2222333\n3334444\n44555|\n\n\n");
-        assert_eq!(wrapped(&term), vec![true, true, false, false, false, false]);
+        assert_eq!(text(&term), "0000001\n1111122\n2222333\n3334444\n44555|\n");
+        assert_eq!(wrapped(&term), vec![true, true, true, true, false, false]);
 
         term.resize(6, 6);
 
-        assert_eq!(text(&term), "333333\n444444\n555|\n\n\n");
-        assert_eq!(wrapped(&term), vec![true, true, false, false, false, false]);
+        assert_eq!(text(&term), "000000\n111111\n222222\n333333\n444444\n555|");
+        assert_eq!(wrapped(&term), vec![true, true, true, true, true, false]);
     }
 
     #[test]

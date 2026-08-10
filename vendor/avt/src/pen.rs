@@ -20,6 +20,7 @@ const UNDERLINE_MASK: u8 = 1 << 1;
 const STRIKETHROUGH_MASK: u8 = 1 << 2;
 const BLINK_MASK: u8 = 1 << 3;
 const INVERSE_MASK: u8 = 1 << 4;
+const INVISIBLE_MASK: u8 = 1 << 5;
 
 impl Pen {
     pub fn foreground(&self) -> Option<Color> {
@@ -58,6 +59,10 @@ impl Pen {
         (self.attrs & INVERSE_MASK) != 0
     }
 
+    pub fn is_invisible(&self) -> bool {
+        (self.attrs & INVISIBLE_MASK) != 0
+    }
+
     pub fn set_italic(&mut self) {
         self.attrs |= ITALIC_MASK;
     }
@@ -76,6 +81,10 @@ impl Pen {
 
     pub fn set_inverse(&mut self) {
         self.attrs |= INVERSE_MASK;
+    }
+
+    pub fn set_invisible(&mut self) {
+        self.attrs |= INVISIBLE_MASK;
     }
 
     pub fn unset_italic(&mut self) {
@@ -98,6 +107,10 @@ impl Pen {
         self.attrs &= !INVERSE_MASK;
     }
 
+    pub fn unset_invisible(&mut self) {
+        self.attrs &= !INVISIBLE_MASK;
+    }
+
     pub fn is_default(&self) -> bool {
         self.foreground.is_none()
             && self.background.is_none()
@@ -107,6 +120,7 @@ impl Pen {
             && !self.is_strikethrough()
             && !self.is_blink()
             && !self.is_inverse()
+            && !self.is_invisible()
     }
 }
 

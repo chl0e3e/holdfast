@@ -4,7 +4,15 @@ use crate::pen::Pen;
 /// selectors) retained per cell. The input stream is untrusted, so this
 /// is a hard bound: extras beyond the cap are dropped, which never
 /// changes geometry — their display width is zero either way.
-pub(crate) const MAX_ZERO_WIDTH: usize = 3;
+///
+/// Sized to cover every legitimate cluster rather than the shortest one that
+/// fit: an emoji TAG sequence (a subdivision flag such as
+/// U+1F3F4 + 6 tag characters + U+E007F) needs seven on a single cell, and at
+/// the previous cap of three those flags — and any text with more than three
+/// stacked diacritics — came back truncated after a reattach. xterm.js keeps
+/// clusters unbounded; deliberately diverging past this cap is the bounded
+/// trade (project rule: every buffer has a chosen bound).
+pub(crate) const MAX_ZERO_WIDTH: usize = 8;
 
 const NO_ZERO_WIDTH: [char; MAX_ZERO_WIDTH] = ['\0'; MAX_ZERO_WIDTH];
 
