@@ -23,7 +23,7 @@ pub mod ssh;
 
 pub use grant::{ConnectionGrant, GrantClaims, GrantError, GrantSigner, GrantVerifier};
 pub use password::{PasswordVerifier, MAX_PASSWORD_BYTES, MAX_USERNAME_BYTES};
-pub use ssh::{SshError, SshVerifier};
+pub use ssh::{SecurityKeyAttestation, SshError, SshVerifier};
 
 /// The signature namespace for Holdfast SSH auth challenges
 /// (`ssh-keygen -Y sign -n holdfast-auth@v0`).

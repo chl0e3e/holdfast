@@ -78,7 +78,9 @@ serde_json = "1"
 base64 = "0.22"
 dirs = "6"
 libc = "0.2"
-ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std"] }
+# "p256" is what makes sk-ecdsa-sha2-nistp256 security keys *verifiable*:
+# "ecdsa" alone only brings the key format, not the curve's crypto.
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "p256", "std"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 russh = { version = "0.62.2", default-features = false, features = ["ring", "rsa"] }
 rand-10 = { package = "rand", version = "0.10" }

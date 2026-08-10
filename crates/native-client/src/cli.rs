@@ -16,6 +16,9 @@ use hf_native_client::AttachError;
 struct Opts {
     url: String,
     user: Option<String>,
+    /// OpenSSH private key to authenticate with. A FIDO security key
+    /// (`ssh-keygen -t ed25519-sk` / `-t ecdsa-sk`) works here too — pass the
+    /// handle file and expect a touch prompt at login (ADR 0025).
     key: Option<std::path::PathBuf>,
 }
 

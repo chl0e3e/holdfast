@@ -16,4 +16,7 @@ ssh-key.workspace = true
 ed25519-dalek.workspace = true
 
 [dev-dependencies]
-ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "std", "getrandom"] }
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "p256", "std", "getrandom"] }
+sha2.workspace = true
+# Only to *produce* an sk-ecdsa signature in tests; verification is ssh-key's.
+p256 = { version = "0.13", features = ["ecdsa"] }

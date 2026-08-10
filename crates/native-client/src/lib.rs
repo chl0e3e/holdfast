@@ -326,7 +326,11 @@ async fn authenticate(
             private_key_path,
         } => {
             let key = read_private_key(&private_key_path)?;
-            if key.is_encrypted() {
+            // A security key's "private key" file is only a credential handle;
+            // the secret never leaves the authenticator, so ssh-keygen has to
+            // do the signing (and can also prompt for a passphrase itself).
+            let security_key = is_security_key(&key.algorithm());
+            if key.is_encrypted() && !security_key {
                 bail!("passphrase-protected keys are not yet supported; use an unencrypted key");
             }
             let public_line = key
@@ -350,12 +354,14 @@ async fn authenticate(
             // Step 4–5: sign the channel-bound challenge and prove possession.
             let message =
                 hf_auth::ssh::channel_bound_message(channel_binding, &challenge_result.challenge);
-            let sig = key
-                .sign(hf_auth::SSH_NAMESPACE, ssh_key::HashAlg::Sha512, &message)
-                .context("sign challenge")?;
-            let pem = sig
-                .to_pem(ssh_key::LineEnding::LF)
-                .context("encode signature")?;
+            let pem = if security_key {
+                sign_with_ssh_keygen(&private_key_path, &message)?
+            } else {
+                key.sign(hf_auth::SSH_NAMESPACE, ssh_key::HashAlg::Sha512, &message)
+                    .context("sign challenge")?
+                    .to_pem(ssh_key::LineEnding::LF)
+                    .context("encode signature")?
+            };
             let result = send_auth(
                 control,
                 pb::authenticate::Method::SshChallengeResponse(pb::SshChallengeResponse {
@@ -383,6 +389,51 @@ async fn authenticate(
             Ok(result.challenge) // the issued grant
         }
     }
+}
+
+/// Is this one of the two FIDO security-key types (`ssh-keygen -t ed25519-sk`
+/// / `-t ecdsa-sk`), whose signing happens on the authenticator?
+fn is_security_key(algorithm: &ssh_key::Algorithm) -> bool {
+    matches!(
+        algorithm,
+        ssh_key::Algorithm::SkEd25519 | ssh_key::Algorithm::SkEcdsaSha2NistP256
+    )
+}
+
+/// Sign the channel-bound challenge with a security key by delegating to
+/// `ssh-keygen -Y sign`, which owns the libfido2 plumbing and produces exactly
+/// the `SSHSIG` PEM this protocol already carries — the same command the
+/// browser flow instructs users to run.
+///
+/// stderr is inherited on purpose: that is where ssh-keygen writes "Confirm
+/// user presence for key ...", and a silenced prompt would look like a hang
+/// while the daemon waits for a touch that the user does not know to give.
+fn sign_with_ssh_keygen(key_path: &std::path::Path, message: &[u8]) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    eprintln!("Touch your security key to authenticate...");
+    let mut child = Command::new("ssh-keygen")
+        .args(["-Y", "sign", "-n", hf_auth::SSH_NAMESPACE, "-f"])
+        .arg(key_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("run ssh-keygen (required to sign with a FIDO security key)")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("ssh-keygen stdin unavailable"))?
+        .write_all(message)
+        .context("send challenge to ssh-keygen")?;
+    let output = child
+        .wait_with_output()
+        .context("wait for ssh-keygen to sign")?;
+    if !output.status.success() {
+        bail!("ssh-keygen could not sign with the security key (was it touched in time?)");
+    }
+    String::from_utf8(output.stdout).context("ssh-keygen produced a non-UTF-8 signature")
 }
 
 fn read_private_key(path: &std::path::Path) -> Result<ssh_key::PrivateKey> {

@@ -249,7 +249,19 @@ impl Conn {
                 });
                 match verified {
                     Some(identity) => {
-                        tracing::info!(user = %username, key = %identity.fingerprint, "authenticated");
+                        // Whether a touch-proving hardware key was used is
+                        // worth having in the audit trail (threat model T10);
+                        // the fingerprint alone does not say.
+                        tracing::info!(
+                            user = %username,
+                            key = %identity.fingerprint,
+                            security_key = identity.security_key.is_some(),
+                            user_verified = identity
+                                .security_key
+                                .as_ref()
+                                .is_some_and(|sk| sk.user_verified),
+                            "authenticated"
+                        );
                         self.succeed_issuing_grant(request_id, username, AuthMethod::SshKey)
                             .await
                     }

@@ -102,6 +102,11 @@ cargo test -p hf-daemon --features agent-mode --test agent_mode
   SSH public-key challenge/response against `authorized_keys` (SshSig,
   `ssh-keygen -Y sign` compatible, any ed25519/RSA/ECDSA key) and ed25519
   connection grants (audience-bound, expiring, verify-key split).
+  FIDO security keys (YubiKey) work through the same flow with no protocol
+  change — enrol with `ssh-keygen -t ed25519-sk` (or `-t ecdsa-sk` on
+  firmware older than 5.2.3), add the `.pub` to `authorized_keys`, and every
+  login needs a touch: a signature that does not prove user presence is
+  rejected (ADR 0025).
 - `holdfastd` supports real auth (`--ssh-auth <user> <authorized_keys>`) with
   per-source-address rate limiting and lockout, plus an Origin allowlist
   (`--allowed-origin`) for browser endpoints, alongside the retained

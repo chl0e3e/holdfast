@@ -11,10 +11,32 @@
 //!
 //! The signature is an `SshSig` (PEM), so any OpenSSH key type ssh-key
 //! supports (ed25519, RSA, ECDSA) works and clients can use standard tooling.
+//!
+//! FIDO security keys (YubiKey and friends) work through the same flow with
+//! no protocol change: `sk-ssh-ed25519@openssh.com` and
+//! `sk-ecdsa-sha2-nistp256@openssh.com` keys are ordinary `authorized_keys`
+//! entries, and `ssh-keygen -Y sign` drives the authenticator. What they add
+//! is a trailing flags/counter block on the signature, which this module
+//! *checks*: a signature that does not prove user presence is rejected, so a
+//! key that was never touched cannot authenticate (see
+//! [`SshError::UserPresenceMissing`]).
 
-use ssh_key::{AuthorizedKeys, HashAlg, PublicKey, SshSig};
+use ssh_key::public::KeyData;
+use ssh_key::{Algorithm, AuthorizedKeys, HashAlg, PublicKey, SshSig};
 
 use crate::SSH_NAMESPACE;
+
+/// Trailer every security-key signature carries after the signature proper:
+/// the authenticator's flags byte followed by its big-endian u32 counter.
+const SK_SIGNATURE_TRAILER: usize = 5;
+/// CTAP2 authenticator-data flag bit 0: a human was present at the
+/// authenticator — for a YubiKey, that it was physically touched.
+const FIDO_FLAG_USER_PRESENT: u8 = 0x01;
+/// CTAP2 authenticator-data flag bit 2: the human was *verified* (PIN or
+/// biometric), a strictly stronger statement than presence. Recorded for the
+/// audit trail; not required, because `ssh-keygen -O verify-required` is a
+/// per-key deployment choice rather than something this issuer can mandate.
+const FIDO_FLAG_USER_VERIFIED: u8 = 0x04;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SshError {
@@ -30,6 +52,8 @@ pub enum SshError {
     BadSignature,
     #[error("challenge mismatch")]
     ChallengeMismatch,
+    #[error("security key did not prove user presence (the key was not touched)")]
+    UserPresenceMissing,
 }
 
 /// Resolves and verifies against a user's authorized public keys.
@@ -125,10 +149,52 @@ impl SshVerifier {
             .verify(SSH_NAMESPACE, &message, &sig)
             .map_err(|_| SshError::BadSignature)?;
 
+        // Only now are the authenticator flags trustworthy: they are folded
+        // into the bytes the signature covers, so reading them before the
+        // verification above would be reading attacker-chosen input.
+        let attestation = if is_security_key(signer_key) {
+            let flags = sk_flags(&sig)?;
+            if flags & FIDO_FLAG_USER_PRESENT == 0 {
+                // sshd enforces the same thing unless the authorized_keys
+                // entry carries `no-touch-required` — an option this crate
+                // refuses to honor at all (see `from_authorized_keys`), so
+                // every security key reaching here is one whose owner
+                // intended a touch. Fail closed.
+                return Err(SshError::UserPresenceMissing);
+            }
+            Some(SecurityKeyAttestation {
+                user_verified: flags & FIDO_FLAG_USER_VERIFIED != 0,
+            })
+        } else {
+            None
+        };
+
         Ok(VerifiedIdentity {
             fingerprint: authorized_match.fingerprint(HashAlg::Sha256).to_string(),
+            security_key: attestation,
         })
     }
+}
+
+/// Is this a FIDO security-key type, whose signatures carry a flags/counter
+/// trailer? Both types OpenSSH defines are hardware-backed by construction.
+fn is_security_key(key: &KeyData) -> bool {
+    matches!(
+        key.algorithm(),
+        Algorithm::SkEd25519 | Algorithm::SkEcdsaSha2NistP256
+    )
+}
+
+/// The authenticator's flags byte, which sits immediately before the 4-byte
+/// counter at the end of a security-key signature.
+fn sk_flags(sig: &SshSig) -> Result<u8, SshError> {
+    let bytes = sig.signature_bytes();
+    bytes
+        .len()
+        .checked_sub(SK_SIGNATURE_TRAILER)
+        .and_then(|index| bytes.get(index))
+        .copied()
+        .ok_or(SshError::MalformedSignature)
 }
 
 /// The exact bytes a client signs and the server verifies: the TLS channel
@@ -149,6 +215,18 @@ pub fn channel_bound_message(channel_binding: &[u8], challenge: &[u8]) -> Vec<u8
 #[derive(Debug, Clone)]
 pub struct VerifiedIdentity {
     pub fingerprint: String,
+    /// `Some` when the key was a FIDO security key, in which case user
+    /// presence has already been enforced. `None` for a software key.
+    pub security_key: Option<SecurityKeyAttestation>,
+}
+
+/// What the authenticator attested beyond possession of the key. User presence
+/// is not represented because verification fails without it.
+#[derive(Debug, Clone)]
+pub struct SecurityKeyAttestation {
+    /// The authenticator verified the human (PIN or biometric), not merely
+    /// their presence — i.e. the key was created with `-O verify-required`.
+    pub user_verified: bool,
 }
 
 /// Generate a random 32-byte challenge nonce (spec §5).
@@ -166,6 +244,335 @@ mod tests {
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
         let authorized_line = key.public_key().to_openssh().unwrap();
         (key, authorized_line)
+    }
+
+    /// A stand-in for the FIDO authenticator inside a YubiKey, so the
+    /// verification path can be tested without hardware. It reproduces the
+    /// construction from the `sk-ssh-ed25519@openssh.com` spec exactly: the
+    /// device signs `sha256(application) || flags || counter || sha256(blob)`
+    /// and returns the raw signature with the flags and counter appended.
+    struct SecurityKey {
+        signing: ed25519_dalek::SigningKey,
+        application: String,
+        public: PublicKey,
+    }
+
+    impl SecurityKey {
+        fn new(seed: u8) -> SecurityKey {
+            Self::with_application(seed, "ssh:")
+        }
+
+        fn with_application(seed: u8, application: &str) -> SecurityKey {
+            let signing = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let point = ssh_key::public::Ed25519PublicKey(signing.verifying_key().to_bytes());
+            let public = PublicKey::new(
+                KeyData::SkEd25519(ssh_key::public::SkEd25519::new(point, application)),
+                "yubikey",
+            );
+            SecurityKey {
+                signing,
+                application: application.to_string(),
+                public,
+            }
+        }
+
+        fn authorized_line(&self) -> String {
+            self.public.to_openssh().unwrap()
+        }
+
+        /// Sign as the authenticator would. `flags` is the CTAP2 flags byte —
+        /// tests pass `0` to model a device that never saw a touch.
+        fn sign(&self, message: &[u8], flags: u8, counter: u32) -> String {
+            use ed25519_dalek::Signer as _;
+            use sha2::{Digest, Sha256};
+
+            let blob = SshSig::signed_data(SSH_NAMESPACE, HashAlg::Sha512, message).unwrap();
+            let trailer = {
+                let mut trailer = vec![flags];
+                trailer.extend(counter.to_be_bytes());
+                trailer
+            };
+
+            let mut signed = Vec::new();
+            signed.extend(Sha256::digest(self.application.as_bytes()));
+            signed.extend(&trailer);
+            signed.extend(Sha256::digest(&blob));
+
+            let mut data = self.signing.sign(&signed).to_bytes().to_vec();
+            data.extend(&trailer);
+
+            let signature = ssh_key::Signature::new(Algorithm::SkEd25519, data).unwrap();
+            let sig = SshSig::new(
+                self.public.key_data().clone(),
+                SSH_NAMESPACE,
+                HashAlg::Sha512,
+                signature,
+            )
+            .unwrap();
+            sig.to_pem(ssh_key::LineEnding::LF).unwrap()
+        }
+    }
+
+    #[test]
+    fn touched_security_key_authenticates() {
+        let key = SecurityKey::new(1);
+        let verifier = SshVerifier::from_authorized_keys(&key.authorized_line()).unwrap();
+        verifier.is_authorized(&key.authorized_line()).unwrap();
+
+        let challenge = new_challenge();
+        let binding = [0xCDu8; 32];
+        let message = channel_bound_message(&binding, &challenge);
+        let pem = key.sign(&message, FIDO_FLAG_USER_PRESENT, 7);
+
+        let identity = verifier
+            .verify_response(&binding, &challenge, pem.as_bytes())
+            .unwrap();
+        assert!(identity.fingerprint.starts_with("SHA256:"));
+        let attestation = identity
+            .security_key
+            .expect("a security key must be reported as one");
+        assert!(
+            !attestation.user_verified,
+            "presence alone is not user verification"
+        );
+    }
+
+    #[test]
+    fn untouched_security_key_is_rejected() {
+        // The signature is cryptographically valid and the key is authorized;
+        // only the user-presence bit is clear. That must not authenticate, or
+        // a key sitting plugged in overnight would be as good as a password.
+        let key = SecurityKey::new(2);
+        let verifier = SshVerifier::from_authorized_keys(&key.authorized_line()).unwrap();
+
+        let challenge = new_challenge();
+        let message = channel_bound_message(b"", &challenge);
+        let pem = key.sign(&message, 0, 1);
+
+        assert!(matches!(
+            verifier.verify_response(b"", &challenge, pem.as_bytes()),
+            Err(SshError::UserPresenceMissing)
+        ));
+    }
+
+    #[test]
+    fn user_verified_security_key_is_reported() {
+        let key = SecurityKey::new(3);
+        let verifier = SshVerifier::from_authorized_keys(&key.authorized_line()).unwrap();
+
+        let challenge = new_challenge();
+        let message = channel_bound_message(b"", &challenge);
+        let pem = key.sign(&message, FIDO_FLAG_USER_PRESENT | FIDO_FLAG_USER_VERIFIED, 9);
+
+        let identity = verifier
+            .verify_response(b"", &challenge, pem.as_bytes())
+            .unwrap();
+        assert!(identity.security_key.unwrap().user_verified);
+    }
+
+    #[test]
+    fn security_key_signature_is_channel_bound_too() {
+        // ADR 0008 must hold for hardware keys as well: the authenticator
+        // signs over the binding, so a relayed signature still fails.
+        let key = SecurityKey::new(4);
+        let verifier = SshVerifier::from_authorized_keys(&key.authorized_line()).unwrap();
+
+        let challenge = new_challenge();
+        let attacker_binding = [0xAAu8; 32];
+        let real_binding = [0xBBu8; 32];
+        let pem = key.sign(
+            &channel_bound_message(&attacker_binding, &challenge),
+            FIDO_FLAG_USER_PRESENT,
+            1,
+        );
+
+        assert!(matches!(
+            verifier.verify_response(&real_binding, &challenge, pem.as_bytes()),
+            Err(SshError::BadSignature)
+        ));
+        assert!(verifier
+            .verify_response(&attacker_binding, &challenge, pem.as_bytes())
+            .is_ok());
+    }
+
+    #[test]
+    fn a_different_authenticator_application_is_a_different_key() {
+        // The application string is part of the key, so a credential scoped to
+        // another relying party cannot stand in for this one.
+        let enrolled = SecurityKey::with_application(5, "ssh:");
+        let other = SecurityKey::with_application(5, "ssh:somewhere-else");
+        let verifier = SshVerifier::from_authorized_keys(&enrolled.authorized_line()).unwrap();
+
+        assert!(matches!(
+            verifier.is_authorized(&other.authorized_line()),
+            Err(SshError::KeyNotAuthorized)
+        ));
+
+        let challenge = new_challenge();
+        let pem = other.sign(
+            &channel_bound_message(b"", &challenge),
+            FIDO_FLAG_USER_PRESENT,
+            1,
+        );
+        assert!(matches!(
+            verifier.verify_response(b"", &challenge, pem.as_bytes()),
+            Err(SshError::KeyNotAuthorized)
+        ));
+    }
+
+    #[test]
+    fn software_keys_report_no_security_key() {
+        let (private, authorized_line) = keypair();
+        let verifier = SshVerifier::from_authorized_keys(&authorized_line).unwrap();
+        let challenge = new_challenge();
+        let sig = private
+            .sign(SSH_NAMESPACE, HashAlg::Sha512, &challenge)
+            .unwrap();
+        let pem = sig.to_pem(ssh_key::LineEnding::LF).unwrap();
+
+        let identity = verifier
+            .verify_response(b"", &challenge, pem.as_bytes())
+            .unwrap();
+        assert!(identity.security_key.is_none());
+    }
+
+    /// The same construction for `sk-ecdsa-sha2-nistp256@openssh.com`, the
+    /// type every FIDO2 YubiKey can do (`ed25519-sk` needs firmware 5.2.3+).
+    /// Its verification lives behind ssh-key's "p256" feature, so this test is
+    /// what proves that feature is actually enabled — without it the key type
+    /// is rejected as unsupported rather than verified.
+    fn sk_ecdsa_signed_pem(
+        signing: &p256::ecdsa::SigningKey,
+        application: &str,
+        message: &[u8],
+        flags: u8,
+        counter: u32,
+    ) -> (PublicKey, String) {
+        use p256::ecdsa::signature::Signer as _;
+        use sha2::{Digest, Sha256};
+
+        let point = signing.verifying_key().to_encoded_point(false);
+        let public = PublicKey::new(
+            // ssh-key's `EcdsaNistP256PublicKey` is p256's own SEC1 encoded
+            // point (`sec1::EncodedPoint<U32>`); it just is not re-exported.
+            KeyData::SkEcdsaSha2NistP256(ssh_key::public::SkEcdsaSha2NistP256::new(
+                point,
+                application,
+            )),
+            "yubikey",
+        );
+
+        let blob = SshSig::signed_data(SSH_NAMESPACE, HashAlg::Sha512, message).unwrap();
+        let mut trailer = vec![flags];
+        trailer.extend(counter.to_be_bytes());
+
+        let mut signed = Vec::new();
+        signed.extend(Sha256::digest(application.as_bytes()));
+        signed.extend(&trailer);
+        signed.extend(Sha256::digest(&blob));
+
+        let signature: p256::ecdsa::Signature = signing.sign(&signed);
+        let (r, s) = signature.split_bytes();
+        let mut rs = mpint(&r);
+        rs.extend(mpint(&s));
+
+        // Assembled by hand rather than via `SshSig::to_pem`, because
+        // ssh-key 0.6's *encoder* only splits the flags/counter trailer back
+        // out for sk-ed25519 — an sk-ecdsa signature it wrote would not
+        // survive its own decoder. Nothing in Holdfast encodes one; this
+        // reproduces the bytes `ssh-keygen` actually puts on the wire, so the
+        // decode-and-verify path under test is the production one.
+        let mut signature_blob = ssh_string(b"sk-ecdsa-sha2-nistp256@openssh.com");
+        signature_blob.extend(ssh_string(&rs));
+        signature_blob.extend(&trailer);
+
+        (public.clone(), armored_sshsig(&public, &signature_blob))
+    }
+
+    /// An OpenSSH `string`: big-endian u32 length followed by the bytes.
+    fn ssh_string(bytes: &[u8]) -> Vec<u8> {
+        let mut out = (bytes.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    /// The armored `SSHSIG` container from OpenSSH's PROTOCOL.sshsig.
+    fn armored_sshsig(public: &PublicKey, signature_blob: &[u8]) -> String {
+        use base64::Engine as _;
+
+        let mut blob = b"SSHSIG".to_vec();
+        blob.extend(1u32.to_be_bytes()); // version
+        blob.extend(ssh_string(&public.to_bytes().unwrap()));
+        blob.extend(ssh_string(SSH_NAMESPACE.as_bytes()));
+        blob.extend(ssh_string(b"")); // reserved
+        blob.extend(ssh_string(b"sha512"));
+        blob.extend(ssh_string(signature_blob));
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&blob);
+        let mut pem = String::from("-----BEGIN SSH SIGNATURE-----\n");
+        for line in encoded.as_bytes().chunks(70) {
+            pem.push_str(std::str::from_utf8(line).unwrap());
+            pem.push('\n');
+        }
+        pem.push_str("-----END SSH SIGNATURE-----\n");
+        pem
+    }
+
+    /// OpenSSH `mpint`: a length-prefixed big-endian integer, zero-padded when
+    /// the top bit would otherwise read as a negative number.
+    fn mpint(bytes: &[u8]) -> Vec<u8> {
+        let start = bytes.iter().position(|b| *b != 0).unwrap_or(bytes.len());
+        let trimmed = &bytes[start..];
+        let mut body = Vec::new();
+        if trimmed.first().is_some_and(|b| b & 0x80 != 0) {
+            body.push(0);
+        }
+        body.extend_from_slice(trimmed);
+        let mut out = (body.len() as u32).to_be_bytes().to_vec();
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn touched_ecdsa_security_key_authenticates() {
+        let signing = p256::ecdsa::SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
+        let challenge = new_challenge();
+        let message = channel_bound_message(b"", &challenge);
+        let (public, pem) =
+            sk_ecdsa_signed_pem(&signing, "ssh:", &message, FIDO_FLAG_USER_PRESENT, 3);
+
+        let verifier = SshVerifier::from_authorized_keys(&public.to_openssh().unwrap()).unwrap();
+        let identity = verifier
+            .verify_response(b"", &challenge, pem.as_bytes())
+            .expect("sk-ecdsa must verify — needs ssh-key's \"p256\" feature");
+        assert!(identity.security_key.is_some());
+    }
+
+    #[test]
+    fn untouched_ecdsa_security_key_is_rejected() {
+        let signing = p256::ecdsa::SigningKey::from_bytes(&[11u8; 32].into()).unwrap();
+        let challenge = new_challenge();
+        let message = channel_bound_message(b"", &challenge);
+        let (public, pem) = sk_ecdsa_signed_pem(&signing, "ssh:", &message, 0, 4);
+
+        let verifier = SshVerifier::from_authorized_keys(&public.to_openssh().unwrap()).unwrap();
+        assert!(matches!(
+            verifier.verify_response(b"", &challenge, pem.as_bytes()),
+            Err(SshError::UserPresenceMissing)
+        ));
+    }
+
+    #[test]
+    fn security_keys_with_options_are_skipped_like_any_other() {
+        // `no-touch-required` is the option that would disable the presence
+        // check. Holdfast honors no options, so such a key is skipped outright
+        // rather than silently authenticating without a touch.
+        let key = SecurityKey::new(6);
+        let restricted = format!("no-touch-required {}", key.authorized_line());
+        assert!(matches!(
+            SshVerifier::from_authorized_keys(&restricted),
+            Err(SshError::NoAuthorizedKeys)
+        ));
     }
 
     #[test]
