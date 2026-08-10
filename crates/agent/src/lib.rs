@@ -26,8 +26,9 @@ use hf_protocol::{
     AGENT_ATTACHMENT_STREAMS_MAX, AGENT_AUDIENCE_BYTES_MAX, AGENT_BUILD_BYTES_MAX,
     AGENT_COMMAND_BYTES_MAX, AGENT_CONNECTION_FLOW_WINDOW_BYTES, AGENT_CONTROL_FRAME_BYTES_MAX,
     AGENT_CONTROL_FRAME_BYTES_MIN, AGENT_GRANT_BYTES_MAX, AGENT_HISTORY_LINES_MAX,
-    AGENT_TERMINAL_INPUT_BYTES_MAX, AGENT_TERMINAL_OUTPUT_BYTES_MAX, AGENT_UNIX_ACCOUNT_BYTES_MAX,
-    AGENT_USER_ID_BYTES_MAX, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    AGENT_KEEP_ALIVE_INTERVAL_MS, AGENT_MAX_IDLE_TIMEOUT_MS, AGENT_TERMINAL_INPUT_BYTES_MAX,
+    AGENT_TERMINAL_OUTPUT_BYTES_MAX, AGENT_UNIX_ACCOUNT_BYTES_MAX, AGENT_USER_ID_BYTES_MAX,
+    PROTOCOL_MAJOR, PROTOCOL_MINOR,
 };
 use hf_session_core::{AttachmentEvent, OpenShellRequest, SessionError, ShellManager};
 use quinn::{
@@ -286,7 +287,16 @@ impl RegisteredLink {
     }
 
     /// Send one bounded application-level keepalive and require the matching
-    /// nonce. The eventual supervisor schedules this at the negotiated interval.
+    /// nonce.
+    ///
+    /// **Nothing schedules this, and liveness does not depend on it.** Keeping
+    /// the link up is the transport's job ([`AGENT_KEEP_ALIVE_INTERVAL_MS`]),
+    /// which needs no protocol traffic and covers both directions. This cannot
+    /// be called while [`RegisteredLink::serve`] is running either: it reads
+    /// its own pong off `recv`, which the serve loop is concurrently reading,
+    /// so the two would race for the reply — and `serve_next` has no
+    /// `AgentPong` arm to hand it back. It stays for the overlay's use, which
+    /// wants a round trip it can time rather than mere connectivity.
     pub async fn ping(&mut self, nonce: u64) -> Result<(), AgentError> {
         let request = AgentEnvelope {
             request_id: 0,
@@ -794,6 +804,9 @@ pub fn mtls_client_config(
             .expect("agent flow window fits QUIC varint"),
     );
     transport.send_window(AGENT_CONNECTION_FLOW_WINDOW_BYTES);
+    // Keep an idle link up instead of letting it die and re-register every 30s.
+    transport.max_idle_timeout(Some(quinn::VarInt::from_u32(AGENT_MAX_IDLE_TIMEOUT_MS).into()));
+    transport.keep_alive_interval(Some(Duration::from_millis(AGENT_KEEP_ALIVE_INTERVAL_MS)));
     config.transport_config(Arc::new(transport));
     Ok(config)
 }

@@ -52,6 +52,18 @@ const MAX_CONCURRENT_BIDI_STREAMS: u32 = 64;
 /// explicit bound replaces the library default. Never set this to zero —
 /// HTTP/3 cannot function without its unidirectional streams.
 const MAX_CONCURRENT_UNI_STREAMS: u32 = 32;
+/// How long a connection may go completely silent before QUIC tears it down.
+/// quinn's default is 30s, which is shorter than the gaps a terminal session
+/// legitimately has (an idle shell emits nothing for hours), so an untouched
+/// browser tab lost its session and came back to a blank screen.
+const MAX_IDLE_TIMEOUT_MS: u32 = 60_000;
+/// Server-driven QUIC PING interval. This is what actually keeps an idle
+/// session alive: the daemon has never implemented spec §14's application-level
+/// ping ticker, and of the clients only the desktop core sends pings (ADR
+/// 0020) — the browser client answers them but never sends. Keeping this at
+/// the transport layer fixes every client at once, and must stay comfortably
+/// below both [`MAX_IDLE_TIMEOUT_MS`] and a peer's own (often 30s) idle limit.
+const KEEP_ALIVE_INTERVAL_MS: u64 = 15_000;
 const MAX_CERTIFICATE_CHAIN_BYTES: u64 = 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: u64 = 64 * 1024;
 const MAX_CERTIFICATES: usize = 8;
@@ -101,6 +113,10 @@ impl WtListener {
         let mut transport = quinn::TransportConfig::default();
         transport.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
         transport.max_concurrent_uni_streams(MAX_CONCURRENT_UNI_STREAMS.into());
+        transport.max_idle_timeout(Some(quinn::VarInt::from_u32(MAX_IDLE_TIMEOUT_MS).into()));
+        transport.keep_alive_interval(Some(std::time::Duration::from_millis(
+            KEEP_ALIVE_INTERVAL_MS,
+        )));
         server_config.transport_config(Arc::new(transport));
         let endpoint = quinn::Endpoint::server(server_config, bind)?;
         let local_addr = endpoint.local_addr()?;

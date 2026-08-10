@@ -57,3 +57,64 @@ pub const AGENT_ATTACHMENT_STREAMS_MAX: u32 = 64;
 pub const AGENT_CONNECTION_FLOW_WINDOW_BYTES: u64 =
     AGENT_ATTACHMENT_FRAME_BYTES_MAX as u64 * AGENT_ATTACHMENT_STREAMS_MAX as u64;
 pub const AGENT_HISTORY_LINES_MAX: u32 = 10_000;
+/// How long an agent↔gateway connection may go completely silent before QUIC
+/// tears it down. quinn's default is 30s, which a healthy but idle managed
+/// server exceeds constantly: the link carries nothing at all until someone
+/// opens a shell through it, so the connection died and re-registered every
+/// half minute — churning the registration counter and leaving a routing gap
+/// each cycle.
+pub const AGENT_MAX_IDLE_TIMEOUT_MS: u32 = 60_000;
+/// QUIC PING interval for that link. This is what actually keeps it up: the
+/// application-level `AgentPing` exists and its interval is negotiated at
+/// registration, but nothing has ever scheduled it (see
+/// `RegisteredLink::ping`), and it cannot be driven from the serve loop
+/// without a second reader on the control stream. Keeping liveness at the
+/// transport layer needs no protocol change and covers both directions.
+///
+/// 10s is not arbitrary. The effective idle limit is the *lower* of the two
+/// peers', so this has to fit inside quinn's un-raised 30s — and fit twice
+/// over, or one dropped ping packet ends the connection at exactly the
+/// deadline. That rules out anything from 15s up. It also lands on the
+/// interval the gateway already advertises for the application-level
+/// keepalive, so both layers pace the link identically.
+pub const AGENT_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
+
+#[cfg(test)]
+mod agent_liveness_tests {
+    use super::{AGENT_KEEP_ALIVE_INTERVAL_MS, AGENT_MAX_IDLE_TIMEOUT_MS};
+
+    /// quinn's own default, which is what an un-updated peer will be enforcing.
+    const QUINN_DEFAULT_IDLE_TIMEOUT_MS: u64 = 30_000;
+
+    #[test]
+    fn keepalive_outpaces_every_idle_limit_that_can_apply() {
+        let keepalive = AGENT_KEEP_ALIVE_INTERVAL_MS;
+        let idle = u64::from(AGENT_MAX_IDLE_TIMEOUT_MS);
+
+        // The negotiated idle limit is the LOWER of the two peers', so pacing
+        // against our own is not enough: a peer built before this change still
+        // enforces quinn's 30s and must be pinged inside it.
+        assert!(
+            keepalive < QUINN_DEFAULT_IDLE_TIMEOUT_MS,
+            "keepalive {keepalive}ms must fit inside an un-updated peer's {QUINN_DEFAULT_IDLE_TIMEOUT_MS}ms idle limit",
+        );
+
+        // Survive a lost ping rather than dying on the first dropped packet.
+        assert!(
+            keepalive * 2 < idle,
+            "keepalive {keepalive}ms must leave room for a retry before the {idle}ms idle limit",
+        );
+        assert!(
+            keepalive * 2 < QUINN_DEFAULT_IDLE_TIMEOUT_MS,
+            "keepalive {keepalive}ms must leave retry room against an un-updated peer too",
+        );
+    }
+
+    #[test]
+    fn raising_the_idle_limit_is_what_makes_the_link_outlive_quinns_default() {
+        assert!(
+            u64::from(AGENT_MAX_IDLE_TIMEOUT_MS) > QUINN_DEFAULT_IDLE_TIMEOUT_MS,
+            "the whole point is to outlive quinn's default; lowering this re-introduces the churn",
+        );
+    }
+}

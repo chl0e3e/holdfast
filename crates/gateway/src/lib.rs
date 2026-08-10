@@ -22,8 +22,8 @@ use hf_protocol::{
     AGENT_ALPN, AGENT_ATTACHMENT_FRAME_BYTES_MAX, AGENT_BUILD_BYTES_MAX, AGENT_COMMAND_BYTES_MAX,
     AGENT_CONNECTION_FLOW_WINDOW_BYTES, AGENT_CONTROL_FRAME_BYTES_MAX,
     AGENT_CONTROL_FRAME_BYTES_MIN, AGENT_GRANT_BYTES_MAX, AGENT_HISTORY_LINES_MAX,
-    AGENT_TERMINAL_INPUT_BYTES_MAX, AGENT_UNIX_ACCOUNT_BYTES_MAX, AGENT_USER_ID_BYTES_MAX,
-    PROTOCOL_MAJOR,
+    AGENT_KEEP_ALIVE_INTERVAL_MS, AGENT_MAX_IDLE_TIMEOUT_MS, AGENT_TERMINAL_INPUT_BYTES_MAX,
+    AGENT_UNIX_ACCOUNT_BYTES_MAX, AGENT_USER_ID_BYTES_MAX, PROTOCOL_MAJOR,
 };
 use quinn::{crypto::rustls::QuicServerConfig, Connection, Endpoint, RecvStream, SendStream};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -752,6 +752,12 @@ pub fn mtls_server_config(
             .expect("agent flow window fits QUIC varint"),
     );
     transport.send_window(AGENT_CONNECTION_FLOW_WINDOW_BYTES);
+    // The idle limit is the lower of the two peers', so the gateway has to
+    // raise its own or the agent's keepalive would be pacing against a 30s
+    // ceiling here. Keepalive on this side too, so an agent built before the
+    // client-side change still holds its link up.
+    transport.max_idle_timeout(Some(quinn::VarInt::from_u32(AGENT_MAX_IDLE_TIMEOUT_MS).into()));
+    transport.keep_alive_interval(Some(Duration::from_millis(AGENT_KEEP_ALIVE_INTERVAL_MS)));
     Ok(config)
 }
 

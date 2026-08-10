@@ -257,3 +257,61 @@ async fn certificate_from_untrusted_ca_fails_during_mtls() {
     assert!(connector.connect().await.is_err());
     assert!(accept.await.unwrap().is_err());
 }
+
+/// An idle agent link must outlive quinn's 30s default idle timeout.
+///
+/// Nothing sends on this connection after registration — which is the normal
+/// state of a managed server nobody is using — so before the transport
+/// keepalive existed the link died at 30s and the agent re-registered, over
+/// and over. This waits past that deadline and then requires the link to still
+/// carry a round trip.
+///
+/// `#[ignore]`d only because it spends 35s waiting; nothing else about it is
+/// special. Run with:
+///   cargo test -p hf-agent --test mtls_registration -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "spends 35s idling to cross quinn's 30s default timeout"]
+async fn an_idle_link_survives_past_quinns_default_idle_timeout() {
+    let agent_ca = Authority::new("agent test CA");
+    let gateway_ca = Authority::new("gateway test CA");
+    let agent_leaf = agent_ca.issue("agent.test", ExtendedKeyUsagePurpose::ClientAuth);
+    let server_id = ServerId([0x31; 16]);
+    let registry = Arc::new(CertificateRegistry::new(8, 4).unwrap());
+    registry
+        .authorize_leaf(server_id, agent_leaf.cert.as_ref())
+        .unwrap();
+    let gateway = gateway(&agent_ca, &gateway_ca, Arc::clone(&registry));
+    let connector = connector(
+        gateway.local_addr().unwrap(),
+        server_id,
+        &gateway_ca,
+        agent_leaf,
+    );
+
+    let accept = tokio::spawn({
+        let gateway = Arc::clone(&gateway);
+        async move { gateway.accept_registration().await }
+    });
+    let mut link = connector.connect().await.unwrap();
+    let mut accepted = accept.await.unwrap().unwrap();
+    assert_eq!(registry.active_count().unwrap(), 1);
+
+    // Silence, comfortably past quinn's 30s default.
+    tokio::time::sleep(std::time::Duration::from_secs(35)).await;
+
+    let ping = tokio::spawn(async move {
+        accepted.answer_ping().await.unwrap();
+        accepted
+    });
+    link.ping(0x1D1E)
+        .await
+        .expect("the link must still be alive after 35s of silence");
+    let accepted = ping.await.unwrap();
+
+    assert_eq!(
+        registry.active_count().unwrap(),
+        1,
+        "the original registration must still be the live one",
+    );
+    drop(accepted);
+}
