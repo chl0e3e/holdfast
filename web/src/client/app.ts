@@ -50,7 +50,13 @@ const HISTORY_PAGE_LINES = 200;
 const HISTORY_PAGE_BYTES = 128 * 1024;
 const LIVE_BUFFER_CAP = 2 * 1024 * 1024; // re-render buffer bound (spec §8 spirit)
 
-type StoredShell = { id: string; token: string; name: string };
+/// `idem` is the idempotency key the shell was opened with. It is the ONLY
+/// way back to a still-running shell whose resume token has expired: the
+/// daemon returns the existing shell for a repeated key from the same user
+/// (session-core `open_shell`). Optional because entries written before
+/// 2026-08-11 do not have it — those cannot be recovered, and are kept rather
+/// than deleted so the shell is not silently lost from this browser.
+type StoredShell = { id: string; token: string; name: string; idem?: string };
 
 function loadStored(): StoredShell[] {
   try {
@@ -270,6 +276,7 @@ class App {
   transport: HfTransport | null = null;
   tabs: Tab[] = [];
   active: Tab | null = null;
+  resizeFrame: number | null = null;
   pending = new Map<bigint, (channel: number, env: Envelope) => void>();
   channelToTab = new Map<number, Tab>();
   backoffMs = 1000;
@@ -283,7 +290,7 @@ class App {
     document.getElementById("terminate")!.onclick = () => void this.terminateActive();
     document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
     document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
-    window.addEventListener("resize", () => this.active?.fit.fit());
+    window.addEventListener("resize", () => this.scheduleFit());
     await this.connect();
   }
 
@@ -296,6 +303,22 @@ class App {
     saveFontSize(size);
     for (const tab of this.tabs) tab.term.options.fontSize = size;
     this.active?.fit.fit();
+  }
+
+  /// Coalesce resize work to one fit per frame, as the desktop client does.
+  /// `window.onresize` fires continuously through a drag and `fit()` triggers
+  /// `term.onResize`, which sends a `TerminalResize` — so an untamed drag sent
+  /// one resize per event to the daemon and re-laid-out the terminal just as
+  /// often. Skipping a zero-sized panel matters too: fitting a panel that is
+  /// not laid out yet proposes garbage dimensions.
+  scheduleFit(): void {
+    if (this.resizeFrame !== null) return;
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      const tab = this.active;
+      if (!tab || tab.panel.clientWidth === 0 || tab.panel.clientHeight === 0) return;
+      tab.fit.fit();
+    });
   }
 
   setStatus(text: string, kind: "ok" | "warn" | "err"): void {
@@ -579,7 +602,7 @@ class App {
     const token = reply.message.value.resumeToken;
     const name = `shell ${this.tabs.length + 1}`;
     const stored = loadStored();
-    stored.push({ id: b64.enc(shellId), token: b64.enc(token), name });
+    stored.push({ id: b64.enc(shellId), token: b64.enc(token), name, idem: b64.enc(key) });
     saveStored(stored);
     await this.attachShell(shellId, token, name);
   }
@@ -599,8 +622,25 @@ class App {
       if (!this.active) this.select(tab);
     }
     tab.fit.fit();
+
+    // Retire the previous attachment's channel before opening the new one.
+    // Output still arriving on it belongs to the pre-snapshot stream and is
+    // already reflected in the snapshot about to replace it; left mapped, it
+    // would be replayed on top and double-applied.
+    if (tab.channel !== 0) this.channelToTab.delete(tab.channel);
     tab.channel = transport.openChannel();
     this.channelToTab.set(tab.channel, tab);
+
+    // Reset the live buffer HERE, not after the await. The daemon registers
+    // the new attachment's queue and takes the snapshot under one lock, so
+    // everything that can arrive on this channel is post-snapshot and must be
+    // replayed. Clearing after the await discarded exactly the frames that
+    // were batched behind ShellAttached in the same QUIC read — output that
+    // is in neither the snapshot nor the replay, and simply vanished.
+    tab.liveChunks = [];
+    tab.liveBytes = 0;
+    tab.liveOverflowed = false;
+    tab.presented = false;
 
     const [, reply] = await this.request(tab.channel, envelope({
       shellId,
@@ -616,11 +656,28 @@ class App {
 
     if (reply.message.case === "error") {
       const err = reply.message.value;
-      if (err.code === ErrorCode.ERR_TOKEN_EXPIRED || err.code === ErrorCode.ERR_NOT_FOUND) {
-        // Unrecoverable: forget the shell.
+      if (err.code === ErrorCode.ERR_NOT_FOUND) {
+        // The shell is genuinely gone; dropping the entry is correct.
         this.forget(shellId);
         tab.setState("exited");
         tab.term.write(`\r\n\x1b[31m[cannot reattach: ${err.humanMessage}]\x1b[0m\r\n`);
+        return;
+      }
+      if (err.code === ErrorCode.ERR_TOKEN_EXPIRED) {
+        // An expired token does NOT mean the shell died — it usually means
+        // another attach rotated it. This used to call forget(), which
+        // permanently deleted a still-running shell from this browser: every
+        // attach rotates the token, so any racing attach cost the user their
+        // only way back. Recover through the idempotency key instead, which
+        // is what the daemon's open_shell is for.
+        if (await this.recoverExpired(tab, shellId, name)) return;
+        tab.setState("exited");
+        tab.term.write(
+          `\r\n\x1b[31m[cannot reattach: ${err.humanMessage}]\x1b[0m\r\n` +
+            `\x1b[33m[the shell may still be running; it has been kept in this ` +
+            `browser's list]\x1b[0m\r\n`,
+        );
+        return;
       }
       return;
     }
@@ -640,10 +697,6 @@ class App {
     tab.oldestFetched = 0n;
     tab.oldestAvailable = attached.oldestHistoryLineId;
     tab.historyExhausted = attached.newestHistoryLineId === 0n;
-    tab.liveChunks = [];
-    tab.liveBytes = 0;
-    tab.liveOverflowed = false;
-    tab.presented = false;
     tab.setState("live");
 
     // Render the snapshot NOW: until this reset+redraw runs, live output
@@ -656,6 +709,49 @@ class App {
         .then(() => tab.render())
         .catch(() => {});
     }
+  }
+
+  /// Recover a shell whose resume token expired, using the idempotency key it
+  /// was opened with. `open_shell` is idempotent per (owner, key): a repeated
+  /// key returns the SAME shell with a freshly rotated token rather than
+  /// creating a second one. Returns whether the shell was recovered.
+  ///
+  /// Entries stored before the key was persisted have no `idem` and cannot be
+  /// recovered this way; they are left in place rather than deleted, because
+  /// the shell is very likely still running and another client can still
+  /// reach it.
+  async recoverExpired(tab: Tab, shellId: Uint8Array, name: string): Promise<boolean> {
+    const entry = loadStored().find((s) => s.id === b64.enc(shellId));
+    if (!entry?.idem) return false;
+
+    const [, reply] = await this.request(0, envelope({
+      message: {
+        case: "openShell",
+        value: create(OpenShellSchema, {
+          command: "",
+          initialCols: tab.term.cols,
+          initialRows: tab.term.rows,
+          idempotencyKey: b64.dec(entry.idem),
+        }),
+      },
+    }));
+    if (reply.message.case !== "shellOpened") return false;
+
+    // The daemon may hand back a different shell id only if the original was
+    // reaped and the key opened a fresh one; either way persist what we got
+    // BEFORE attaching, so a failure here cannot lose the new token too.
+    const recoveredId = reply.shellId;
+    const token = reply.message.value.resumeToken;
+    const stored = loadStored();
+    const row = stored.find((s) => s.id === b64.enc(shellId));
+    if (row) {
+      row.id = b64.enc(recoveredId);
+      row.token = b64.enc(token);
+    }
+    saveStored(stored);
+
+    await this.attachShell(recoveredId, token, name);
+    return true;
   }
 
   /// Reattach a live tab the server force-detached (ERR_TOO_SLOW): fetch a
