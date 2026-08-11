@@ -6,6 +6,26 @@ pub struct Pen {
     pub(crate) background: Option<Color>,
     pub(crate) intensity: Intensity,
     pub(crate) attrs: u8,
+    /// Index into the terminal's interned hyperlink table; 0 = no link
+    /// (ADR 0026's sibling — see `Terminal::links`). Living on the pen means
+    /// every existing `print`/`set` call site carries it without a signature
+    /// change, and `Line::chunks` already splits runs on pen inequality, so
+    /// the dump breaks at link boundaries for free.
+    pub(crate) link: LinkId,
+}
+
+/// Interned hyperlink id. `u16` rather than `u8` because a busy IRC screen
+/// can hold more than 255 distinct links, and rather than a `u32` because the
+/// table is capped well below that anyway.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+pub struct LinkId(pub(crate) u16);
+
+impl LinkId {
+    pub(crate) const NONE: LinkId = LinkId(0);
+
+    pub(crate) fn is_none(self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -112,6 +132,14 @@ impl Pen {
     }
 
     pub fn is_default(&self) -> bool {
+        self.style_is_default() && self.link.is_none()
+    }
+
+    /// Everything except the hyperlink. The dump's SGR diffing must use this:
+    /// a run that differs only by link produces no SGR ops, and an empty
+    /// `Sgr([])` dumps as bare `CSI m` — a full attribute reset that would
+    /// silently wipe colours on reattach.
+    pub(crate) fn style_is_default(&self) -> bool {
         self.foreground.is_none()
             && self.background.is_none()
             && self.intensity == Intensity::Normal
@@ -122,6 +150,26 @@ impl Pen {
             && !self.is_inverse()
             && !self.is_invisible()
     }
+
+    /// Pen equality ignoring the hyperlink — see [`Pen::style_is_default`].
+    pub(crate) fn style_eq(&self, other: &Pen) -> bool {
+        self.foreground == other.foreground
+            && self.background == other.background
+            && self.intensity == other.intensity
+            && self.attrs == other.attrs
+    }
+
+    /// The pen a blank cell gets when a region is erased, scrolled or shifted.
+    /// xterm.js's `_eraseAttrData()` carries the background colour and
+    /// explicitly strips the extended attrs that hold the link, so an erased
+    /// region never becomes clickable. Without this the link would bleed into
+    /// every blank the active pen touches.
+    pub(crate) fn erased(&self) -> Pen {
+        Pen {
+            link: LinkId::NONE,
+            ..*self
+        }
+    }
 }
 
 impl Default for Pen {
@@ -131,6 +179,7 @@ impl Default for Pen {
             background: None,
             intensity: Intensity::Normal,
             attrs: 0,
+            link: LinkId::NONE,
         }
     }
 }

@@ -7,12 +7,30 @@ use std::fmt::Display;
 
 const PARAMS_LEN: usize = 32;
 
+/// Largest OSC payload retained. The byte stream is attacker-controlled
+/// (threat model T9) and upstream avt buffered nothing at all here, so this
+/// is the bound that keeps a hostile `OSC 8` from growing the parser without
+/// limit. An oversized payload is dropped **whole** rather than truncated: a
+/// truncated URI is a different destination, not a shorter one.
+const MAX_OSC_BYTES: usize = 4096;
+
 #[derive(Debug, Default)]
 pub struct Parser {
     pub state: State,
     params: [Param; PARAMS_LEN],
     cur_param: usize,
     intermediate: Option<char>,
+    /// OSC payload accumulated between the introducer and its terminator.
+    /// Upstream discards every OSC (`osc_put` was a no-op); the fork keeps it
+    /// so `OSC 8` hyperlinks survive into the attach snapshot.
+    osc: String,
+    /// Latched when the payload exceeded [`MAX_OSC_BYTES`], so the sequence is
+    /// abandoned instead of dispatched with a partial URI.
+    osc_overflow: bool,
+    /// Set when `OscString` is left via `ESC`, so the `\` that follows knows
+    /// it is terminating an OSC. Without it, the ST path — the most common
+    /// terminator — is indistinguishable from any other escape.
+    osc_pending: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -77,6 +95,8 @@ pub enum Function {
     Scorc,
     Scosc,
     Sd(u16),
+    /// `OSC 8` — open a hyperlink, or close the open one (`None`).
+    SetHyperlink(Option<Hyperlink>),
     Sgr(SgrOps),
     Si,
     Sm(AnsiModes),
@@ -86,6 +106,16 @@ pub enum Function {
     Vpa(u16),
     Vpr(u16),
     Xtwinops(XtwinopsOp),
+}
+
+/// An `OSC 8` hyperlink target. Interned per terminal rather than stored per
+/// cell — a 4 KiB URI in each of 3000 cells is not a table, it is a leak.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Hyperlink {
+    /// The `id=` param, or empty. Lets a renderer join a link that spans a
+    /// wrap; carried through the dump so reattach keeps that grouping.
+    pub id: String,
+    pub uri: String,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -429,6 +459,10 @@ impl Parser {
             }
 
             (_, '\u{1b}') => {
+                // An OSC left this way is terminated by the `\` that follows
+                // (ESC ST). Remember that, because `clear()` below wipes the
+                // CSI params but the OSC payload must survive to be dispatched.
+                self.osc_pending = self.state == OscString;
                 self.state = Escape;
                 self.clear();
             }
@@ -459,6 +493,15 @@ impl Parser {
             (Escape, '\u{20}'..='\u{2f}') => {
                 self.state = EscapeIntermediate;
                 self.collect(input);
+            }
+
+            // ESC `\` is String Terminator. When it closes an OSC the payload
+            // is dispatched here; otherwise it falls through to the ordinary
+            // escape dispatch below, exactly as before.
+            (Escape, '\u{5c}') if self.osc_pending => {
+                self.state = Ground;
+                self.osc_pending = false;
+                return self.osc_dispatch();
             }
 
             (EscapeIntermediate, '\u{30}'..='\u{7e}')
@@ -495,11 +538,13 @@ impl Parser {
 
             (Escape, '\u{5d}') => {
                 self.state = OscString;
+                self.osc_clear();
             }
 
             (OscString, '\u{07}') => {
                 // 0x07 is xterm non-ANSI variant of transition to ground
                 self.state = Ground;
+                return self.osc_dispatch();
             }
 
             (_, '\u{18}')
@@ -577,11 +622,16 @@ impl Parser {
             }
 
             (_, '\u{9c}') => {
+                let was_osc = self.state == OscString;
                 self.state = Ground;
+                if was_osc {
+                    return self.osc_dispatch();
+                }
             }
 
             (_, '\u{9d}') => {
                 self.state = OscString;
+                self.osc_clear();
             }
 
             (_, '\u{90}') => {
@@ -832,7 +882,61 @@ impl Parser {
 
     fn put(&mut self, _input: char) {}
 
-    fn osc_put(&mut self, _input: char) {}
+    fn osc_put(&mut self, input: char) {
+        if self.osc_overflow {
+            return;
+        }
+        if self.osc.len() + input.len_utf8() > MAX_OSC_BYTES {
+            // Drop the whole sequence, not just the tail — see MAX_OSC_BYTES.
+            self.osc_overflow = true;
+            self.osc.clear();
+            return;
+        }
+        self.osc.push(input);
+    }
+
+    fn osc_clear(&mut self) {
+        self.osc.clear();
+        self.osc_overflow = false;
+    }
+
+    /// Interpret a completed OSC payload. Only `OSC 8` is understood; every
+    /// other OSC number is discarded exactly as upstream avt discards all of
+    /// them, so titles (OSC 0/2), clipboard (OSC 52) and palette (OSC 4) keep
+    /// their existing "parsed and ignored" behaviour.
+    fn osc_dispatch(&mut self) -> Option<Function> {
+        let parsed = self.parse_hyperlink();
+        self.osc_clear();
+        parsed
+    }
+
+    fn parse_hyperlink(&self) -> Option<Function> {
+        if self.osc_overflow {
+            return None;
+        }
+        // OSC 8 ; params ; URI  — params is a colon-separated key=value list.
+        let rest = self.osc.strip_prefix("8;")?;
+        let (params, uri) = rest.split_once(';')?;
+
+        if uri.is_empty() {
+            return Some(Function::SetHyperlink(None));
+        }
+
+        // `id=` is the only param with defined meaning: it lets a renderer
+        // treat a link split across wrapped lines as one link. Anything else
+        // is dropped rather than echoed back, so the dump cannot be used to
+        // smuggle arbitrary bytes through the snapshot.
+        let id = params
+            .split(':')
+            .find_map(|kv| kv.strip_prefix("id="))
+            .unwrap_or("")
+            .to_string();
+
+        Some(Function::SetHyperlink(Some(Hyperlink {
+            id,
+            uri: uri.to_string(),
+        })))
+    }
 
     pub(crate) fn dump(&self) -> String {
         use State::*;
@@ -1123,6 +1227,22 @@ fn dump_function(seq: &mut String, fun: &Function) {
         Scorc => push_csi(seq, None, &[], 'u'),
         Scosc => push_csi(seq, None, &[], 's'),
         Sd(n) => push_csi(seq, None, &[n.to_string()], 'T'),
+
+        // ESC `\` as the terminator, not BEL: it keeps the dump 7-bit and is
+        // what xterm.js and every modern emulator emit themselves.
+        SetHyperlink(link) => match link {
+            Some(Hyperlink { id, uri }) => {
+                seq.push_str("\u{1b}]8;");
+                if !id.is_empty() {
+                    seq.push_str("id=");
+                    seq.push_str(id);
+                }
+                seq.push(';');
+                seq.push_str(uri);
+                seq.push_str("\u{1b}\\");
+            }
+            None => seq.push_str("\u{1b}]8;;\u{1b}\\"),
+        },
 
         Sgr(ops) => {
             if ops.is_empty() {
@@ -1660,6 +1780,7 @@ mod tests {
     use super::SgrOp::*;
     use super::SgrOps;
     use super::State;
+    use super::Hyperlink;
     use super::TbcScope;
     use super::XtwinopsOp;
     use crate::charset::Charset;
@@ -2183,6 +2304,15 @@ mod tests {
             Rm(ansi_modes([AnsiMode::Insert, AnsiMode::NewLine])),
             Scorc,
             Scosc,
+            SetHyperlink(None),
+            SetHyperlink(Some(Hyperlink {
+                id: String::new(),
+                uri: "https://example.com/irc".to_string(),
+            })),
+            SetHyperlink(Some(Hyperlink {
+                id: "x1".to_string(),
+                uri: "https://example.com/a".to_string(),
+            })),
             Sd(20),
             Sgr(sgr_ops([])),
             Sgr(sgr_ops([

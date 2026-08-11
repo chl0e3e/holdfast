@@ -1,10 +1,23 @@
 // URL detection + hover popover for terminal output (threat model T9).
 //
-// Terminal output is attacker-controlled, so nothing here auto-opens: links
-// are only *decorated*, and navigation happens when the user clicks a button
-// in the popover, which always shows the full destination. Only http/https
-// is recognized. This is deliberately not the web-links addon (OSC 8 stays
-// inert — an escape sequence must not be able to relabel a destination).
+// Terminal output is attacker-controlled, so nothing HERE auto-opens: links
+// found by this module are only *decorated*, and navigation happens when the
+// user clicks a button in the popover, which always shows the full
+// destination. Only http/https is recognized. This is deliberately not the
+// web-links addon.
+//
+// CORRECTION (2026-08-11): this comment used to claim "OSC 8 stays inert",
+// and that was never true of the running client. xterm.js's core registers
+// its own OscLinkProvider unconditionally, and neither client sets a
+// `linkHandler`, so an OSC 8 link in output is already clickable through
+// xterm's built-in `confirm("Do you want to navigate to …")` + window.open —
+// bypassing the popover that exists precisely so the user always sees the
+// real destination. xterm's dialog does show the true URL, so a relabelled
+// destination is still disclosed, but by xterm's mitigation and not this
+// module's. Routing OSC 8 through LinkPopover via `linkHandler` is an open
+// decision, not something the model's new OSC 8 support changed: the model
+// tracking links (ADR 0026 sibling work) only makes a REATTACHED screen match
+// what the live screen already did.
 //
 // The popover exists because weechat's mouse mode swallows clicks: xterm.js
 // forwards mouse reporting to the application, so click-to-open cannot work

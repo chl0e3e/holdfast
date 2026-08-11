@@ -8,10 +8,10 @@ use crate::cell::{Cell, Occupancy};
 use crate::charset::Charset;
 use crate::line::Line;
 use crate::parser::{
-    AnsiMode, AnsiModes, CtcOp, DecMode, DecModes, EdScope, ElScope, Function, SgrOp, SgrOps,
-    TbcScope, XtwinopsOp,
+    AnsiMode, AnsiModes, CtcOp, DecMode, DecModes, EdScope, ElScope, Function, Hyperlink, SgrOp,
+    SgrOps, TbcScope, XtwinopsOp,
 };
-use crate::pen::{Intensity, Pen};
+use crate::pen::{Intensity, LinkId, Pen};
 use crate::tabs::Tabs;
 use std::cmp::Ordering;
 use std::mem;
@@ -40,7 +40,27 @@ pub struct Terminal {
     alternate_saved_ctx: SavedCtx,
     dirty_lines: DirtyLines,
     xtwinops: bool,
+    /// Interned `OSC 8` targets, indexed by `LinkId` (id 0 is "no link", so
+    /// entry *i* is `links[i - 1]`). Grow-only within one terminal and
+    /// capped: see [`MAX_LINKS`].
+    links: Vec<Hyperlink>,
 }
+
+/// How many distinct hyperlinks one terminal will intern. Grow-only — there
+/// is no GC — so this is the whole bound, and the reason it is small: the
+/// attach snapshot must fit in ONE protocol frame, and the negotiable floor
+/// for that is 16 KiB (`hf_protocol::FRAME_BYTES_FLOOR`), not the 256 KiB
+/// default. Beyond the cap, new links intern as "no link": unlinked text is
+/// a safe degradation, a *wrong* link is not.
+const MAX_LINKS: usize = 128;
+
+/// Byte budget for hyperlink sequences within a single dump. The cap above
+/// bounds distinct URIs but not how often the dump switches between them —
+/// a screen alternating links every cell would emit one sequence per cell.
+/// Once this is spent the dump stops emitting links and the rest of the
+/// screen renders as plain text, which keeps a hostile shell from making its
+/// own session unattachable by overflowing the frame.
+const MAX_LINK_DUMP_BYTES: usize = 4096;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum BufferType {
@@ -119,11 +139,34 @@ impl Terminal {
             alternate_saved_ctx: SavedCtx::default(),
             dirty_lines,
             xtwinops: false,
+            links: Vec::new(),
         }
     }
 
     pub fn size(&self) -> (usize, usize) {
         (self.cols, self.rows)
+    }
+
+    /// Map a hyperlink to its id, adding it if new. Linear scan: `MAX_LINKS`
+    /// is small and a link change happens once per run, not once per cell, so
+    /// a hash map would cost more memory than the scan costs time.
+    fn intern_link(&mut self, link: Hyperlink) -> LinkId {
+        if let Some(idx) = self.links.iter().position(|l| *l == link) {
+            return LinkId(idx as u16 + 1);
+        }
+        if self.links.len() >= MAX_LINKS {
+            // Degrade to unlinked rather than reuse someone else's id.
+            return LinkId::NONE;
+        }
+        self.links.push(link);
+        LinkId(self.links.len() as u16)
+    }
+
+    fn link_of(&self, id: LinkId) -> Option<&Hyperlink> {
+        if id.is_none() {
+            return None;
+        }
+        self.links.get(id.0 as usize - 1)
     }
 
     pub fn active_buffer_type(&self) -> BufferType {
@@ -134,6 +177,13 @@ impl Terminal {
         use Function::*;
 
         match fun {
+            SetHyperlink(link) => {
+                self.pen.link = match link {
+                    Some(link) => self.intern_link(link),
+                    None => LinkId::NONE,
+                };
+            }
+
             Bs => {
                 self.bs();
             }
@@ -678,7 +728,11 @@ impl Terminal {
     pub fn assert_eq(&self, other: &Terminal) {
         assert_eq!(self.active_buffer_type, other.active_buffer_type);
         assert_eq!(self.cursor, other.cursor);
-        assert_eq!(self.pen, other.pen);
+        // Compare the pen's *style* and the link's resolved target rather
+        // than the raw LinkId: ids are per-terminal table indices, so equal
+        // ids can name different URIs across a dump round trip.
+        assert!(self.pen.style_eq(&other.pen), "pen style differs");
+        assert_eq!(self.link_of(self.pen.link), other.link_of(other.pen.link));
         assert_eq!(self.charsets, other.charsets);
         assert_eq!(self.active_charset, other.active_charset);
         assert_eq!(self.tabs, other.tabs);
@@ -1369,7 +1423,7 @@ impl Terminal {
         // 1. dump primary screen buffer
 
         let mut funs = Vec::new();
-        dump_buffer(self.primary_buffer(), &mut funs);
+        dump_buffer(self.primary_buffer(), &self.links, &mut funs);
 
         // 2. setup tab stops
 
@@ -1437,7 +1491,7 @@ impl Terminal {
             funs.push(Function::Cup(1, 1));
 
             // dump alternate buffer
-            dump_buffer(self.alternate_buffer(), &mut funs);
+            dump_buffer(self.alternate_buffer(), &self.links, &mut funs);
         }
 
         // 5. configure saved context for alternate screen
@@ -1577,6 +1631,9 @@ impl Terminal {
 
         // configure pen
         funs.push(to_sgr(&self.pen));
+        if let Some(link) = self.link_of(self.pen.link) {
+            funs.push(Function::SetHyperlink(Some(link.clone())));
+        }
 
         if !self.cursor.visible {
             // hide cursor
@@ -1634,7 +1691,7 @@ impl Terminal {
     }
 }
 
-fn dump_buffer(buffer: &Buffer, funs: &mut Vec<Function>) {
+fn dump_buffer(buffer: &Buffer, links: &[Hyperlink], funs: &mut Vec<Function>) {
     let mut cutoff = 0;
     let mut wrapped = false;
 
@@ -1648,16 +1705,29 @@ fn dump_buffer(buffer: &Buffer, funs: &mut Vec<Function>) {
 
     let last = buffer.rows - 1;
     let mut pen = Pen::default();
+    // Spent on OSC 8 sequences; see MAX_LINK_DUMP_BYTES. Once exhausted the
+    // remaining screen dumps as plain text rather than risking a snapshot too
+    // large for one protocol frame.
+    let mut link_budget = MAX_LINK_DUMP_BYTES;
 
     for (i, line) in buffer.view().take(cutoff).enumerate() {
         for cells in line.chunks(|c1, c2| c1.pen() != c2.pen()) {
-            if cells[0].pen() != &pen {
-                if let Some(sgr) = to_sgr_diff(&pen, cells[0].pen()) {
-                    funs.push(sgr);
-                }
+            let cell_pen = *cells[0].pen();
 
-                pen = *cells[0].pen();
+            if let Some(sgr) = to_sgr_diff(&pen, &cell_pen) {
+                funs.push(sgr);
             }
+
+            if cell_pen.link != pen.link
+                && push_hyperlink(cell_pen.link, links, &mut link_budget, funs)
+            {
+                pen.link = cell_pen.link;
+            }
+
+            pen = Pen {
+                link: pen.link,
+                ..cell_pen
+            };
 
             dump_cells(&cells, funs);
         }
@@ -1667,10 +1737,52 @@ fn dump_buffer(buffer: &Buffer, funs: &mut Vec<Function>) {
             funs.push(Function::Lf);
         }
     }
+
+    // Never leave a link open across the end of the buffer dump: whatever the
+    // shell prints next would silently inherit it.
+    if !pen.link.is_none() {
+        funs.push(Function::SetHyperlink(None));
+    }
+}
+
+/// Emit the sequence that switches to `id`, if the byte budget allows.
+/// Returns whether the emulator's link state actually changed — on refusal
+/// the caller keeps its old idea of the open link, so the run dumps unlinked
+/// rather than mislinked.
+fn push_hyperlink(
+    id: LinkId,
+    links: &[Hyperlink],
+    budget: &mut usize,
+    funs: &mut Vec<Function>,
+) -> bool {
+    let link = if id.is_none() {
+        None
+    } else {
+        match links.get(id.0 as usize - 1) {
+            Some(link) => Some(link.clone()),
+            // An id with no table entry cannot happen today, but dumping a
+            // wrong destination would be worse than dumping none.
+            None => return false,
+        }
+    };
+
+    let cost = link
+        .as_ref()
+        .map_or(8, |l| l.uri.len() + l.id.len() + 16);
+    if cost > *budget {
+        return false;
+    }
+    *budget -= cost;
+
+    funs.push(Function::SetHyperlink(link));
+    true
 }
 
 fn to_sgr_diff(from: &Pen, to: &Pen) -> Option<Function> {
-    if from == to {
+    // Styles only. A pair differing ONLY by hyperlink produces zero SGR ops,
+    // and `Function::Sgr(<empty>)` dumps as bare `CSI m` — a full attribute
+    // reset that would silently wipe colours across the rest of the snapshot.
+    if from.style_eq(to) {
         return None;
     }
 

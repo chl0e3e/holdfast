@@ -46,12 +46,11 @@ Set `ONLY=<regex>` to run a subset. Each case is checked four ways:
 
 ## Current results
 
-`pass 208  fail 13  bounded 7` over 228 cases at 80×24 (plus the 100×30 and
+`pass 210  fail 11  bounded 7` over 228 cases at 80×24 (plus the 100×30 and
 60×20 roaming checks), re-measured 2026-08-11 after ADR 0026 regenerated the
-width tables. Note that the 13 failures are **not** all resize checks, as an
-earlier note claimed: `hyperlink-osc8`, `hyperlink-osc8-with-id` and
-`tab-stops` differ at the attach size too. The two hyperlink cases are the
-model not tracking OSC 8 at all, so the snapshot drops the attribute.
+width tables and the model learned OSC 8. Note that the failures are **not**
+all resize checks, as an earlier note claimed: `tab-stops` differs at the
+attach size too.
 
 Fixed off the back of this harness, each with a regression test in
 `crates/terminal-model/tests/render_parity.rs`:
@@ -71,26 +70,26 @@ Fixed off the back of this harness, each with a regression test in
   representation, though xterm.js renders them differently under bold.
 
 Known remaining divergences, all reported by the harness rather than hidden.
-**Every one of the 13 is a resize check** — `resize-grow` or `resize-shrink`,
-often both. At the attach size the two emulators now agree on the whole
-corpus: no case fails `grid`, `model-text` or `chunk-boundary`. The remaining
-disagreement is entirely about reflow.
+A previous note here claimed **every** failure was a resize check and that no
+case failed `grid`, `model-text` or `chunk-boundary`. That was not true, and
+re-measuring is how it was caught rather than re-reading: **nine** of the 11
+are resize-only, but `tab-stops` and `repeat-rep-after-combining` also differ
+at the attach size, failing `grid` and `model-text` too.
 
-- **reflow scroll offset** (11 cases): when re-wrapped content cannot fit, the
+- **reflow scroll offset** (9 cases): when re-wrapped content cannot fit, the
   model and xterm.js disagree by a row about how far the screen scrolls.
   Content is intact on both sides; only the anchor differs. The decision on
   how to close it — re-render from a fresh server snapshot after a resize,
   rather than chasing xterm.js's `_reflowSmaller` — is ADR 0023; the client
   change it calls for is deliberately not part of this work. These are
   `wide-at-last-column`, `bg-colour-erase-to-eol`, `cursor-clamp-out-of-range`,
-  `repeat-rep-after-combining`, `scroll-region-with-colour`, `tab-stops`
-  (the snapshot restores stops portably via TBC/HTS; what remains shows up
-  only after a reflow), `decaln`, `scroll-past-screen`,
+  `scroll-region-with-colour`, `decaln`, `scroll-past-screen`,
   `scroll-past-screen-coloured`, `full-screen-redraw` and
   `weechat-like-layout`.
-- **OSC 8 hyperlinks** (2 cases): the model does not track hyperlinks, so
-  reattaching drops them. Needs per-cell hyperlink state in avt. Visible here
-  only through the resize checks, which re-diff the reattached grid.
+- **attach-size divergences** (2 cases), which are *not* reflow and want
+  separate investigation: `tab-stops` (the snapshot restores stops via
+  TBC/HTS, but a stop still lands a column out at 80×24) and
+  `repeat-rep-after-combining` (CSI REP applied after a combining mark).
 
 ## Live weechat probe
 

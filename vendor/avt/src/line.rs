@@ -26,14 +26,14 @@ pub struct Line {
 impl Line {
     pub(crate) fn blank(cols: usize, pen: Pen) -> Self {
         Line {
-            cells: vec![Cell::blank(pen); cols],
+            cells: vec![Cell::blank(pen.erased()); cols],
             wrapped: false,
         }
     }
 
     pub(crate) fn reset(&mut self, cols: usize, pen: Pen) {
         self.cells.clear();
-        self.cells.resize(cols, Cell::blank(pen));
+        self.cells.resize(cols, Cell::blank(pen.erased()));
         self.wrapped = false;
     }
 
@@ -46,14 +46,14 @@ impl Line {
         let end_col = range.end;
 
         if self.cells[start_col].occupancy() == Occupancy::WideTail {
-            self.cells[start_col - 1].set(' ', Occupancy::Single, *pen);
+            self.cells[start_col - 1].set(' ', Occupancy::Single, pen.erased());
         }
 
-        self.cells[range].fill(Cell::blank(*pen));
+        self.cells[range].fill(Cell::blank(pen.erased()));
 
         if let Some(next_cell) = self.cells.get_mut(end_col) {
             if next_cell.occupancy() == Occupancy::WideTail {
-                next_cell.set(' ', Occupancy::Single, *pen);
+                next_cell.set(' ', Occupancy::Single, pen.erased());
             }
         }
     }
@@ -193,11 +193,11 @@ impl Line {
         let cur_cell = &mut self.cells[col];
 
         if cur_cell.occupancy() == Occupancy::WideTail {
-            cur_cell.set(' ', Occupancy::Single, *pen);
+            cur_cell.set(' ', Occupancy::Single, pen.erased());
         }
 
         let fill_start = self.cells.len() - n;
-        self.cells[fill_start..].fill(Cell::blank(*pen));
+        self.cells[fill_start..].fill(Cell::blank(pen.erased()));
     }
 
     pub(crate) fn extend(&mut self, mut other: Line, len: usize) -> (bool, Option<Line>) {
@@ -254,7 +254,7 @@ impl Line {
     }
 
     pub(crate) fn expand(&mut self, len: usize, pen: &Pen) {
-        let tpl = Cell::blank(*pen);
+        let tpl = Cell::blank(pen.erased());
         let filler = std::iter::repeat_n(tpl, len - self.len());
         self.cells.extend(filler);
     }
