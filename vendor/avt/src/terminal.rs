@@ -15,7 +15,6 @@ use crate::pen::{Intensity, Pen};
 use crate::tabs::Tabs;
 use std::cmp::Ordering;
 use std::mem;
-use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug)]
 pub struct Terminal {
@@ -713,7 +712,9 @@ impl Terminal {
         // attach to the preceding glyph's cell and never move the cursor —
         // matching wcwidth and xterm.js. Sending them through the normal
         // print path would burn a full cell each, shifting every wrap point.
-        if ch > '\u{7e}' && ch.width() == Some(0) {
+        // The `< 0xa0` fast path inside `width_of` subsumes the old explicit
+        // `ch > '\u{7e}'` guard: nothing below U+00A0 is width 0 (ADR 0026).
+        if crate::widths::width_of(ch) == 0 {
             self.print_zero_width(ch);
             self.dirty_lines.add(self.cursor.row);
             return;

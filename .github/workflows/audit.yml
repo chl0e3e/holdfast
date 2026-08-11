@@ -20,6 +20,13 @@ jobs:
       # hf-auth links against PAM (ADR 0015/0016); runners don't ship the dev lib.
       - run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - run: cargo test --workspace --locked
+      # Width tables must match the committed authority (ADR 0026). This
+      # compares the three generated files against the dump in the repo — it
+      # deliberately does NOT re-measure the runner's own glibc, which is a
+      # different version from the deployment's and would fail on every
+      # ubuntu-latest image bump. Changing the reference glibc is an ADR
+      # decision, made by regenerating the dump on purpose.
+      - run: cargo run -p hf-xterm-width-tables --locked -- --check
       - run: cargo install cargo-audit --locked
       - run: cargo audit
   web:
@@ -35,6 +42,9 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npx tsc --noEmit
+      # The web suite was never run in CI, so its width parity pins — the ones
+      # that catch a client drifting from the server model — were unenforced.
+      - run: npm test
       - run: npm run build
 
   # Windows portability gate for the client crates (ADR 0019): the desktop

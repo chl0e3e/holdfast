@@ -10,4 +10,10 @@ publish = false
 [dependencies]
 # Same requirement avt declares, so the workspace lock resolves both to one
 # version and the generated tables can never drift from the server model.
+# NOTE: since ADR 0026 this crate is no longer the width *authority* — it is
+# kept so `--example uwdump` can still show what the crate would have said,
+# which is how the committed glibc dump gets audited.
 unicode-width = "0.1.13"
+# `--example glibcdump` calls wcwidth(3) directly. This is the measurement
+# ADR 0026 makes authoritative; nothing else in this crate links libc.
+libc.workspace = true

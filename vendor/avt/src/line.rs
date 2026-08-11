@@ -1,5 +1,3 @@
-use unicode_width::UnicodeWidthChar;
-
 use crate::cell::{Cell, Occupancy};
 use crate::pen::Pen;
 use std::ops::{Index, Range, RangeFull};
@@ -357,10 +355,14 @@ impl Line {
     }
 
     fn char_display_width(&self, ch: char) -> CharWidth {
-        if ch <= '\u{7e}' || ch.width().unwrap_or(1) != 2 {
-            CharWidth::Single
-        } else {
+        // ADR 0026: the width authority is the deployment's glibc `wcwidth`,
+        // not the `unicode-width` crate — the application (weechat, anything
+        // on ncurses) wraps and pads with the former, so drawing with the
+        // latter displaced everything after a disagreeing glyph on the row.
+        if crate::widths::width_of(ch) == 2 {
             CharWidth::Double
+        } else {
+            CharWidth::Single
         }
     }
 }

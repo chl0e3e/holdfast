@@ -1,19 +1,21 @@
-//! Dumps one character per codepoint giving `unicode-width`'s answer, for
-//! diffing against a shell's own `wcwidth`. The two MUST agree: the terminal
-//! application (weechat) lays its screen out with glibc's `wcwidth`, while the
-//! clients measure with the table generated from this crate. Where they
-//! disagree, a line is laid out at one width and drawn at another, and
-//! everything after it on that row is displaced.
+//! Dumps one character per codepoint giving `unicode-width`'s answer.
+//!
+//! This is no longer the width authority — ADR 0026 made glibc's `wcwidth(3)`
+//! authoritative, because that is what the terminal *application* (weechat,
+//! anything on ncurses) lays its screen out with, and 304 codepoints
+//! disagreed. This example survives as the audit tool: diff it against the
+//! committed dump to see exactly where the crate and the deployment differ.
 //!
 //! ```text
-//! # on the server running the application:
-//! python3 -c 'import ctypes,ctypes.util; ...'   # see tools/render-diff/README.md
-//! # here:
-//! cargo run -p hf-xterm-width-tables --example uwdump > uw-widths.txt
+//! cargo run -p hf-xterm-width-tables --example uwdump    > /tmp/uw-widths.txt
+//! cargo run -p hf-xterm-width-tables --example glibcdump > /tmp/glibc-widths.txt
+//! cmp -l /tmp/uw-widths.txt /tmp/glibc-widths.txt | wc -l
 //! ```
 //!
 //! Output: one character per codepoint from U+0020 up, `0`/`1`/`2` for a
-//! width, `N` for unassigned, `s` for a surrogate.
+//! width, `N` for unassigned, `s` for a surrogate. Note `glibcdump` also emits
+//! `N`, but there it means glibc returned -1 ("not printable in this locale");
+//! the two dumps line up positionally but their `N`s have different causes.
 fn main() {
     let mut buf = String::with_capacity(1_114_080);
     for cp in 32u32..0x110000 {

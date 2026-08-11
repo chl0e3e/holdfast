@@ -98,6 +98,23 @@ add("unicode", "bidi-isolate-at-col0",
   { bounded: "orphan zero-width character: xterm.js gives it a width-0 cell, the model has no base to attach it to — identical on screen, differs only in extracted text" },
   "\u2068abc\u2069\r\n");
 
+// ADR 0026 — the 304 codepoints where glibc's wcwidth (what the application
+// lays out with) disagreed with the unicode-width crate (what we used to draw
+// with). This harness cannot *detect* that class of bug: both of its sides are
+// generated from the same table, so they agree with each other and disagree
+// with the application together. What these cases pin is the other half — that
+// after regenerating from glibc, the model and xterm.js still agree with each
+// other on exactly the codepoints that moved, at and across a wrap boundary.
+// One case per disagreement class.
+add("unicode", "wcwidth-trigram-run", {}, "☰".repeat(60), "END\r\n");
+add("unicode", "wcwidth-trigram-at-wrap", {}, "x".repeat(78), "☰☰", "END\r\n");
+add("unicode", "wcwidth-soft-hyphen-run", {}, "a­".repeat(50), "END\r\n");
+add("unicode", "wcwidth-glibc-zero-width", {}, "[aࢗb]\r\n");
+add("unicode", "wcwidth-hangul-tone-run", {}, "〮〯".repeat(30), "END\r\n");
+add("unicode", "wcwidth-khmer-narrowed", {}, "ឤ".repeat(50), "END\r\n");
+add("unicode", "wcwidth-mixed-classes-at-wrap", {},
+  "x".repeat(70) + "☰­〮ࢗឤ", "END\r\n");
+
 add("unicode", "rtl-arabic", {}, "[مرحبا]\r\n");
 add("unicode", "rtl-hebrew", {}, "[שלום]\r\n");
 add("unicode", "rtl-override-spoof", {}, "[a‮b‬c]\r\n");

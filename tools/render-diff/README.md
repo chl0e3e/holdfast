@@ -11,6 +11,17 @@ This harness renders the same bytes through both and diffs the resulting grids
 cell by cell — characters, widths, colours and attributes — so a disagreement
 is a test failure rather than something a user notices weeks later.
 
+**What it structurally cannot see.** Those two sides are not independent on
+width: both are generated from the same table (ADR 0026), so where that table
+is wrong they agree with each other and are wrong together. That is exactly how
+the 304-codepoint `wcwidth` gap survived a 100%-parity report — the third
+party, the application laying out the screen with glibc, is not in this
+comparison and cannot be added without a third measurement. The guard for that
+class lives elsewhere: `cargo run -p hf-xterm-width-tables -- --check` in CI,
+and `crates/terminal-model/tests/wcwidth_authority.rs`. The `wcwidth-*` corpus
+cases here pin only the half this harness *can* prove — that the model and
+xterm.js still agree on the codepoints that moved.
+
 ## Offline corpus
 
 221 single-purpose cases covering Unicode width/composition, CSI/SGR, cursor
@@ -35,8 +46,14 @@ Set `ONLY=<regex>` to run a subset. Each case is checked four ways:
 
 ## Current results
 
-`pass 201  fail 13  bounded 7` at 80×24 (plus the 100×30 and 60×20 roaming
-checks). Fixed off the back of this harness, each with a regression test in
+`pass 208  fail 13  bounded 7` over 228 cases at 80×24 (plus the 100×30 and
+60×20 roaming checks), re-measured 2026-08-11 after ADR 0026 regenerated the
+width tables. Note that the 13 failures are **not** all resize checks, as an
+earlier note claimed: `hyperlink-osc8`, `hyperlink-osc8-with-id` and
+`tab-stops` differ at the attach size too. The two hyperlink cases are the
+model not tracking OSC 8 at all, so the snapshot drops the attribute.
+
+Fixed off the back of this harness, each with a regression test in
 `crates/terminal-model/tests/render_parity.rs`:
 
 - truecolor was dumped as `38:2:R:G:B`, which a spec-following parser reads

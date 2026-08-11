@@ -338,13 +338,24 @@ block, …) are 2 cells in the server model (unicode-width ≈ Unicode 15.1) but
 1 cell in the clients' `@xterm/addon-unicode11` table, so one such emoji in
 scrollback sheared every snapshot replay by a column (same symptom in mosh,
 whose frozen wcwidth predates these emoji). Instead of chasing tables, both
-clients now load a width provider GENERATED from the exact `unicode-width`
-version the vendored avt resolves in Cargo.lock: `cargo run -p
-hf-xterm-width-tables` writes `web/src/client/server-width.ts` and
-`desktop/src/server-width.ts` (committed; regenerate after any unicode-width
-upgrade). `@xterm/addon-unicode11` is removed from both clients. Reproduce:
-`npm test` in `web/` (width parity spot checks incl. post-U11 emoji and
-zero-width join semantics).
+clients load a width provider GENERATED from the same authority as the server
+model: `cargo run -p hf-xterm-width-tables` writes `web/src/client/`
+`server-width.ts`, `desktop/src/server-width.ts` and `vendor/avt/src/widths.rs`
+(all committed). `@xterm/addon-unicode11` is removed from both clients.
+Reproduce: `npm test` in `web/` (width parity spot checks incl. post-U11 emoji
+and zero-width join semantics).
+
+**That authority is glibc's `wcwidth`, not `unicode-width` (2026-08-11, ADR
+0026).** Making the model and the clients agree fixed two of the three parties;
+the third is the application inside the shell, which lays its screen out with
+the C library and which nothing had ever been compared against. 304 codepoints
+disagreed — 206 that glibc calls 2 cells wide from U+2630 onward, 58 it calls 1
+where the crate said 0 (headed by U+00AD SOFT HYPHEN), and 40 more — so weechat
+wrapped a row at one width while holdfast painted it at another. All three
+tables are now generated from a committed dump of glibc 2.41 under `C.UTF-8`
+(`tools/xterm-width-tables/data/`), which makes the table host-dependent by
+design; `cargo run -p hf-xterm-width-tables -- --check` in CI fails if they
+drift. Reproduce: `cargo test -p hf-terminal-model --test wcwidth_authority`.
 
 Output bursts wedged live sessions (2026-08-03, holdfastd v0.0.3 + desktop
 v0.0.8 + web): spec §8 detaches an attachment whose bounded queue overflows
@@ -382,7 +393,9 @@ hf-terminal-model` (combining/VS16/ZWJ wrap parity + snapshot round-trips)
 and `cargo test` in `vendor/avt` (upstream suite incl. dump round-trip
 property tests). The post-Unicode-11 emoji gap this note originally left
 open is closed by the generated width provider above (desktop v0.0.7).
-Drop the vendored fork when upstream avt handles zero-width.
+The fork now also carries the generated `src/widths.rs` (ADR 0026), so
+dropping it upstream additionally requires avt to take its widths from
+something other than the `unicode-width` crate.
 
 Unicode widths (2026-08-03, desktop v0.0.6 + web): xterm.js defaults to a
 Unicode 6 width table where most emoji are one cell, but the server model

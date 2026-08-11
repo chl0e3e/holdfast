@@ -1,9 +1,12 @@
-// Spot checks that the generated provider matches the server model's width
-// table (unicode-width, via vendored avt). The generator is the authority;
-// these pins catch a stale or hand-edited server-width.ts.
+// Spot checks that the generated provider matches the project's width
+// authority: a committed dump of glibc's wcwidth(3) (ADR 0026), which the
+// server model (vendored avt) is generated from too. The generator is the
+// authority; these pins catch a stale or hand-edited server-width.ts.
 // Reproduce: npm test (web/).
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { ServerWidthProvider, SERVER_WIDTH_VERSION } from "./server-width.js";
 
 const p = new ServerWidthProvider();
@@ -47,5 +50,31 @@ assert.equal((wideBase >> 1) & 0x3, 2, "melting face is two columns");
 const vs16 = p.charProperties(0xfe0f, wideBase);
 assert.equal(vs16 & 1, 1, "VS16 joins");
 assert.equal((vs16 >> 1) & 0x3, 2, "joined wide cell stays two columns");
+
+// ADR 0026 — one pin per class where glibc's wcwidth disagreed with the
+// `unicode-width` crate this table used to be generated from. Every
+// assertion above this point passes under BOTH authorities (verified), so
+// without these the suite could not tell the two apart at all. Each of these
+// fails against the pre-0026 table.
+assert.equal(p.wcwidth(0x2630), 2, "U+2630 trigram: glibc 2, crate 1 (206 such)");
+assert.equal(p.wcwidth(0x00ad), 1, "U+00AD soft hyphen: glibc 1, crate 0 (58 such)");
+assert.equal(p.wcwidth(0x0897), 0, "U+0897: glibc 0, crate 1 (37 such)");
+assert.equal(p.wcwidth(0x302e), 2, "U+302E hangul tone: glibc 2, crate 0 (2 such)");
+assert.equal(p.wcwidth(0x17a4), 1, "U+17A4 khmer: glibc 1, crate 2 (the only narrowing)");
+
+// The two generated copies were byte-identical only by the generator's
+// convention — nothing asserted it, and the desktop copy has no test of its
+// own. A drifted copy means the desktop client wraps differently from the
+// server, which is the exact shear this whole table exists to prevent.
+const webCopy = fileURLToPath(new URL("./server-width.ts", import.meta.url));
+const desktopCopy = fileURLToPath(
+  new URL("../../../desktop/src/server-width.ts", import.meta.url),
+);
+assert.equal(
+  readFileSync(webCopy, "utf8"),
+  readFileSync(desktopCopy, "utf8"),
+  "web and desktop server-width.ts must be byte-identical — regenerate with " +
+    "`cargo run -p hf-xterm-width-tables`",
+);
 
 console.log("server-width: all width parity spot checks passed");

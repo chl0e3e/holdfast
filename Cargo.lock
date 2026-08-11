@@ -1493,6 +1493,7 @@ version = "0.0.4"
 name = "hf-xterm-width-tables"
 version = "0.0.4"
 dependencies = [
+ "libc",
  "unicode-width 0.1.14",
 ]
 
