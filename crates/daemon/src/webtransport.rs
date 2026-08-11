@@ -61,9 +61,17 @@ const MAX_IDLE_TIMEOUT_MS: u32 = 60_000;
 /// session alive: the daemon has never implemented spec §14's application-level
 /// ping ticker, and of the clients only the desktop core sends pings (ADR
 /// 0020) — the browser client answers them but never sends. Keeping this at
-/// the transport layer fixes every client at once, and must stay comfortably
-/// below both [`MAX_IDLE_TIMEOUT_MS`] and a peer's own (often 30s) idle limit.
-const KEEP_ALIVE_INTERVAL_MS: u64 = 15_000;
+/// the transport layer fixes every client at once.
+///
+/// 10s, for exactly the reason [`hf_protocol::AGENT_KEEP_ALIVE_INTERVAL_MS`]
+/// is: the effective idle limit is the *lower* of the two peers', so raising
+/// [`MAX_IDLE_TIMEOUT_MS`] on our side buys nothing against a peer still
+/// enforcing quinn's un-raised 30s — and a browser is precisely such a peer,
+/// since its idle limit is the engine's, not ours. The interval must fit
+/// inside that 30s, and fit *twice over*, or one dropped ping ends the
+/// connection at exactly the deadline. This was 15s, which fails that test by
+/// landing precisely on it (2 × 15s = 30s), leaving no margin for a retry.
+const KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 const MAX_CERTIFICATE_CHAIN_BYTES: u64 = 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: u64 = 64 * 1024;
 const MAX_CERTIFICATES: usize = 8;
@@ -676,6 +684,40 @@ mod tests {
         assert_eq!(super::base64_encode(b"fo"), "Zm8=");
         assert_eq!(super::base64_encode(b"foo"), "Zm9v");
         assert_eq!(super::base64_encode(&[0xfb, 0xff, 0x00]), "+/8A");
+    }
+
+    /// The web link's counterpart to `hf_protocol`'s `agent_liveness_tests`.
+    /// Both links obey one rule; this pins it on the side quinn cannot check
+    /// for us, because the other peer is a browser we do not build.
+    #[test]
+    fn keepalive_survives_a_dropped_ping_against_an_un_raised_peer() {
+        /// quinn's own default — what a browser, or any peer built before the
+        /// idle-timeout change, is still enforcing.
+        const QUINN_DEFAULT_IDLE_TIMEOUT_MS: u64 = 30_000;
+
+        let keepalive = super::KEEP_ALIVE_INTERVAL_MS;
+
+        // The negotiated idle limit is the LOWER of the two peers', so our own
+        // raised MAX_IDLE_TIMEOUT_MS does not protect this link on its own.
+        assert!(
+            keepalive < QUINN_DEFAULT_IDLE_TIMEOUT_MS,
+            "keepalive {keepalive}ms must fit inside an un-raised peer's \
+             {QUINN_DEFAULT_IDLE_TIMEOUT_MS}ms idle limit",
+        );
+
+        // Twice over, or a single dropped ping ends the connection exactly at
+        // the deadline. This is the assertion 15s failed.
+        assert!(
+            keepalive * 2 < QUINN_DEFAULT_IDLE_TIMEOUT_MS,
+            "keepalive {keepalive}ms must leave room to retry a dropped ping \
+             inside an un-raised peer's {QUINN_DEFAULT_IDLE_TIMEOUT_MS}ms limit",
+        );
+        assert!(
+            keepalive * 2 < u64::from(super::MAX_IDLE_TIMEOUT_MS),
+            "keepalive {keepalive}ms must leave the same retry room against \
+             our own {}ms limit",
+            super::MAX_IDLE_TIMEOUT_MS,
+        );
     }
 
     #[test]
