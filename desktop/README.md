@@ -52,6 +52,28 @@ Core logic is tested headless in the main workspace:
 cargo test -p hf-client-core
 ```
 
+## DockerWM links
+
+The terminal link popover's **dockerwm** action first looks for the
+authenticated loopback bridge published by a running DockerWM Desktop app. If
+present, the link opens in a new tab in that existing app. If no bridge is
+reachable, Holdfast opens the existing cookie-authenticated remote URL at
+`https://docker.asylum.st/newswall/open` (or the
+`holdfast.dockerwm.url` localStorage override). An empty override still hides
+the DockerWM action entirely.
+
+This is intentionally a local IPC probe rather than a custom URI protocol: a
+URI handler would start DockerWM when closed and cannot give Holdfast a reliable
+success/fallback result. The bridge descriptor is bounded to 4 KiB and must be
+mode 0600 on Unix; requests use its random bearer token, loopback only, with a
+2 KiB URL and 4 KiB response ceiling.
+
+Reproduce the native handoff tests with:
+
+```bash
+cargo test -p hf-client-core dockerwm
+```
+
 ## State
 
 `%APPDATA%\holdfast\desktop.json` (Windows) /

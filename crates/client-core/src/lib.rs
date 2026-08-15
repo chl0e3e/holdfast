@@ -13,6 +13,7 @@
 
 mod server;
 mod shell;
+pub mod dockerwm;
 pub mod store;
 
 use std::collections::HashMap;

@@ -8,6 +8,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod dockerwm;
 
 use hf_client_core::{Core, CoreEvent};
 use tauri::{Emitter, Manager};
@@ -59,6 +60,7 @@ fn main() {
             commands::forget_shell,
             commands::rename_shell,
             commands::open_external,
+            dockerwm::open_in_dockerwm,
         ])
         .run(tauri::generate_context!())
         .expect("error while running holdfast desktop");

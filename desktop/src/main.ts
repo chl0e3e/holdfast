@@ -16,7 +16,7 @@ import {
 import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
-import { LinkPopover, loadDockerwmBase } from "./links.js";
+import { dockerwmOpenUrl, LinkPopover, loadDockerwmBase } from "./links.js";
 import {
   attachmentAction,
   closeBehavior,
@@ -58,11 +58,23 @@ class App implements TabDelegate {
   /** Server key the login dialog is currently prompting for. */
   loginFor: string | null = null;
   fontSize = loadFontSize();
+  private dockerwmBase = loadDockerwmBase();
   // Navigation goes through the Rust side: the webview has no working
   // window.open, and open_external re-validates the scheme (T9).
-  linkPopover = new LinkPopover(loadDockerwmBase(), (url) => {
-    void ipc.openExternal(url).catch(() => {});
-  });
+  linkPopover = new LinkPopover(
+    this.dockerwmBase,
+    (url) => { void ipc.openExternal(url).catch(() => {}); },
+    (url) => {
+      void ipc.openInDockerwm(url)
+        .then((opened) => {
+          if (!opened) return ipc.openExternal(dockerwmOpenUrl(this.dockerwmBase, url));
+        })
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.status.textContent = `DockerWM could not open the link: ${detail}`;
+        });
+    },
+  );
 
   async start(): Promise<void> {
     document.getElementById("add-server")!.onclick = () => this.addServerDialog();

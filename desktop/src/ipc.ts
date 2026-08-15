@@ -113,6 +113,10 @@ export const ipc = {
   /** Open an http(s) URL in the OS default browser (scheme re-validated in
    *  Rust — hostile terminal output must not reach other scheme handlers). */
   openExternal: (url: string) => invoke<void>("open_external", { url }),
+
+  /** Prefer an already-running DockerWM desktop app. False means its bounded
+   *  authenticated loopback bridge is absent, so the caller may fall back. */
+  openInDockerwm: (url: string) => invoke<boolean>("open_in_dockerwm", { url }),
 };
 
 export type Events = {

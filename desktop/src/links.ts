@@ -128,7 +128,11 @@ export class LinkPopover {
   private url = "";
   private hideTimer: number | undefined;
 
-  constructor(dockerwmBase: string, openUrl: (url: string) => void) {
+  constructor(
+    dockerwmBase: string,
+    openUrl: (url: string) => void,
+    openDockerwm: (url: string) => void = (url) => openUrl(dockerwmOpenUrl(dockerwmBase, url)),
+  ) {
     this.el = document.createElement("div");
     this.el.id = "link-popover";
     this.el.hidden = true;
@@ -149,9 +153,9 @@ export class LinkPopover {
     if (dockerwmBase !== "") {
       const sandboxed = document.createElement("button");
       sandboxed.textContent = "dockerwm";
-      sandboxed.title = "Open in a disposable dockerwm browser";
+      sandboxed.title = "Open in DockerWM Desktop, or the configured remote DockerWM";
       sandboxed.onclick = () => {
-        openUrl(dockerwmOpenUrl(dockerwmBase, this.url));
+        openDockerwm(this.url);
         this.hide();
       };
       this.el.appendChild(sandboxed);
