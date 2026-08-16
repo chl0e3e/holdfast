@@ -93,6 +93,10 @@ replaced.
    Close the exited tab with its `×`; it disappears without a confirmation.
 7. Close a live tab and accept the warning: the attachment closes but the
    shell keeps running. Restart Holdfast and confirm its tab reappears.
+8. Run a terminal program that animates its OSC title (for example, one whose
+   tab cycles through `Working`, `Working.`, and `Working..`). While the title
+   is changing, click repeatedly between that tab and another tab. Every click
+   must switch tabs; title updates must not swallow the pointer gesture.
 
 ### Terminal burst, scrolling and resize regression
 

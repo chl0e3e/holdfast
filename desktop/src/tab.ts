@@ -8,6 +8,7 @@ import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
 import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 import { findLinks, rowText, type LinkPopover } from "./links.js";
+import { TabLabel } from "./tab-label.js";
 import type { TabState } from "./ui-state.js";
 import {
   composeBoundedReplay,
@@ -55,6 +56,7 @@ export class Tab {
   tabElement: HTMLElement;
   button: HTMLButtonElement;
   closeButton: HTMLButtonElement;
+  private readonly label: TabLabel;
   /** Sanitized, shell-set window title (T9); shown only in the label. */
   title = "";
   /// Recovers picker-inserted text (emoji) that xterm.js declines.
@@ -120,6 +122,8 @@ export class Tab {
     this.button = document.createElement("button");
     this.button.className = "shell-tab-select";
     this.button.setAttribute("role", "tab");
+    this.button.type = "button";
+    this.label = new TabLabel(this.button);
     this.closeButton = document.createElement("button");
     this.closeButton.className = "shell-tab-close";
     this.closeButton.type = "button";
@@ -268,20 +272,7 @@ export class Tab {
     const primary = this.title || this.name;
     const server = this.delegate.serverDisplayName(this.server);
     const secondary = this.title ? `${this.name} · ${server}` : server;
-    this.button.replaceChildren();
-    const status = document.createElement("span");
-    status.className = "shell-tab-status";
-    status.setAttribute("aria-hidden", "true");
-    const text = document.createElement("span");
-    text.className = "shell-tab-text";
-    const primaryLine = document.createElement("span");
-    primaryLine.className = "shell-tab-primary";
-    primaryLine.textContent = primary;
-    const secondaryLine = document.createElement("span");
-    secondaryLine.className = "shell-tab-secondary";
-    secondaryLine.textContent = secondary;
-    text.append(primaryLine, secondaryLine);
-    this.button.append(status, text);
+    this.label.update(primary, secondary);
 
     const details = [
       primary,
