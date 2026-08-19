@@ -187,8 +187,11 @@ fn a_wrong_peer_uid_is_refused_before_the_request_is_read() {
     let wrong = nix::unistd::geteuid().as_raw() + 1;
     let (mut helper, sock) =
         start_spawner(&["--allow-account", &me(), "--peer-uid", &wrong.to_string()]);
-    send_spawn(&sock, request(&me()));
 
+    // No request is sent: receiving the refusal anyway proves the peer check
+    // happens before the helper attempts to read or parse one. It also avoids
+    // platform-dependent ECONNRESET behavior when a seqpacket peer exits with
+    // an unread request still queued.
     let (reply, _): (SpawnReply, Option<OwnedFd>) =
         recv_message(sock.as_raw_fd()).unwrap().unwrap();
     assert!(matches!(
