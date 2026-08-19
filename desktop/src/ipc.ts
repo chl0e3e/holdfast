@@ -7,6 +7,7 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { attachAfterFirstPayload } from "./attachment-order.js";
 
 export type ShellView = { shell: string; name: string };
 export type ServerView = {
@@ -101,12 +102,15 @@ export const ipc = {
     cols: number,
     rows: number,
     onOutput: (bytes: Uint8Array) => void,
-  ) => {
-    const output = new Channel<string>();
-    output.onmessage = (b64) =>
-      onOutput(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
-    return invoke<AttachReply>("attach_shell", { server, shell, cols, rows, output });
-  },
+  ) => attachAfterFirstPayload(
+    (deliver) => {
+      const output = new Channel<string>();
+      output.onmessage = (b64) =>
+        deliver(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+      return invoke<AttachReply>("attach_shell", { server, shell, cols, rows, output });
+    },
+    onOutput,
+  ),
 
   shellInput: (server: string, shell: string, bytes: Uint8Array) =>
     invoke<void>("shell_input", { server, shell, data: Array.from(bytes) }),

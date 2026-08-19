@@ -98,6 +98,13 @@ class App implements TabDelegate {
     document.getElementById("login-cancel")!.onclick = () =>
       (document.getElementById("login-dialog") as HTMLDialogElement).close();
     window.addEventListener("resize", () => this.scheduleFit());
+    // WebView2 may discard or pause the terminal renderer while the desktop
+    // window is hidden/occluded. Do not wait for terminal input to wake it.
+    window.addEventListener("focus", () => this.scheduleFit());
+    window.addEventListener("pageshow", () => this.scheduleFit());
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) this.scheduleFit();
+    });
     this.panelObserver = new ResizeObserver(() => this.scheduleFit());
     this.panelObserver.observe(document.getElementById("panels")!);
 
@@ -106,6 +113,10 @@ class App implements TabDelegate {
 
   tabStateChanged(tab: Tab): void {
     if (tab === this.active) this.syncChrome();
+  }
+
+  presentTerminal(tab: Tab): void {
+    if (tab === this.active) this.scheduleFit();
   }
 
   serverDisplayName(server: string): string {
@@ -817,7 +828,7 @@ class App implements TabDelegate {
       this.resizeFrame = null;
       const tab = this.active;
       if (!tab || tab.closing || tab.panel.clientWidth === 0 || tab.panel.clientHeight === 0) return;
-      tab.fit.fit();
+      tab.present();
     });
   }
 

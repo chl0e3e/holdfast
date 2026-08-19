@@ -9,6 +9,7 @@ import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 import { findLinks, rowText, type LinkPopover } from "./links.js";
 import { TabLabel } from "./tab-label.js";
+import { repaintVisibleTerminal } from "./terminal-presentation.js";
 import type { TabState } from "./ui-state.js";
 import {
   composeBoundedReplay,
@@ -43,6 +44,7 @@ export interface TabDelegate {
   recoverTerminal(tab: Tab): void;
   serverDisplayName(server: string): string;
   tabStateChanged(tab: Tab): void;
+  presentTerminal(tab: Tab): void;
 }
 
 export class Tab {
@@ -110,10 +112,11 @@ export class Tab {
 
     this.panel = document.createElement("div");
     this.panel.className = "panel";
-    // Selection is the only visibility path. Without this, every tab created
-    // after the active one overlays it despite a different tab being marked
-    // active (the last-created shell appeared to corrupt the first).
-    this.panel.style.display = "none";
+    // Inactive panels remain geometrically mounted. Opening xterm under
+    // display:none gives it no cell geometry and lets WebView2 miss xterm's
+    // IntersectionObserver wake-up, leaving the terminal black until input.
+    // CSS visibility and the active class prevent overlay/input instead.
+    this.panel.setAttribute("aria-hidden", "true");
     document.getElementById("panels")!.appendChild(this.panel);
 
     this.tabElement = document.createElement("div");
@@ -387,9 +390,25 @@ export class Tab {
   }
 
   setActive(active: boolean): void {
-    this.panel.style.display = active ? "block" : "none";
+    this.panel.classList.toggle("active", active);
+    this.panel.setAttribute("aria-hidden", String(!active));
     this.tabElement.classList.toggle("active", active);
     this.button.setAttribute("aria-selected", String(active));
+  }
+
+  /** Re-measure and repaint the full xterm viewport after it becomes visible. */
+  present(): boolean {
+    return repaintVisibleTerminal(
+      {
+        active: this.panel.classList.contains("active"),
+        closing: this.closing,
+        width: this.panel.clientWidth,
+        height: this.panel.clientHeight,
+      },
+      () => this.fit.fit(),
+      () => this.term.rows,
+      (start, end) => this.term.refresh(start, end),
+    );
   }
 
   private buildReplay(): Uint8Array | null {
@@ -450,6 +469,10 @@ export class Tab {
         if (chunk.sequence > coveredThrough) this.enqueueWrite(chunk.data);
       }
       this.pumpWrites();
+      // The parser completed after the activation frame may already have
+      // repainted an empty terminal. Present again with the authoritative
+      // snapshot now in xterm's buffer.
+      this.delegate.presentTerminal(this);
     });
   }
 

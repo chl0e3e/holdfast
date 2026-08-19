@@ -146,6 +146,17 @@ cursor are fully drawn at 100%, 125% and 150% display scaling. Repeat after
 maximizing and restoring the window. The terminal inset must remain visible,
 and the document itself must not gain a scrollbar.
 
+Open a new shell while another tab is active. Its prompt and snapshot must be
+visible immediately after selecting it, without typing or clicking inside the
+terminal. Then leave that tab hidden for several minutes while it produces
+output, return to it, minimize and restore the Holdfast window, and switch away
+and back once more. Each return must show the current terminal immediately;
+keyboard or mouse input must not be required to wake a black viewport.
+
+The attach-order regression test deliberately resolves the Tauri command before
+delivering its first Channel payload. This is the Windows-observed ordering: the
+UI must wait for that snapshot before it marks the attachment ready and renders.
+
 The bounded replay/history policy and close-state decisions are covered by:
 
 ```bash

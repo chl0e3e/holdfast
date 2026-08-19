@@ -19,4 +19,11 @@ assert.match(
   "terminal owns the inset that FitAddon subtracts",
 );
 
+// xterm pauses rendering for non-intersecting elements. A display:none tab can
+// therefore stay black in WebView2 until keyboard input triggers another
+// refresh. Keep every panel geometrically mounted and hide it visually.
+assert.doesNotMatch(declarations(".panel"), /(?:^|;)\s*display\s*:\s*none\s*;/, "inactive panels stay mounted");
+assert.match(declarations(".panel"), /(?:^|;)\s*visibility\s*:\s*hidden\s*;/, "inactive panels are visually hidden");
+assert.match(declarations(".panel.active"), /(?:^|;)\s*visibility\s*:\s*visible\s*;/, "the selected panel becomes visible");
+
 console.log("terminal layout tests passed");
