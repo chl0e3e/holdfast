@@ -114,6 +114,20 @@ rows instead of snapping to the bottom. Finally maximize and restore the
 window: the xterm viewport must reach the right edge of its black panel and
 the document itself must have no horizontal or vertical scrollbar.
 
+On Windows, repeat the launch in a restored (not maximized) window on a display
+whose usable height is no more than 720 pixels, with the taskbar visible. The
+whole decorated Holdfast window must stay inside the usable work area and the
+last terminal row must remain above the taskbar. Maximize and restore once more
+to confirm the terminal is refitted to the restored panel.
+
+The startup work-area calculation is covered by the desktop crate tests on
+Windows:
+
+```powershell
+cd desktop/src-tauri
+cargo test window_layout --locked
+```
+
 The bounded replay/history policy and close-state decisions are covered by:
 
 ```bash
