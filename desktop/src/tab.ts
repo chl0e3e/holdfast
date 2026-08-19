@@ -14,6 +14,7 @@ import type { TabState } from "./ui-state.js";
 import {
   composeBoundedReplay,
   prependBoundedHistory,
+  snapshotReplayPreamble,
   TERMINAL_WRITE_QUEUE_CAP,
   TERMINAL_WRITE_QUEUE_CHUNK_CAP,
   viewportFromBottom,
@@ -422,7 +423,7 @@ export class Tab {
       parts.push(encoder.encode(`\x1b[2m${note}\x1b[0m\r\n`));
       parts.push(encoder.encode(this.historyLines.join("\r\n") + "\r\n"));
     }
-    parts.push(encoder.encode("\r\n".repeat(this.term.rows)));
+    parts.push(snapshotReplayPreamble(this.term.rows));
     parts.push(this.snapshot);
     for (const chunk of this.liveChunks) parts.push(chunk.data);
     return composeBoundedReplay(parts);

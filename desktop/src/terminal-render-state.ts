@@ -3,8 +3,22 @@ export const HISTORY_RENDER_BYTE_CAP = 2 * 1024 * 1024;
 export const TERMINAL_WRITE_QUEUE_CAP = 2 * 1024 * 1024;
 export const TERMINAL_WRITE_QUEUE_CHUNK_CAP = 4_096;
 export const TERMINAL_REPLAY_CAP = 6 * 1024 * 1024;
+export const TERMINAL_REPLAY_ROW_CAP = 4_096;
 
 const encoder = new TextEncoder();
+
+/**
+ * Blank one viewport into scrollback, then restore the home position expected
+ * by the server snapshot. The snapshot is an avt dump for a fresh emulator;
+ * replaying it from the bottom row paints its contents there while its final
+ * CUP restores the cursor near the top, splitting xterm's text and cursor.
+ */
+export function snapshotReplayPreamble(rows: number): Uint8Array {
+  if (!Number.isSafeInteger(rows) || rows <= 0 || rows > TERMINAL_REPLAY_ROW_CAP) {
+    throw new RangeError(`invalid terminal replay row count: ${rows}`);
+  }
+  return encoder.encode("\r\n".repeat(rows) + "\x1b[H");
+}
 
 export type BoundedHistory = {
   lines: string[];

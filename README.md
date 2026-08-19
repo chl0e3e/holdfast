@@ -377,6 +377,17 @@ hf-client-core --example zwburst -- <url> <user> <key>` — PASS requires the
 Detached signal plus a clean reattach snapshot (verified against a live
 daemon; a pre-fix daemon fails with a silent close).
 
+Snapshot replay starts from terminal home (2026-08-19, desktop + web): clients
+insert one blank viewport before an attach snapshot so fetched history moves
+into xterm's scrollback. The server snapshot is an avt redraw sequence built
+for a fresh emulator at row 1, but both clients previously replayed it while
+the spacer had left xterm on the bottom row. A one-line prompt was therefore
+painted at the bottom while the snapshot's final cursor-position command put
+the outline cursor at the top — the black/split refresh screen. The replay
+boundary now emits `CSI H` before the snapshot. Reproduce the boundary tests
+with `cd desktop && npm test` and `cd web && npm test`; the desktop manual
+restart check is recorded in `desktop/README.md`.
+
 Zero-width characters sheared attach snapshots (2026-08-03, server /
 holdfastd v0.0.2): the Unicode-11 width fix below left one class uncovered —
 upstream avt 0.18 (the server-side terminal model) gives zero-width

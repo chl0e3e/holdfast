@@ -41,6 +41,7 @@ import {
 import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
+import { snapshotReplayPreamble } from "./terminal-replay.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 2;
@@ -256,7 +257,7 @@ class Tab {
       this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
       this.term.write(this.historyLines.join("\r\n") + "\r\n");
     }
-    this.term.write("\r\n".repeat(this.term.rows));
+    this.term.write(snapshotReplayPreamble(this.term.rows));
     this.term.write(this.snapshot);
     if (this.liveOverflowed) {
       this.term.write("\r\n\x1b[2m── some earlier live output not re-rendered ──\x1b[0m\r\n");

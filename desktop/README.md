@@ -153,6 +153,11 @@ output, return to it, minimize and restore the Holdfast window, and switch away
 and back once more. Each return must show the current terminal immediately;
 keyboard or mouse input must not be required to wake a black viewport.
 
+Restart Holdfast with a shell sitting at an ordinary prompt on its first row.
+The restored prompt and the outline cursor must both appear on that first row.
+They must not split into a prompt at the bottom and a cursor at the top; that
+specifically verifies the scrollback-spacer/snapshot replay boundary.
+
 The attach-order regression test deliberately resolves the Tauri command before
 delivering its first Channel payload. This is the Windows-observed ordering: the
 UI must wait for that snapshot before it marks the attachment ready and renders.

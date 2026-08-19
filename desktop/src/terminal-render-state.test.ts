@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   composeBoundedReplay,
   prependBoundedHistory,
+  snapshotReplayPreamble,
   viewportFromBottom,
 } from "./terminal-render-state.js";
 
@@ -19,6 +20,15 @@ assert.deepEqual(
   new Uint8Array([1, 2, 3]),
 );
 assert.equal(composeBoundedReplay([new Uint8Array(2), new Uint8Array(2)], 3), null);
+
+const preamble = new TextDecoder().decode(snapshotReplayPreamble(3));
+assert.equal(preamble, "\r\n\r\n\r\n\x1b[H");
+assert.ok(
+  preamble.endsWith("\x1b[H"),
+  "the snapshot must start at its fresh-emulator home position after the scrollback spacer",
+);
+assert.throws(() => snapshotReplayPreamble(0), RangeError);
+assert.throws(() => snapshotReplayPreamble(4_097), RangeError);
 
 assert.equal(viewportFromBottom(140, 100), 40);
 assert.equal(viewportFromBottom(20, 100), 0);
