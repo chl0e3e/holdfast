@@ -5,6 +5,8 @@ import {
   detachedEventAction,
   emptyWorkspace,
   shouldAttachWhenConnected,
+  uploadAction,
+  quotePosixShellWord,
   type TabState,
 } from "./ui-state.js";
 
@@ -25,6 +27,19 @@ assert.deepEqual(attachmentAction("detached", false), {
 assert.equal(attachmentAction("live", true).enabled, false);
 assert.equal(attachmentAction("detached", true).enabled, false);
 assert.equal(attachmentAction(null, false).enabled, false);
+
+assert.equal(uploadAction("live", true, true, false).enabled, true);
+assert.equal(uploadAction("detached", true, true, false).enabled, true);
+assert.equal(uploadAction("reconnecting", true, true, false).enabled, false);
+assert.equal(uploadAction("live", false, true, false).enabled, false);
+assert.equal(uploadAction("live", true, false, false).enabled, false);
+assert.deepEqual(uploadAction("reconnecting", false, false, true), {
+  label: "Cancel upload",
+  enabled: true,
+  title: "Cancel the current upload",
+});
+assert.equal(quotePosixShellWord("/tmp/a b"), "'/tmp/a b'");
+assert.equal(quotePosixShellWord("/tmp/a'b"), "'/tmp/a'\\''b'");
 
 assert.equal(emptyWorkspace(false).action, "Add server");
 assert.equal(emptyWorkspace(true).action, "Open shell");

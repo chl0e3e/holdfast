@@ -52,6 +52,33 @@ Core logic is tested headless in the main workspace:
 cargo test -p hf-client-core
 ```
 
+## Uploading a file (Windows)
+
+When a direct standalone daemon advertises file transfer, select a running
+shell and choose **Upload**. The Windows picker is owned by Rust: neither the
+selected local path nor file bytes enter the webview. Holdfast hashes and
+streams the regular file in bounded chunks, shows progress, and lets you
+cancel. A completed upload offers the private remote path for copying or for
+explicit, POSIX-quoted insertion into the original attached shell.
+
+Uploads do not resume invisibly after cancellation or reconnect. Retry starts
+from byte zero. The action stays disabled when the daemon has no upload root,
+the server is reconnecting, the shell is no longer running, or that tab already
+has an upload. Browser and gateway/agent uploads are not part of this release.
+
+Windows manual regression:
+
+1. Enable the daemon's upload root and attach a shell.
+2. Upload files of 0 bytes, 1 byte, 65,535 bytes, 65,536 bytes, 65,537 bytes,
+   and the configured maximum. Compare `sha256sum` at the returned paths.
+3. Cancel a large upload and verify its partial directory disappears.
+4. Disconnect during an upload; reconnect and verify the UI reports failure
+   without resuming. Retry and confirm progress restarts from zero.
+5. Copy the result path, then use **Insert quoted path**. Confirm focus returns
+   to the original tab and no command is executed automatically.
+6. Repeat while switching tabs and resizing/maximizing the window; the final
+   terminal row must remain visible above the Windows taskbar.
+
 ## DockerWM links
 
 The terminal link popover's **dockerwm** action first looks for the

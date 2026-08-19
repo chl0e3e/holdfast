@@ -3,7 +3,7 @@
 ```text
 Status: Phase 7 complete — manual security review performed; residual
         deployment risks are listed below. Each threat lists automated coverage.
-Last updated: 2026-07-18
+Last updated: 2026-08-19
 ```
 
 ## Coverage snapshot (as of Phase 7)
@@ -22,6 +22,7 @@ Last updated: 2026-07-18
 | T10 secret leakage in logs | covered | ResumeToken/redacted Debug; bounded closed-schema audit records and fixed-label counters accept no terminal bytes, commands, grants, signatures, or tokens (`daemon::observability` unit tests + daemon auth integration) |
 | T11 supply chain | partial | cargo-audit + npm-audit CI gate (.github/workflows/audit.yml); lockfiles committed |
 | T12 privilege escalation | covered | account authorization enforced + tested (session-core `policy.rs`, daemon `account_authorization_is_enforced`); uid/gid-drop **mechanism** implemented via `setpriv` (`session-core/src/launch.rs`, `--drop-privileges`, default off), real switch verified over a PTY in `tests/privilege_drop.rs` (run `tests/authorization/run.sh`); production capability/unit hardening is in `deploy/systemd/` (ADR 0007). A broader multi-user soak remains an operational gate |
+| T14 temporary upload abuse | partial | ADR 0028 fixes the design. U1 gates file transfer on protocol minor 2 and validates lengths before allocation; U2 implements and tests server-selected paths, no-follow/create-new filesystem operations, bounded streaming, length+SHA-256 verification and partial cleanup. Shell authorization, spawner ownership, transport concurrency/timeouts and desktop picker isolation remain gated; no daemon advertises the capability yet |
 
 "Covered" = automated test asserts it today. "Partial" = core mechanism exists
 and is tested, some hardening remains. "Pending" = designed, not yet built.
@@ -47,6 +48,7 @@ Assets, in priority order:
 4. Resume tokens and connection grants in flight or at rest.
 5. Terminal contents and scrollback (user data, possibly containing secrets).
 6. Availability of the gateway and shells.
+7. Local and uploaded file contents, paths and filesystem capacity.
 
 ## Threats and mitigations
 
@@ -286,6 +288,45 @@ Hostile shell output (e.g. from `cat`ing a malicious file) targets the viewer.
   audit content checks); PAM fail-closed unit tests (`crates/auth/src/pam.rs`);
   real shadow/pam_unix round trip via `tests/password-auth/run.sh` (root,
   throwaway account).
+
+### T14. Temporary upload traversal, disclosure and resource exhaustion
+
+An authenticated client supplies hostile filename metadata or upload bytes in
+an attempt to overwrite another path, follow a symlink, write as another Unix
+account, disclose a local Windows file, fill daemon memory/disk, or strand
+partials with deliberately slow or interrupted streams.
+
+- File transfer is opt-in and negotiated only from protocol minor 2. A daemon
+  without an explicitly configured upload root never advertises or accepts it.
+- Every upload is bound to a running shell. The daemon verifies the authenticated
+  owner before resolving the shell's already-authorized Unix account; a foreign
+  or nonexistent shell has the same response shape.
+- The client filename is display metadata, never a path. The server chooses a
+  128-bit random directory, sanitizes a bounded basename, and uses
+  directory-relative no-follow/create-new operations. Clients cannot choose a
+  directory, overwrite a file, upload a symlink, or escape the configured root.
+- The Windows webview cannot nominate an arbitrary local path for Rust to read.
+  The trusted Rust side owns the native picker; only progress and the committed
+  remote path cross IPC.
+- Bytes stream in fixed-size chunks with transport backpressure. Declared size,
+  chunk size, offsets, concurrent transfers and inactivity all have explicit
+  bounds. The server rejects overflow before writing and incrementally verifies
+  the declared SHA-256 before commit.
+- Partials remain private and are removed on checksum failure, timeout,
+  cancellation, stream loss or process error. Completed output is `0600` inside
+  a `0700` directory and owned by the shell's Unix account.
+- Multi-user writes go through the credential-checked, account-allowlisted
+  spawner. The network-facing daemon gains no uid-switch, chown or arbitrary
+  path authority and never falls back to daemon-owned/world-readable files.
+- Audit and metrics contain byte counts and bounded sanitized metadata, never
+  file contents, client-local paths or full random remote paths.
+- **Required tests before enablement:** traversal/control-character/symlink and
+  collision corpus; oversized declaration/chunk/data rejection before growth;
+  wrong offset/short stream/long stream/checksum mismatch; slow timeout and
+  disconnect cleanup; per-connection/user/global concurrency limits;
+  cross-user and scoped-grant denial; target ownership and unrelated-local-user
+  read denial; malicious-webview arbitrary-path attempt; successful transfer
+  over WebSocket and real WebTransport.
 
 ## Residual risks accepted for now (revisit before beta)
 

@@ -50,6 +50,7 @@ ExecStart=/usr/local/bin/holdfastd \
     --wt-cert /etc/holdfast/tls/fullchain.pem \
     --wt-key /etc/holdfast/tls/privkey.pem \
     --web-root /var/lib/holdfast/web \
+    --upload-root /tmp/holdfast-uploads \
     --drop-privileges \
     --spawner-socket /run/holdfast/spawn.sock \
     --ssh-auth alice /home/alice/.ssh/authorized_keys \

@@ -327,14 +327,17 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
+    use std::sync::Arc;
+
     use anyhow::{anyhow, Context, Result};
     use wtransport::tls::Sha256Digest;
     use wtransport::{ClientConfig, Endpoint};
 
     use super::endpoint_url;
 
+    #[derive(Clone)]
     pub struct Connection {
-        inner: wtransport::Connection,
+        inner: Arc<wtransport::Connection>,
     }
 
     pub struct SendStream {
@@ -370,7 +373,12 @@ mod platform {
             .and_then(|chain| chain.as_slice().first().map(|cert| cert.hash()))
             .ok_or_else(|| anyhow!("server presented no certificate"))?;
         let observed = *digest.as_ref();
-        Ok((Connection { inner }, observed))
+        Ok((
+            Connection {
+                inner: Arc::new(inner),
+            },
+            observed,
+        ))
     }
 
     impl Connection {

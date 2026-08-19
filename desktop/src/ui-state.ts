@@ -12,6 +12,37 @@ export type AttachmentAction = {
   title: string;
 };
 
+export type UploadAction = {
+  label: "Upload" | "Cancel upload";
+  enabled: boolean;
+  title: string;
+};
+
+export function uploadAction(
+  state: TabState | null,
+  connected: boolean,
+  supported: boolean,
+  active: boolean,
+): UploadAction {
+  if (active) {
+    return { label: "Cancel upload", enabled: true, title: "Cancel the current upload" };
+  }
+  const running = state === "live" || state === "detached";
+  return {
+    label: "Upload",
+    enabled: connected && supported && running,
+    title: !supported
+      ? "File uploads are not enabled on this server"
+      : "Upload a local file to this shell's temporary directory",
+  };
+}
+
+/** Quote a server-returned path as one POSIX shell word. Insertion remains an
+ * explicit click and never adds Enter, so the user can inspect it first. */
+export function quotePosixShellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /** Pure presentation policy for the active shell's attachment control. */
 export function attachmentAction(
   state: TabState | null,

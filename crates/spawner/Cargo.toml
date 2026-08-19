@@ -13,7 +13,13 @@ path = "src/bin/holdfast-spawner.rs"
 [dependencies]
 hf-launch = { path = "../launch" }
 hf-pty = { path = "../pty" }
+hf-protocol = { path = "../protocol" }
+hf-upload-store = { path = "../upload-store" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror.workspace = true
 nix = { workspace = true, features = ["socket", "uio", "process", "signal", "term", "user", "fs"] }
+
+[dev-dependencies]
+sha2.workspace = true
+tempfile = "3"

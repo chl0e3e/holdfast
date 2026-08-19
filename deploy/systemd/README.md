@@ -7,7 +7,7 @@ is **never** run as root outright.
 | Unit | Shells run as | Privilege the daemon holds | Use when |
 |------|---------------|----------------------------|----------|
 | `holdfastd.service` | the `holdfast` service account | `CAP_NET_BIND_SERVICE` only | one administrator; the standalone case |
-| `holdfastd-multiuser.service` | each authenticated user's own account | `CAP_SETUID` + `CAP_SETGID` (+ `CAP_DAC_READ_SEARCH`, `CAP_NET_BIND_SERVICE`) | multiple users with real Unix accounts |
+| `holdfastd-multiuser.service` | each authenticated user's own account | `CAP_DAC_READ_SEARCH` + `CAP_NET_BIND_SERVICE` | multiple users with real Unix accounts |
 
 Both units also provide aggregate resource containment (ADR 0009):
 `TasksMax=2048`, `MemoryHigh=50%`, and `MemoryMax=75%`. Independently,
@@ -101,7 +101,7 @@ capability bounding set is independent:
 | | `holdfastd.service` (multi-user) | `holdfast-spawner@.service` |
 |---|---|---|
 | Bounding set | `CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH` | full (inherited by the shell) |
-| Ambient | same two | `CAP_SETUID CAP_SETGID CAP_KILL` |
+| Ambient | same two | `CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN` |
 | Exposed to | the network | a `0600` socket owned by `holdfast` |
 
 The network-facing process is therefore *more* restricted than before the split:
@@ -116,6 +116,26 @@ verifies the peer's uid with `SO_PEERCRED`, and refuses uid 0 outright — so a
 compromised daemon still cannot obtain a shell as an arbitrary account. **Keep
 the spawner's `--allow-account` flags in step with the daemon's `--account`
 mappings**, or shells for the missing accounts fail with `ERR_FORBIDDEN`.
+
+Temporary uploads use `/tmp/holdfast-uploads` in the example multi-user unit.
+Install and create its bounded-retention tmpfiles rule before enabling uploads:
+
+```sh
+sudo install -Dm644 ../tmpfiles.d/holdfast-uploads.conf \
+  /etc/tmpfiles.d/holdfast-uploads.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/holdfast-uploads.conf
+```
+
+The root is traversable but only `holdfast` may create entries. Each completed
+directory is transferred to its independently allowlisted target account as
+`0700`, containing a `0600` file. `CAP_CHOWN` exists only on the spawner unit;
+the network-facing daemon's capability set is unchanged.
+
+The single-user reference enables uploads at
+`/var/lib/holdfast/uploads`, which is already inside its writable
+`StateDirectory`; the daemon's bounded in-process reaper applies the same
+24-hour default. Remove `--upload-root` from the relevant daemon unit (and from
+the spawner in multi-user mode) to stop advertising file transfer.
 
 Both units join `holdfast.slice`, which carries the aggregate `TasksMax=` and
 memory ceilings (ADR 0009). Those must live on the slice now: the shells are no

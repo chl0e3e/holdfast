@@ -11,9 +11,9 @@
 //! Terminology (spec §1): a *shell* is the persistent server-side PTY; an
 //! *attachment* is one temporary stream binding to it.
 
+pub mod dockerwm;
 mod server;
 mod shell;
-pub mod dockerwm;
 pub mod store;
 
 use std::collections::HashMap;
@@ -26,6 +26,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use server::{run_supervisor, ServerCmd, SupervisorCtx};
 use store::{Store, StoreData};
+
+pub(crate) type StatusMap =
+    Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>;
 
 /// Events the GUI renders. Low-rate; terminal bytes go through the
 /// per-attachment output sinks instead.
@@ -52,6 +55,32 @@ pub enum CoreEvent {
     StoreWarning {
         message: String,
     },
+    ServerCapabilities {
+        server: String,
+        file_uploads: bool,
+    },
+    UploadProgress {
+        server: String,
+        shell: String,
+        phase: UploadPhase,
+        bytes: u64,
+        total_bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UploadPhase {
+    Hashing,
+    Uploading,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadReply {
+    pub remote_path: String,
+    pub bytes_written: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -127,6 +156,7 @@ pub struct ServerView {
     pub status: Option<ServerStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_detail: Option<String>,
+    pub file_uploads: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,11 +182,18 @@ pub struct Core {
 
 struct CoreInner {
     store: Arc<Store>,
-    servers: Mutex<HashMap<String, mpsc::Sender<ServerCmd>>>,
+    servers: Mutex<HashMap<String, ServerHandle>>,
     events: mpsc::Sender<CoreEvent>,
     /// Last emitted status per server, snapshotted into [`BootstrapView`] so
     /// a GUI that subscribes after spawn still learns the current state.
-    statuses: Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>,
+    statuses: StatusMap,
+    capabilities: Arc<std::sync::Mutex<HashMap<String, bool>>>,
+}
+
+#[derive(Clone)]
+struct ServerHandle {
+    commands: mpsc::Sender<ServerCmd>,
+    upload_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// Command queue depth per server supervisor. Commands sent while the
@@ -164,6 +201,9 @@ struct CoreInner {
 const SERVER_QUEUE: usize = 64;
 /// Event channel depth (GUI side must keep draining).
 const EVENT_QUEUE: usize = 256;
+/// Upload work waiting for or running on a server supervisor. Each upload is
+/// itself chunk-streamed; this bounds only command/task metadata.
+const UPLOAD_QUEUE: usize = 8;
 
 impl Core {
     /// Load (or create) the store at `store_path`, import the hf CLI's v1
@@ -188,6 +228,7 @@ impl Core {
                 servers: Mutex::new(HashMap::new()),
                 events: event_tx,
                 statuses: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                capabilities: Arc::new(std::sync::Mutex::new(HashMap::new())),
             }),
         };
         for key in core.inner.store.snapshot().servers.keys() {
@@ -203,9 +244,17 @@ impl Core {
             store: Arc::clone(&self.inner.store),
             events: self.inner.events.clone(),
             statuses: Arc::clone(&self.inner.statuses),
+            capabilities: Arc::clone(&self.inner.capabilities),
+            active_uploads: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
         tokio::spawn(run_supervisor(ctx, rx));
-        self.inner.servers.lock().await.insert(server_key, tx);
+        self.inner.servers.lock().await.insert(
+            server_key,
+            ServerHandle {
+                commands: tx,
+                upload_slots: Arc::new(tokio::sync::Semaphore::new(UPLOAD_QUEUE)),
+            },
+        );
     }
 
     /// Everything the GUI needs to build its initial tabs. Live statuses
@@ -213,11 +262,13 @@ impl Core {
     pub async fn bootstrap(&self) -> BootstrapView {
         let data: StoreData = self.inner.store.snapshot();
         let statuses = self.inner.statuses.lock().unwrap().clone();
+        let capabilities = self.inner.capabilities.lock().unwrap().clone();
         BootstrapView {
             servers: data
                 .servers
                 .into_iter()
                 .map(|(key, record)| {
+                    let file_uploads = capabilities.get(&key).copied().unwrap_or(false);
                     let (status, status_detail) = match statuses.get(&key) {
                         Some((s, d)) => (Some(*s), d.clone()),
                         None => (None, None),
@@ -237,6 +288,7 @@ impl Core {
                             .collect(),
                         status,
                         status_detail,
+                        file_uploads,
                     }
                 })
                 .collect(),
@@ -262,6 +314,7 @@ impl Core {
     pub async fn remove_server(&self, server_key: &str) -> Result<()> {
         self.inner.servers.lock().await.remove(server_key);
         self.inner.statuses.lock().unwrap().remove(server_key);
+        self.inner.capabilities.lock().unwrap().remove(server_key);
         self.inner.store.remove_server(server_key)
     }
 
@@ -312,7 +365,12 @@ impl Core {
         rx.await.map_err(|_| anyhow!("server task stopped"))?
     }
 
-    pub async fn shell_input(&self, server_key: &str, shell_hex: &str, bytes: Vec<u8>) -> Result<()> {
+    pub async fn shell_input(
+        &self,
+        server_key: &str,
+        shell_hex: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
         self.send(
             server_key,
             ServerCmd::Input {
@@ -385,6 +443,52 @@ impl Core {
         rx.await.map_err(|_| anyhow!("server task stopped"))?
     }
 
+    /// Queue one Rust-owned local file for streaming to the selected shell.
+    /// Callers such as Tauri must obtain `local_path` from a native picker and
+    /// must never accept it from webview-controlled command arguments.
+    pub async fn upload_file(
+        &self,
+        server_key: &str,
+        shell_hex: &str,
+        local_path: PathBuf,
+    ) -> Result<UploadReply> {
+        let handle = self
+            .inner
+            .servers
+            .lock()
+            .await
+            .get(server_key)
+            .cloned()
+            .with_context(|| format!("unknown server {server_key}"))?;
+        let slot = handle
+            .upload_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow!("too many pending uploads for this server"))?;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .commands
+            .send(ServerCmd::Upload {
+                shell_hex: shell_hex.to_string(),
+                local_path,
+                slot,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow!("server task stopped"))?;
+        rx.await.map_err(|_| anyhow!("server task stopped"))?
+    }
+
+    pub async fn cancel_upload(&self, server_key: &str, shell_hex: &str) -> Result<()> {
+        self.send(
+            server_key,
+            ServerCmd::CancelUpload {
+                shell_hex: shell_hex.to_string(),
+            },
+        )
+        .await
+    }
+
     /// Supply the password for a password-auth server (username configured,
     /// no SSH key — ADR 0016). Used for exactly one connect attempt and never
     /// persisted; afterwards the refreshed 12 h grant carries reconnects. The
@@ -411,7 +515,7 @@ impl Core {
             .lock()
             .await
             .get(server_key)
-            .cloned()
+            .map(|handle| handle.commands.clone())
             .with_context(|| format!("unknown server {server_key}"))?;
         tx.send(cmd)
             .await
@@ -469,6 +573,7 @@ mod view_tests {
                 shells: vec![],
                 status: Some(ServerStatus::AuthRequired),
                 status_detail: Some("authentication failed".into()),
+                file_uploads: true,
             }],
         };
         let json = serde_json::to_value(&view).unwrap();
@@ -488,6 +593,7 @@ mod view_tests {
                 shells: vec![],
                 status: None,
                 status_detail: None,
+                file_uploads: false,
             }],
         };
         let json = serde_json::to_value(&view).unwrap();
@@ -501,9 +607,15 @@ mod url_tests {
 
     #[test]
     fn bare_hostnames_become_https() {
-        assert_eq!(normalize_url("iliad.example.com"), "https://iliad.example.com");
+        assert_eq!(
+            normalize_url("iliad.example.com"),
+            "https://iliad.example.com"
+        );
         assert_eq!(normalize_url(" host:443 "), "https://host:443");
-        assert_eq!(normalize_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+        assert_eq!(
+            normalize_url("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
         assert_eq!(normalize_url("https://host"), "https://host");
         assert_eq!(normalize_url(""), "");
     }

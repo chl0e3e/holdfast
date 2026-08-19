@@ -15,7 +15,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file messages.proto.
  */
 export const file_messages: GenFile = /*@__PURE__*/
-  fileDesc("Cg5tZXNzYWdlcy5wcm90bxILaG9sZGZhc3QudjAiyAsKCEVudmVsb3BlEhIKCnJlcXVlc3RfaWQYASABKAQSEQoJc2VydmVyX2lkGAIgASgMEhAKCHNoZWxsX2lkGAMgASgMEjAKDGNsaWVudF9oZWxsbxgKIAEoCzIYLmhvbGRmYXN0LnYwLkNsaWVudEhlbGxvSAASMAoMc2VydmVyX2hlbGxvGAsgASgLMhguaG9sZGZhc3QudjAuU2VydmVySGVsbG9IABI0Cg50ZXJtaW5hbF9pbnB1dBgMIAEoCzIaLmhvbGRmYXN0LnYwLlRlcm1pbmFsSW5wdXRIABI2Cg90ZXJtaW5hbF9vdXRwdXQYDSABKAsyGy5ob2xkZmFzdC52MC5UZXJtaW5hbE91dHB1dEgAEjYKD3Rlcm1pbmFsX3Jlc2l6ZRgOIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmFsUmVzaXplSAASIwoFZXJyb3IYDyABKAsyEi5ob2xkZmFzdC52MC5FcnJvckgAEjEKDGF1dGhlbnRpY2F0ZRgQIAEoCzIZLmhvbGRmYXN0LnYwLkF1dGhlbnRpY2F0ZUgAEkIKFWF1dGhlbnRpY2F0aW9uX3Jlc3VsdBgRIAEoCzIhLmhvbGRmYXN0LnYwLkF1dGhlbnRpY2F0aW9uUmVzdWx0SAASMAoMbGlzdF9zZXJ2ZXJzGBIgASgLMhguaG9sZGZhc3QudjAuTGlzdFNlcnZlcnNIABIuCgtzZXJ2ZXJfbGlzdBgTIAEoCzIXLmhvbGRmYXN0LnYwLlNlcnZlckxpc3RIABIuCgtsaXN0X3NoZWxscxgUIAEoCzIXLmhvbGRmYXN0LnYwLkxpc3RTaGVsbHNIABIsCgpzaGVsbF9saXN0GBUgASgLMhYuaG9sZGZhc3QudjAuU2hlbGxMaXN0SAASLAoKb3Blbl9zaGVsbBgWIAEoCzIWLmhvbGRmYXN0LnYwLk9wZW5TaGVsbEgAEjAKDHNoZWxsX29wZW5lZBgXIAEoCzIYLmhvbGRmYXN0LnYwLlNoZWxsT3BlbmVkSAASMAoMYXR0YWNoX3NoZWxsGBggASgLMhguaG9sZGZhc3QudjAuQXR0YWNoU2hlbGxIABI0Cg5zaGVsbF9hdHRhY2hlZBgZIAEoCzIaLmhvbGRmYXN0LnYwLlNoZWxsQXR0YWNoZWRIABIwCgxkZXRhY2hfc2hlbGwYGiABKAsyGC5ob2xkZmFzdC52MC5EZXRhY2hTaGVsbEgAEjYKD3Rlcm1pbmF0ZV9zaGVsbBgbIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmF0ZVNoZWxsSAASMAoMc2hlbGxfZXhpdGVkGBwgASgLMhguaG9sZGZhc3QudjAuU2hlbGxFeGl0ZWRIABI2Cg9yZXF1ZXN0X2hpc3RvcnkYHSABKAsyGy5ob2xkZmFzdC52MC5SZXF1ZXN0SGlzdG9yeUgAEjIKDWhpc3RvcnlfY2h1bmsYHiABKAsyGS5ob2xkZmFzdC52MC5IaXN0b3J5Q2h1bmtIABIuCgtoaXN0b3J5X2VuZBgfIAEoCzIXLmhvbGRmYXN0LnYwLkhpc3RvcnlFbmRIABI2Cg9zY3JlZW5fc25hcHNob3QYICABKAsyGy5ob2xkZmFzdC52MC5TY3JlZW5TbmFwc2hvdEgAEjAKDHNjcmVlbl9kZWx0YRghIAEoCzIYLmhvbGRmYXN0LnYwLlNjcmVlbkRlbHRhSAASPQoTYWNrX3NjcmVlbl9yZXZpc2lvbhgiIAEoCzIeLmhvbGRmYXN0LnYwLkFja1NjcmVlblJldmlzaW9uSAASIQoEcGluZxgjIAEoCzIRLmhvbGRmYXN0LnYwLlBpbmdIABIhCgRwb25nGCQgASgLMhEuaG9sZGZhc3QudjAuUG9uZ0gAEiMKBWNsb3NlGCUgASgLMhIuaG9sZGZhc3QudjAuQ2xvc2VIAEIJCgdtZXNzYWdlIusBChBEYXRhZ3JhbUVudmVsb3BlEhEKCXNlcnZlcl9pZBgBIAEoDBIQCghzaGVsbF9pZBgCIAEoDBI2Cg9zY3JlZW5fc25hcHNob3QYCiABKAsyGy5ob2xkZmFzdC52MC5TY3JlZW5TbmFwc2hvdEgAEjAKDHNjcmVlbl9kZWx0YRgLIAEoCzIYLmhvbGRmYXN0LnYwLlNjcmVlbkRlbHRhSAASPQoTYWNrX3NjcmVlbl9yZXZpc2lvbhgMIAEoCzIeLmhvbGRmYXN0LnYwLkFja1NjcmVlblJldmlzaW9uSABCCQoHbWVzc2FnZSLoBwoNQWdlbnRFbnZlbG9wZRISCgpyZXF1ZXN0X2lkGAEgASgEEhEKCXNlcnZlcl9pZBgCIAEoDBIQCghzaGVsbF9pZBgDIAEoDBI0Cg5hZ2VudF9yZWdpc3RlchgKIAEoCzIaLmhvbGRmYXN0LnYwLkFnZW50UmVnaXN0ZXJIABI8ChJhZ2VudF9yZWdpc3RyYXRpb24YCyABKAsyHi5ob2xkZmFzdC52MC5BZ2VudFJlZ2lzdHJhdGlvbkgAEiwKCmFnZW50X3BpbmcYDCABKAsyFi5ob2xkZmFzdC52MC5BZ2VudFBpbmdIABIsCgphZ2VudF9wb25nGA0gASgLMhYuaG9sZGZhc3QudjAuQWdlbnRQb25nSAASKQoLYWdlbnRfZXJyb3IYDiABKAsyEi5ob2xkZmFzdC52MC5FcnJvckgAEjcKEGFnZW50X29wZW5fc2hlbGwYDyABKAsyGy5ob2xkZmFzdC52MC5BZ2VudE9wZW5TaGVsbEgAEjsKEmFnZW50X3NoZWxsX29wZW5lZBgQIAEoCzIdLmhvbGRmYXN0LnYwLkFnZW50U2hlbGxPcGVuZWRIABI7ChJhZ2VudF9hdHRhY2hfc2hlbGwYESABKAsyHS5ob2xkZmFzdC52MC5BZ2VudEF0dGFjaFNoZWxsSAASPwoUYWdlbnRfc2hlbGxfYXR0YWNoZWQYEiABKAsyHy5ob2xkZmFzdC52MC5BZ2VudFNoZWxsQXR0YWNoZWRIABI0Cg50ZXJtaW5hbF9pbnB1dBgTIAEoCzIaLmhvbGRmYXN0LnYwLlRlcm1pbmFsSW5wdXRIABI2Cg90ZXJtaW5hbF9vdXRwdXQYFCABKAsyGy5ob2xkZmFzdC52MC5UZXJtaW5hbE91dHB1dEgAEjYKD3Rlcm1pbmFsX3Jlc2l6ZRgVIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmFsUmVzaXplSAASMAoMZGV0YWNoX3NoZWxsGBYgASgLMhguaG9sZGZhc3QudjAuRGV0YWNoU2hlbGxIABI2Cg9yZXF1ZXN0X2hpc3RvcnkYFyABKAsyGy5ob2xkZmFzdC52MC5SZXF1ZXN0SGlzdG9yeUgAEjIKDWhpc3RvcnlfY2h1bmsYGCABKAsyGS5ob2xkZmFzdC52MC5IaXN0b3J5Q2h1bmtIABIuCgtoaXN0b3J5X2VuZBgZIAEoCzIXLmhvbGRmYXN0LnYwLkhpc3RvcnlFbmRIABIwCgxzaGVsbF9leGl0ZWQYGiABKAsyGC5ob2xkZmFzdC52MC5TaGVsbEV4aXRlZEgAQgkKB21lc3NhZ2UigAEKDUFnZW50UmVnaXN0ZXISFgoOcHJvdG9jb2xfbWFqb3IYASABKA0SFgoOcHJvdG9jb2xfbWlub3IYAiABKA0SEQoJc2VydmVyX2lkGAMgASgMEhMKC2FnZW50X2J1aWxkGAQgASgJEhcKD21heF9mcmFtZV9ieXRlcxgFIAEoDSKKAQoRQWdlbnRSZWdpc3RyYXRpb24SEAoIYWNjZXB0ZWQYASABKAgSEQoJc2VydmVyX2lkGAIgASgMEhcKD21heF9mcmFtZV9ieXRlcxgDIAEoDRIdChVrZWVwYWxpdmVfaW50ZXJ2YWxfbXMYBCABKA0SGAoQcmVqZWN0aW9uX3JlYXNvbhgFIAEoCSIaCglBZ2VudFBpbmcSDQoFbm9uY2UYASABKAQiGgoJQWdlbnRQb25nEg0KBW5vbmNlGAEgASgEIqcBCg5BZ2VudE9wZW5TaGVsbBIPCgd1c2VyX2lkGAEgASgJEhQKDHVuaXhfYWNjb3VudBgCIAEoCRIPCgdjb21tYW5kGAMgASgJEhQKDGluaXRpYWxfY29scxgEIAEoDRIUCgxpbml0aWFsX3Jvd3MYBSABKA0SFwoPaWRlbXBvdGVuY3lfa2V5GAYgASgMEhgKEGNvbm5lY3Rpb25fZ3JhbnQYByABKAwiNAoQQWdlbnRTaGVsbE9wZW5lZBIQCghzaGVsbF9pZBgBIAEoDBIOCgZyZXVzZWQYAiABKAgiWQoQQWdlbnRBdHRhY2hTaGVsbBIPCgd1c2VyX2lkGAEgASgJEhgKEGNvbm5lY3Rpb25fZ3JhbnQYAiABKAwSDAoEY29scxgDIAEoDRIMCgRyb3dzGAQgASgNIoYBChJBZ2VudFNoZWxsQXR0YWNoZWQSFwoPc2NyZWVuX3NuYXBzaG90GAEgASgMEhcKD3NjcmVlbl9yZXZpc2lvbhgCIAEoBBIeChZvbGRlc3RfaGlzdG9yeV9saW5lX2lkGAMgASgEEh4KFm5ld2VzdF9oaXN0b3J5X2xpbmVfaWQYBCABKAQijwIKC0NsaWVudEhlbGxvEhYKDnByb3RvY29sX21ham9yGAEgASgNEhYKDnByb3RvY29sX21pbm9yGAIgASgNEiwKC2NsaWVudF9raW5kGAMgASgOMhcuaG9sZGZhc3QudjAuQ2xpZW50S2luZBIUCgxjbGllbnRfYnVpbGQYBCABKAkSLQoMY2FwYWJpbGl0aWVzGAUgAygOMhcuaG9sZGZhc3QudjAuQ2FwYWJpbGl0eRIXCg9tYXhfZnJhbWVfYnl0ZXMYBiABKA0SGgoSbWF4X2RhdGFncmFtX2J5dGVzGAcgASgNEigKCWVuY29kaW5ncxgIIAMoDjIVLmhvbGRmYXN0LnYwLkVuY29kaW5nIsABCgtTZXJ2ZXJIZWxsbxIWCg5wcm90b2NvbF9tYWpvchgBIAEoDRIWCg5wcm90b2NvbF9taW5vchgCIAEoDRItCgxjYXBhYmlsaXRpZXMYAyADKA4yFy5ob2xkZmFzdC52MC5DYXBhYmlsaXR5EhcKD21heF9mcmFtZV9ieXRlcxgEIAEoDRIaChJtYXhfZGF0YWdyYW1fYnl0ZXMYBSABKA0SHQoVa2VlcGFsaXZlX2ludGVydmFsX21zGAYgASgNIh0KDVRlcm1pbmFsSW5wdXQSDAoEZGF0YRgBIAEoDCIeCg5UZXJtaW5hbE91dHB1dBIMCgRkYXRhGAEgASgMIiwKDlRlcm1pbmFsUmVzaXplEgwKBGNvbHMYASABKA0SDAoEcm93cxgCIAEoDSJXCgVFcnJvchIkCgRjb2RlGAEgASgOMhYuaG9sZGZhc3QudjAuRXJyb3JDb2RlEhUKDWh1bWFuX21lc3NhZ2UYAiABKAkSEQoJcmV0cnlhYmxlGAMgASgIIvYBCgxBdXRoZW50aWNhdGUSGgoQY29ubmVjdGlvbl9ncmFudBgBIAEoDEgAEkEKFXNzaF9jaGFsbGVuZ2VfcmVxdWVzdBgCIAEoCzIgLmhvbGRmYXN0LnYwLlNzaENoYWxsZW5nZVJlcXVlc3RIABJDChZzc2hfY2hhbGxlbmdlX3Jlc3BvbnNlGAMgASgLMiEuaG9sZGZhc3QudjAuU3NoQ2hhbGxlbmdlUmVzcG9uc2VIABI4ChBwYXNzd29yZF9yZXF1ZXN0GAQgASgLMhwuaG9sZGZhc3QudjAuUGFzc3dvcmRSZXF1ZXN0SABCCAoGbWV0aG9kIjUKD1Bhc3N3b3JkUmVxdWVzdBIQCgh1c2VybmFtZRgBIAEoCRIQCghwYXNzd29yZBgCIAEoCSI7ChNTc2hDaGFsbGVuZ2VSZXF1ZXN0EhAKCHVzZXJuYW1lGAEgASgJEhIKCnB1YmxpY19rZXkYAiABKAwiPAoUU3NoQ2hhbGxlbmdlUmVzcG9uc2USEQoJY2hhbGxlbmdlGAEgASgMEhEKCXNpZ25hdHVyZRgCIAEoDCKgAQoUQXV0aGVudGljYXRpb25SZXN1bHQSCgoCb2sYASABKAgSDwoHdXNlcl9pZBgCIAEoCRIVCg1leHBpcmVzX2F0X21zGAMgASgDEioKCmVycm9yX2NvZGUYBCABKA4yFi5ob2xkZmFzdC52MC5FcnJvckNvZGUSFQoNZXJyb3JfbWVzc2FnZRgFIAEoCRIRCgljaGFsbGVuZ2UYBiABKAwiDQoLTGlzdFNlcnZlcnMiRgoKU2VydmVySW5mbxIRCglzZXJ2ZXJfaWQYASABKAwSFAoMZGlzcGxheV9uYW1lGAIgASgJEg8KB2hlYWx0aHkYAyABKAgiNgoKU2VydmVyTGlzdBIoCgdzZXJ2ZXJzGAEgAygLMhcuaG9sZGZhc3QudjAuU2VydmVySW5mbyIMCgpMaXN0U2hlbGxzIpsBCglTaGVsbEluZm8SEQoJc2VydmVyX2lkGAEgASgMEhAKCHNoZWxsX2lkGAIgASgMEiYKBXN0YXRlGAMgASgOMhcuaG9sZGZhc3QudjAuU2hlbGxTdGF0ZRINCgV0aXRsZRgEIAEoCRIVCg1jcmVhdGVkX2F0X21zGAUgASgDEhsKE2xhc3RfYXR0YWNoZWRfYXRfbXMYBiABKAMiMwoJU2hlbGxMaXN0EiYKBnNoZWxscxgBIAMoCzIWLmhvbGRmYXN0LnYwLlNoZWxsSW5mbyJ3CglPcGVuU2hlbGwSFAoMdW5peF9hY2NvdW50GAEgASgJEg8KB2NvbW1hbmQYAiABKAkSFAoMaW5pdGlhbF9jb2xzGAMgASgNEhQKDGluaXRpYWxfcm93cxgEIAEoDRIXCg9pZGVtcG90ZW5jeV9rZXkYBSABKAwiOgoLU2hlbGxPcGVuZWQSFAoMcmVzdW1lX3Rva2VuGAEgASgMEhUKDWV4cGlyZXNfYXRfbXMYAiABKAMieQoLQXR0YWNoU2hlbGwSFAoMcmVzdW1lX3Rva2VuGAEgASgMEgwKBGNvbHMYAiABKA0SDAoEcm93cxgDIAEoDRIaChJsYXN0X3NlZW5fcmV2aXNpb24YBCABKAQSHAoUbGFzdF9oaXN0b3J5X2xpbmVfaWQYBSABKAQinwEKDVNoZWxsQXR0YWNoZWQSFwoPc2NyZWVuX3NuYXBzaG90GAEgASgMEhcKD3NjcmVlbl9yZXZpc2lvbhgCIAEoBBIcChRyb3RhdGVkX3Jlc3VtZV90b2tlbhgDIAEoDBIeChZvbGRlc3RfaGlzdG9yeV9saW5lX2lkGAQgASgEEh4KFm5ld2VzdF9oaXN0b3J5X2xpbmVfaWQYBSABKAQiDQoLRGV0YWNoU2hlbGwiEAoOVGVybWluYXRlU2hlbGwiQgoLU2hlbGxFeGl0ZWQSEQoJZXhpdF9jb2RlGAEgASgREhAKCHNpZ25hbGVkGAIgASgIEg4KBnNpZ25hbBgDIAEoCSJWCg5SZXF1ZXN0SGlzdG9yeRIWCg5iZWZvcmVfbGluZV9pZBgBIAEoBBIVCg1tYXhpbXVtX2xpbmVzGAIgASgNEhUKDW1heGltdW1fYnl0ZXMYAyABKA0iUwoMSGlzdG9yeUNodW5rEhUKDWZpcnN0X2xpbmVfaWQYASABKAQSDQoFbGluZXMYAiADKAkSHQoVdHJ1bmNhdGVkX2J5X2V2aWN0aW9uGAMgASgIIi4KCkhpc3RvcnlFbmQSIAoYb2xkZXN0X2F2YWlsYWJsZV9saW5lX2lkGAEgASgEIjkKDlNjcmVlblNuYXBzaG90EhAKCHJldmlzaW9uGAEgASgEEhUKDXBhY2tlZF9zY3JlZW4YAiABKAwiQwoLU2NyZWVuRGVsdGESEAoIcmV2aXNpb24YASABKAQSFQoNYmFzZV9yZXZpc2lvbhgCIAEoBBILCgNvcHMYAyABKAwiJQoRQWNrU2NyZWVuUmV2aXNpb24SEAoIcmV2aXNpb24YASABKAQiFQoEUGluZxINCgVub25jZRgBIAEoBCIVCgRQb25nEg0KBW5vbmNlGAEgASgEIj0KBUNsb3NlEiQKBGNvZGUYASABKA4yFi5ob2xkZmFzdC52MC5FcnJvckNvZGUSDgoGcmVhc29uGAIgASgJKqgBCgpDbGllbnRLaW5kEhsKF0NMSUVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASJAogQ0xJRU5UX0tJTkRfQlJPV1NFUl9XRUJUUkFOU1BPUlQQARIhCh1DTElFTlRfS0lORF9CUk9XU0VSX1dFQlNPQ0tFVBACEhsKF0NMSUVOVF9LSU5EX05BVElWRV9RVUlDEAMSFwoTQ0xJRU5UX0tJTkRfQURBUFRFUhAEKnoKCkNhcGFiaWxpdHkSGgoWQ0FQQUJJTElUWV9VTlNQRUNJRklFRBAAEhgKFENBUEFCSUxJVFlfREFUQUdSQU1TEAESGAoUQ0FQQUJJTElUWV9DTElQQk9BUkQQAhIcChhDQVBBQklMSVRZX0ZJTEVfVFJBTlNGRVIQAyo3CghFbmNvZGluZxIYChRFTkNPRElOR19VTlNQRUNJRklFRBAAEhEKDUVOQ09ESU5HX1VURjgQASquAQoKU2hlbGxTdGF0ZRIbChdTSEVMTF9TVEFURV9VTlNQRUNJRklFRBAAEhgKFFNIRUxMX1NUQVRFX0NSRUFUSU5HEAESFwoTU0hFTExfU1RBVEVfUlVOTklORxACEhYKElNIRUxMX1NUQVRFX0VYSVRFRBADEhsKF1NIRUxMX1NUQVRFX1RFUk1JTkFUSU5HEAQSGwoXU0hFTExfU1RBVEVfVU5BVkFJTEFCTEUQBSrUAgoJRXJyb3JDb2RlEhMKD0VSUl9VTlNQRUNJRklFRBAAEg8KC0VSUl9WRVJTSU9OEAESFwoTRVJSX1VOQVVUSEVOVElDQVRFRBACEhEKDUVSUl9GT1JCSURERU4QAxIRCg1FUlJfTk9UX0ZPVU5EEAQSFwoTRVJSX0ZSQU1FX1RPT19MQVJHRRAFEhcKE0VSUl9VTktOT1dOX01FU1NBR0UQBhIWChJFUlJfSU5QVVRfT1ZFUkZMT1cQBxIQCgxFUlJfVE9PX1NMT1cQCBIRCg1FUlJfTk9UX1JFQURZEAkSFQoRRVJSX1RPS0VOX0VYUElSRUQQChIWChJFUlJfVE9LRU5fUkVQTEFZRUQQCxIWChJFUlJfTElNSVRfRVhDRUVERUQQDBIaChZFUlJfU0VSVkVSX1VOQVZBSUxBQkxFEA0SEAoMRVJSX0lOVEVSTkFMEA5iBnByb3RvMw");
+  fileDesc("Cg5tZXNzYWdlcy5wcm90bxILaG9sZGZhc3QudjAigg4KCEVudmVsb3BlEhIKCnJlcXVlc3RfaWQYASABKAQSEQoJc2VydmVyX2lkGAIgASgMEhAKCHNoZWxsX2lkGAMgASgMEjAKDGNsaWVudF9oZWxsbxgKIAEoCzIYLmhvbGRmYXN0LnYwLkNsaWVudEhlbGxvSAASMAoMc2VydmVyX2hlbGxvGAsgASgLMhguaG9sZGZhc3QudjAuU2VydmVySGVsbG9IABI0Cg50ZXJtaW5hbF9pbnB1dBgMIAEoCzIaLmhvbGRmYXN0LnYwLlRlcm1pbmFsSW5wdXRIABI2Cg90ZXJtaW5hbF9vdXRwdXQYDSABKAsyGy5ob2xkZmFzdC52MC5UZXJtaW5hbE91dHB1dEgAEjYKD3Rlcm1pbmFsX3Jlc2l6ZRgOIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmFsUmVzaXplSAASIwoFZXJyb3IYDyABKAsyEi5ob2xkZmFzdC52MC5FcnJvckgAEjEKDGF1dGhlbnRpY2F0ZRgQIAEoCzIZLmhvbGRmYXN0LnYwLkF1dGhlbnRpY2F0ZUgAEkIKFWF1dGhlbnRpY2F0aW9uX3Jlc3VsdBgRIAEoCzIhLmhvbGRmYXN0LnYwLkF1dGhlbnRpY2F0aW9uUmVzdWx0SAASMAoMbGlzdF9zZXJ2ZXJzGBIgASgLMhguaG9sZGZhc3QudjAuTGlzdFNlcnZlcnNIABIuCgtzZXJ2ZXJfbGlzdBgTIAEoCzIXLmhvbGRmYXN0LnYwLlNlcnZlckxpc3RIABIuCgtsaXN0X3NoZWxscxgUIAEoCzIXLmhvbGRmYXN0LnYwLkxpc3RTaGVsbHNIABIsCgpzaGVsbF9saXN0GBUgASgLMhYuaG9sZGZhc3QudjAuU2hlbGxMaXN0SAASLAoKb3Blbl9zaGVsbBgWIAEoCzIWLmhvbGRmYXN0LnYwLk9wZW5TaGVsbEgAEjAKDHNoZWxsX29wZW5lZBgXIAEoCzIYLmhvbGRmYXN0LnYwLlNoZWxsT3BlbmVkSAASMAoMYXR0YWNoX3NoZWxsGBggASgLMhguaG9sZGZhc3QudjAuQXR0YWNoU2hlbGxIABI0Cg5zaGVsbF9hdHRhY2hlZBgZIAEoCzIaLmhvbGRmYXN0LnYwLlNoZWxsQXR0YWNoZWRIABIwCgxkZXRhY2hfc2hlbGwYGiABKAsyGC5ob2xkZmFzdC52MC5EZXRhY2hTaGVsbEgAEjYKD3Rlcm1pbmF0ZV9zaGVsbBgbIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmF0ZVNoZWxsSAASMAoMc2hlbGxfZXhpdGVkGBwgASgLMhguaG9sZGZhc3QudjAuU2hlbGxFeGl0ZWRIABI2Cg9yZXF1ZXN0X2hpc3RvcnkYHSABKAsyGy5ob2xkZmFzdC52MC5SZXF1ZXN0SGlzdG9yeUgAEjIKDWhpc3RvcnlfY2h1bmsYHiABKAsyGS5ob2xkZmFzdC52MC5IaXN0b3J5Q2h1bmtIABIuCgtoaXN0b3J5X2VuZBgfIAEoCzIXLmhvbGRmYXN0LnYwLkhpc3RvcnlFbmRIABI2Cg9zY3JlZW5fc25hcHNob3QYICABKAsyGy5ob2xkZmFzdC52MC5TY3JlZW5TbmFwc2hvdEgAEjAKDHNjcmVlbl9kZWx0YRghIAEoCzIYLmhvbGRmYXN0LnYwLlNjcmVlbkRlbHRhSAASPQoTYWNrX3NjcmVlbl9yZXZpc2lvbhgiIAEoCzIeLmhvbGRmYXN0LnYwLkFja1NjcmVlblJldmlzaW9uSAASIQoEcGluZxgjIAEoCzIRLmhvbGRmYXN0LnYwLlBpbmdIABIhCgRwb25nGCQgASgLMhEuaG9sZGZhc3QudjAuUG9uZ0gAEiMKBWNsb3NlGCUgASgLMhIuaG9sZGZhc3QudjAuQ2xvc2VIABIwCgxiZWdpbl91cGxvYWQYJiABKAsyGC5ob2xkZmFzdC52MC5CZWdpblVwbG9hZEgAEjYKD3VwbG9hZF9hY2NlcHRlZBgnIAEoCzIbLmhvbGRmYXN0LnYwLlVwbG9hZEFjY2VwdGVkSAASMAoMdXBsb2FkX2NodW5rGCggASgLMhguaG9sZGZhc3QudjAuVXBsb2FkQ2h1bmtIABIyCg1maW5pc2hfdXBsb2FkGCkgASgLMhkuaG9sZGZhc3QudjAuRmluaXNoVXBsb2FkSAASNgoPdXBsb2FkX2ZpbmlzaGVkGCogASgLMhsuaG9sZGZhc3QudjAuVXBsb2FkRmluaXNoZWRIABIwCgxhYm9ydF91cGxvYWQYKyABKAsyGC5ob2xkZmFzdC52MC5BYm9ydFVwbG9hZEgAQgkKB21lc3NhZ2Ui6wEKEERhdGFncmFtRW52ZWxvcGUSEQoJc2VydmVyX2lkGAEgASgMEhAKCHNoZWxsX2lkGAIgASgMEjYKD3NjcmVlbl9zbmFwc2hvdBgKIAEoCzIbLmhvbGRmYXN0LnYwLlNjcmVlblNuYXBzaG90SAASMAoMc2NyZWVuX2RlbHRhGAsgASgLMhguaG9sZGZhc3QudjAuU2NyZWVuRGVsdGFIABI9ChNhY2tfc2NyZWVuX3JldmlzaW9uGAwgASgLMh4uaG9sZGZhc3QudjAuQWNrU2NyZWVuUmV2aXNpb25IAEIJCgdtZXNzYWdlIugHCg1BZ2VudEVudmVsb3BlEhIKCnJlcXVlc3RfaWQYASABKAQSEQoJc2VydmVyX2lkGAIgASgMEhAKCHNoZWxsX2lkGAMgASgMEjQKDmFnZW50X3JlZ2lzdGVyGAogASgLMhouaG9sZGZhc3QudjAuQWdlbnRSZWdpc3RlckgAEjwKEmFnZW50X3JlZ2lzdHJhdGlvbhgLIAEoCzIeLmhvbGRmYXN0LnYwLkFnZW50UmVnaXN0cmF0aW9uSAASLAoKYWdlbnRfcGluZxgMIAEoCzIWLmhvbGRmYXN0LnYwLkFnZW50UGluZ0gAEiwKCmFnZW50X3BvbmcYDSABKAsyFi5ob2xkZmFzdC52MC5BZ2VudFBvbmdIABIpCgthZ2VudF9lcnJvchgOIAEoCzISLmhvbGRmYXN0LnYwLkVycm9ySAASNwoQYWdlbnRfb3Blbl9zaGVsbBgPIAEoCzIbLmhvbGRmYXN0LnYwLkFnZW50T3BlblNoZWxsSAASOwoSYWdlbnRfc2hlbGxfb3BlbmVkGBAgASgLMh0uaG9sZGZhc3QudjAuQWdlbnRTaGVsbE9wZW5lZEgAEjsKEmFnZW50X2F0dGFjaF9zaGVsbBgRIAEoCzIdLmhvbGRmYXN0LnYwLkFnZW50QXR0YWNoU2hlbGxIABI/ChRhZ2VudF9zaGVsbF9hdHRhY2hlZBgSIAEoCzIfLmhvbGRmYXN0LnYwLkFnZW50U2hlbGxBdHRhY2hlZEgAEjQKDnRlcm1pbmFsX2lucHV0GBMgASgLMhouaG9sZGZhc3QudjAuVGVybWluYWxJbnB1dEgAEjYKD3Rlcm1pbmFsX291dHB1dBgUIAEoCzIbLmhvbGRmYXN0LnYwLlRlcm1pbmFsT3V0cHV0SAASNgoPdGVybWluYWxfcmVzaXplGBUgASgLMhsuaG9sZGZhc3QudjAuVGVybWluYWxSZXNpemVIABIwCgxkZXRhY2hfc2hlbGwYFiABKAsyGC5ob2xkZmFzdC52MC5EZXRhY2hTaGVsbEgAEjYKD3JlcXVlc3RfaGlzdG9yeRgXIAEoCzIbLmhvbGRmYXN0LnYwLlJlcXVlc3RIaXN0b3J5SAASMgoNaGlzdG9yeV9jaHVuaxgYIAEoCzIZLmhvbGRmYXN0LnYwLkhpc3RvcnlDaHVua0gAEi4KC2hpc3RvcnlfZW5kGBkgASgLMhcuaG9sZGZhc3QudjAuSGlzdG9yeUVuZEgAEjAKDHNoZWxsX2V4aXRlZBgaIAEoCzIYLmhvbGRmYXN0LnYwLlNoZWxsRXhpdGVkSABCCQoHbWVzc2FnZSKAAQoNQWdlbnRSZWdpc3RlchIWCg5wcm90b2NvbF9tYWpvchgBIAEoDRIWCg5wcm90b2NvbF9taW5vchgCIAEoDRIRCglzZXJ2ZXJfaWQYAyABKAwSEwoLYWdlbnRfYnVpbGQYBCABKAkSFwoPbWF4X2ZyYW1lX2J5dGVzGAUgASgNIooBChFBZ2VudFJlZ2lzdHJhdGlvbhIQCghhY2NlcHRlZBgBIAEoCBIRCglzZXJ2ZXJfaWQYAiABKAwSFwoPbWF4X2ZyYW1lX2J5dGVzGAMgASgNEh0KFWtlZXBhbGl2ZV9pbnRlcnZhbF9tcxgEIAEoDRIYChByZWplY3Rpb25fcmVhc29uGAUgASgJIhoKCUFnZW50UGluZxINCgVub25jZRgBIAEoBCIaCglBZ2VudFBvbmcSDQoFbm9uY2UYASABKAQipwEKDkFnZW50T3BlblNoZWxsEg8KB3VzZXJfaWQYASABKAkSFAoMdW5peF9hY2NvdW50GAIgASgJEg8KB2NvbW1hbmQYAyABKAkSFAoMaW5pdGlhbF9jb2xzGAQgASgNEhQKDGluaXRpYWxfcm93cxgFIAEoDRIXCg9pZGVtcG90ZW5jeV9rZXkYBiABKAwSGAoQY29ubmVjdGlvbl9ncmFudBgHIAEoDCI0ChBBZ2VudFNoZWxsT3BlbmVkEhAKCHNoZWxsX2lkGAEgASgMEg4KBnJldXNlZBgCIAEoCCJZChBBZ2VudEF0dGFjaFNoZWxsEg8KB3VzZXJfaWQYASABKAkSGAoQY29ubmVjdGlvbl9ncmFudBgCIAEoDBIMCgRjb2xzGAMgASgNEgwKBHJvd3MYBCABKA0ihgEKEkFnZW50U2hlbGxBdHRhY2hlZBIXCg9zY3JlZW5fc25hcHNob3QYASABKAwSFwoPc2NyZWVuX3JldmlzaW9uGAIgASgEEh4KFm9sZGVzdF9oaXN0b3J5X2xpbmVfaWQYAyABKAQSHgoWbmV3ZXN0X2hpc3RvcnlfbGluZV9pZBgEIAEoBCKPAgoLQ2xpZW50SGVsbG8SFgoOcHJvdG9jb2xfbWFqb3IYASABKA0SFgoOcHJvdG9jb2xfbWlub3IYAiABKA0SLAoLY2xpZW50X2tpbmQYAyABKA4yFy5ob2xkZmFzdC52MC5DbGllbnRLaW5kEhQKDGNsaWVudF9idWlsZBgEIAEoCRItCgxjYXBhYmlsaXRpZXMYBSADKA4yFy5ob2xkZmFzdC52MC5DYXBhYmlsaXR5EhcKD21heF9mcmFtZV9ieXRlcxgGIAEoDRIaChJtYXhfZGF0YWdyYW1fYnl0ZXMYByABKA0SKAoJZW5jb2RpbmdzGAggAygOMhUuaG9sZGZhc3QudjAuRW5jb2RpbmciwAEKC1NlcnZlckhlbGxvEhYKDnByb3RvY29sX21ham9yGAEgASgNEhYKDnByb3RvY29sX21pbm9yGAIgASgNEi0KDGNhcGFiaWxpdGllcxgDIAMoDjIXLmhvbGRmYXN0LnYwLkNhcGFiaWxpdHkSFwoPbWF4X2ZyYW1lX2J5dGVzGAQgASgNEhoKEm1heF9kYXRhZ3JhbV9ieXRlcxgFIAEoDRIdChVrZWVwYWxpdmVfaW50ZXJ2YWxfbXMYBiABKA0iHQoNVGVybWluYWxJbnB1dBIMCgRkYXRhGAEgASgMIh4KDlRlcm1pbmFsT3V0cHV0EgwKBGRhdGEYASABKAwiLAoOVGVybWluYWxSZXNpemUSDAoEY29scxgBIAEoDRIMCgRyb3dzGAIgASgNIkkKC0JlZ2luVXBsb2FkEhUKDW9yaWdpbmFsX25hbWUYASABKAkSEwoLdG90YWxfYnl0ZXMYAiABKAQSDgoGc2hhMjU2GAMgASgMIkAKDlVwbG9hZEFjY2VwdGVkEhEKCXVwbG9hZF9pZBgBIAEoDBIbChNtYXhpbXVtX2NodW5rX2J5dGVzGAIgASgNIj4KC1VwbG9hZENodW5rEhEKCXVwbG9hZF9pZBgBIAEoDBIOCgZvZmZzZXQYAiABKAQSDAoEZGF0YRgDIAEoDCIhCgxGaW5pc2hVcGxvYWQSEQoJdXBsb2FkX2lkGAEgASgMIl8KDlVwbG9hZEZpbmlzaGVkEhEKCXVwbG9hZF9pZBgBIAEoDBITCgtyZW1vdGVfcGF0aBgCIAEoCRIVCg1ieXRlc193cml0dGVuGAMgASgEEg4KBnNoYTI1NhgEIAEoDCIwCgtBYm9ydFVwbG9hZBIRCgl1cGxvYWRfaWQYASABKAwSDgoGcmVhc29uGAIgASgJIlcKBUVycm9yEiQKBGNvZGUYASABKA4yFi5ob2xkZmFzdC52MC5FcnJvckNvZGUSFQoNaHVtYW5fbWVzc2FnZRgCIAEoCRIRCglyZXRyeWFibGUYAyABKAgi9gEKDEF1dGhlbnRpY2F0ZRIaChBjb25uZWN0aW9uX2dyYW50GAEgASgMSAASQQoVc3NoX2NoYWxsZW5nZV9yZXF1ZXN0GAIgASgLMiAuaG9sZGZhc3QudjAuU3NoQ2hhbGxlbmdlUmVxdWVzdEgAEkMKFnNzaF9jaGFsbGVuZ2VfcmVzcG9uc2UYAyABKAsyIS5ob2xkZmFzdC52MC5Tc2hDaGFsbGVuZ2VSZXNwb25zZUgAEjgKEHBhc3N3b3JkX3JlcXVlc3QYBCABKAsyHC5ob2xkZmFzdC52MC5QYXNzd29yZFJlcXVlc3RIAEIICgZtZXRob2QiNQoPUGFzc3dvcmRSZXF1ZXN0EhAKCHVzZXJuYW1lGAEgASgJEhAKCHBhc3N3b3JkGAIgASgJIjsKE1NzaENoYWxsZW5nZVJlcXVlc3QSEAoIdXNlcm5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDCI8ChRTc2hDaGFsbGVuZ2VSZXNwb25zZRIRCgljaGFsbGVuZ2UYASABKAwSEQoJc2lnbmF0dXJlGAIgASgMIqABChRBdXRoZW50aWNhdGlvblJlc3VsdBIKCgJvaxgBIAEoCBIPCgd1c2VyX2lkGAIgASgJEhUKDWV4cGlyZXNfYXRfbXMYAyABKAMSKgoKZXJyb3JfY29kZRgEIAEoDjIWLmhvbGRmYXN0LnYwLkVycm9yQ29kZRIVCg1lcnJvcl9tZXNzYWdlGAUgASgJEhEKCWNoYWxsZW5nZRgGIAEoDCINCgtMaXN0U2VydmVycyJGCgpTZXJ2ZXJJbmZvEhEKCXNlcnZlcl9pZBgBIAEoDBIUCgxkaXNwbGF5X25hbWUYAiABKAkSDwoHaGVhbHRoeRgDIAEoCCI2CgpTZXJ2ZXJMaXN0EigKB3NlcnZlcnMYASADKAsyFy5ob2xkZmFzdC52MC5TZXJ2ZXJJbmZvIgwKCkxpc3RTaGVsbHMimwEKCVNoZWxsSW5mbxIRCglzZXJ2ZXJfaWQYASABKAwSEAoIc2hlbGxfaWQYAiABKAwSJgoFc3RhdGUYAyABKA4yFy5ob2xkZmFzdC52MC5TaGVsbFN0YXRlEg0KBXRpdGxlGAQgASgJEhUKDWNyZWF0ZWRfYXRfbXMYBSABKAMSGwoTbGFzdF9hdHRhY2hlZF9hdF9tcxgGIAEoAyIzCglTaGVsbExpc3QSJgoGc2hlbGxzGAEgAygLMhYuaG9sZGZhc3QudjAuU2hlbGxJbmZvIncKCU9wZW5TaGVsbBIUCgx1bml4X2FjY291bnQYASABKAkSDwoHY29tbWFuZBgCIAEoCRIUCgxpbml0aWFsX2NvbHMYAyABKA0SFAoMaW5pdGlhbF9yb3dzGAQgASgNEhcKD2lkZW1wb3RlbmN5X2tleRgFIAEoDCI6CgtTaGVsbE9wZW5lZBIUCgxyZXN1bWVfdG9rZW4YASABKAwSFQoNZXhwaXJlc19hdF9tcxgCIAEoAyJ5CgtBdHRhY2hTaGVsbBIUCgxyZXN1bWVfdG9rZW4YASABKAwSDAoEY29scxgCIAEoDRIMCgRyb3dzGAMgASgNEhoKEmxhc3Rfc2Vlbl9yZXZpc2lvbhgEIAEoBBIcChRsYXN0X2hpc3RvcnlfbGluZV9pZBgFIAEoBCKfAQoNU2hlbGxBdHRhY2hlZBIXCg9zY3JlZW5fc25hcHNob3QYASABKAwSFwoPc2NyZWVuX3JldmlzaW9uGAIgASgEEhwKFHJvdGF0ZWRfcmVzdW1lX3Rva2VuGAMgASgMEh4KFm9sZGVzdF9oaXN0b3J5X2xpbmVfaWQYBCABKAQSHgoWbmV3ZXN0X2hpc3RvcnlfbGluZV9pZBgFIAEoBCINCgtEZXRhY2hTaGVsbCIQCg5UZXJtaW5hdGVTaGVsbCJCCgtTaGVsbEV4aXRlZBIRCglleGl0X2NvZGUYASABKBESEAoIc2lnbmFsZWQYAiABKAgSDgoGc2lnbmFsGAMgASgJIlYKDlJlcXVlc3RIaXN0b3J5EhYKDmJlZm9yZV9saW5lX2lkGAEgASgEEhUKDW1heGltdW1fbGluZXMYAiABKA0SFQoNbWF4aW11bV9ieXRlcxgDIAEoDSJTCgxIaXN0b3J5Q2h1bmsSFQoNZmlyc3RfbGluZV9pZBgBIAEoBBINCgVsaW5lcxgCIAMoCRIdChV0cnVuY2F0ZWRfYnlfZXZpY3Rpb24YAyABKAgiLgoKSGlzdG9yeUVuZBIgChhvbGRlc3RfYXZhaWxhYmxlX2xpbmVfaWQYASABKAQiOQoOU2NyZWVuU25hcHNob3QSEAoIcmV2aXNpb24YASABKAQSFQoNcGFja2VkX3NjcmVlbhgCIAEoDCJDCgtTY3JlZW5EZWx0YRIQCghyZXZpc2lvbhgBIAEoBBIVCg1iYXNlX3JldmlzaW9uGAIgASgEEgsKA29wcxgDIAEoDCIlChFBY2tTY3JlZW5SZXZpc2lvbhIQCghyZXZpc2lvbhgBIAEoBCIVCgRQaW5nEg0KBW5vbmNlGAEgASgEIhUKBFBvbmcSDQoFbm9uY2UYASABKAQiPQoFQ2xvc2USJAoEY29kZRgBIAEoDjIWLmhvbGRmYXN0LnYwLkVycm9yQ29kZRIOCgZyZWFzb24YAiABKAkqqAEKCkNsaWVudEtpbmQSGwoXQ0xJRU5UX0tJTkRfVU5TUEVDSUZJRUQQABIkCiBDTElFTlRfS0lORF9CUk9XU0VSX1dFQlRSQU5TUE9SVBABEiEKHUNMSUVOVF9LSU5EX0JST1dTRVJfV0VCU09DS0VUEAISGwoXQ0xJRU5UX0tJTkRfTkFUSVZFX1FVSUMQAxIXChNDTElFTlRfS0lORF9BREFQVEVSEAQqegoKQ2FwYWJpbGl0eRIaChZDQVBBQklMSVRZX1VOU1BFQ0lGSUVEEAASGAoUQ0FQQUJJTElUWV9EQVRBR1JBTVMQARIYChRDQVBBQklMSVRZX0NMSVBCT0FSRBACEhwKGENBUEFCSUxJVFlfRklMRV9UUkFOU0ZFUhADKjcKCEVuY29kaW5nEhgKFEVOQ09ESU5HX1VOU1BFQ0lGSUVEEAASEQoNRU5DT0RJTkdfVVRGOBABKq4BCgpTaGVsbFN0YXRlEhsKF1NIRUxMX1NUQVRFX1VOU1BFQ0lGSUVEEAASGAoUU0hFTExfU1RBVEVfQ1JFQVRJTkcQARIXChNTSEVMTF9TVEFURV9SVU5OSU5HEAISFgoSU0hFTExfU1RBVEVfRVhJVEVEEAMSGwoXU0hFTExfU1RBVEVfVEVSTUlOQVRJTkcQBBIbChdTSEVMTF9TVEFURV9VTkFWQUlMQUJMRRAFKokDCglFcnJvckNvZGUSEwoPRVJSX1VOU1BFQ0lGSUVEEAASDwoLRVJSX1ZFUlNJT04QARIXChNFUlJfVU5BVVRIRU5USUNBVEVEEAISEQoNRVJSX0ZPUkJJRERFThADEhEKDUVSUl9OT1RfRk9VTkQQBBIXChNFUlJfRlJBTUVfVE9PX0xBUkdFEAUSFwoTRVJSX1VOS05PV05fTUVTU0FHRRAGEhYKEkVSUl9JTlBVVF9PVkVSRkxPVxAHEhAKDEVSUl9UT09fU0xPVxAIEhEKDUVSUl9OT1RfUkVBRFkQCRIVChFFUlJfVE9LRU5fRVhQSVJFRBAKEhYKEkVSUl9UT0tFTl9SRVBMQVlFRBALEhYKEkVSUl9MSU1JVF9FWENFRURFRBAMEhoKFkVSUl9TRVJWRVJfVU5BVkFJTEFCTEUQDRIQCgxFUlJfSU5URVJOQUwQDhIYChRFUlJfSU5WQUxJRF9BUkdVTUVOVBAPEhkKFUVSUl9DSEVDS1NVTV9NSVNNQVRDSBAQYgZwcm90bzM");
 
 /**
  * Every reliable frame carries exactly one Envelope (spec §3).
@@ -214,6 +214,42 @@ export type Envelope = Message<"holdfast.v0.Envelope"> & {
      */
     value: Close;
     case: "close";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.BeginUpload begin_upload = 38;
+     */
+    value: BeginUpload;
+    case: "beginUpload";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.UploadAccepted upload_accepted = 39;
+     */
+    value: UploadAccepted;
+    case: "uploadAccepted";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.UploadChunk upload_chunk = 40;
+     */
+    value: UploadChunk;
+    case: "uploadChunk";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.FinishUpload finish_upload = 41;
+     */
+    value: FinishUpload;
+    case: "finishUpload";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.UploadFinished upload_finished = 42;
+     */
+    value: UploadFinished;
+    case: "uploadFinished";
+  } | {
+    /**
+     * @generated from field: holdfast.v0.AbortUpload abort_upload = 43;
+     */
+    value: AbortUpload;
+    case: "abortUpload";
   } | { case: undefined; value?: undefined };
 };
 
@@ -821,6 +857,168 @@ export const TerminalResizeSchema: GenMessage<TerminalResize> = /*@__PURE__*/
   messageDesc(file_messages, 15);
 
 /**
+ * File uploads (spec §6.1) use a dedicated reliable channel and are available
+ * only when CAPABILITY_FILE_TRANSFER is negotiated at protocol minor 2+.
+ *
+ * @generated from message holdfast.v0.BeginUpload
+ */
+export type BeginUpload = Message<"holdfast.v0.BeginUpload"> & {
+  /**
+   * display metadata; never a destination path
+   *
+   * @generated from field: string original_name = 1;
+   */
+  originalName: string;
+
+  /**
+   * @generated from field: uint64 total_bytes = 2;
+   */
+  totalBytes: bigint;
+
+  /**
+   * exactly 32 bytes
+   *
+   * @generated from field: bytes sha256 = 3;
+   */
+  sha256: Uint8Array;
+};
+
+/**
+ * Describes the message holdfast.v0.BeginUpload.
+ * Use `create(BeginUploadSchema)` to create a new message.
+ */
+export const BeginUploadSchema: GenMessage<BeginUpload> = /*@__PURE__*/
+  messageDesc(file_messages, 16);
+
+/**
+ * @generated from message holdfast.v0.UploadAccepted
+ */
+export type UploadAccepted = Message<"holdfast.v0.UploadAccepted"> & {
+  /**
+   * exactly 16 random bytes, selected by the server
+   *
+   * @generated from field: bytes upload_id = 1;
+   */
+  uploadId: Uint8Array;
+
+  /**
+   * @generated from field: uint32 maximum_chunk_bytes = 2;
+   */
+  maximumChunkBytes: number;
+};
+
+/**
+ * Describes the message holdfast.v0.UploadAccepted.
+ * Use `create(UploadAcceptedSchema)` to create a new message.
+ */
+export const UploadAcceptedSchema: GenMessage<UploadAccepted> = /*@__PURE__*/
+  messageDesc(file_messages, 17);
+
+/**
+ * @generated from message holdfast.v0.UploadChunk
+ */
+export type UploadChunk = Message<"holdfast.v0.UploadChunk"> & {
+  /**
+   * @generated from field: bytes upload_id = 1;
+   */
+  uploadId: Uint8Array;
+
+  /**
+   * must equal the number of bytes already accepted
+   *
+   * @generated from field: uint64 offset = 2;
+   */
+  offset: bigint;
+
+  /**
+   * @generated from field: bytes data = 3;
+   */
+  data: Uint8Array;
+};
+
+/**
+ * Describes the message holdfast.v0.UploadChunk.
+ * Use `create(UploadChunkSchema)` to create a new message.
+ */
+export const UploadChunkSchema: GenMessage<UploadChunk> = /*@__PURE__*/
+  messageDesc(file_messages, 18);
+
+/**
+ * @generated from message holdfast.v0.FinishUpload
+ */
+export type FinishUpload = Message<"holdfast.v0.FinishUpload"> & {
+  /**
+   * @generated from field: bytes upload_id = 1;
+   */
+  uploadId: Uint8Array;
+};
+
+/**
+ * Describes the message holdfast.v0.FinishUpload.
+ * Use `create(FinishUploadSchema)` to create a new message.
+ */
+export const FinishUploadSchema: GenMessage<FinishUpload> = /*@__PURE__*/
+  messageDesc(file_messages, 19);
+
+/**
+ * @generated from message holdfast.v0.UploadFinished
+ */
+export type UploadFinished = Message<"holdfast.v0.UploadFinished"> & {
+  /**
+   * @generated from field: bytes upload_id = 1;
+   */
+  uploadId: Uint8Array;
+
+  /**
+   * absolute server-selected path
+   *
+   * @generated from field: string remote_path = 2;
+   */
+  remotePath: string;
+
+  /**
+   * @generated from field: uint64 bytes_written = 3;
+   */
+  bytesWritten: bigint;
+
+  /**
+   * @generated from field: bytes sha256 = 4;
+   */
+  sha256: Uint8Array;
+};
+
+/**
+ * Describes the message holdfast.v0.UploadFinished.
+ * Use `create(UploadFinishedSchema)` to create a new message.
+ */
+export const UploadFinishedSchema: GenMessage<UploadFinished> = /*@__PURE__*/
+  messageDesc(file_messages, 20);
+
+/**
+ * @generated from message holdfast.v0.AbortUpload
+ */
+export type AbortUpload = Message<"holdfast.v0.AbortUpload"> & {
+  /**
+   * @generated from field: bytes upload_id = 1;
+   */
+  uploadId: Uint8Array;
+
+  /**
+   * bounded diagnostic intent; not an error response
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason: string;
+};
+
+/**
+ * Describes the message holdfast.v0.AbortUpload.
+ * Use `create(AbortUploadSchema)` to create a new message.
+ */
+export const AbortUploadSchema: GenMessage<AbortUpload> = /*@__PURE__*/
+  messageDesc(file_messages, 21);
+
+/**
  * @generated from message holdfast.v0.Error
  */
 export type Error = Message<"holdfast.v0.Error"> & {
@@ -845,7 +1043,7 @@ export type Error = Message<"holdfast.v0.Error"> & {
  * Use `create(ErrorSchema)` to create a new message.
  */
 export const ErrorSchema: GenMessage<Error> = /*@__PURE__*/
-  messageDesc(file_messages, 16);
+  messageDesc(file_messages, 22);
 
 /**
  * Authentication (spec §5). The grant path serves both issuers; the SSH
@@ -890,7 +1088,7 @@ export type Authenticate = Message<"holdfast.v0.Authenticate"> & {
  * Use `create(AuthenticateSchema)` to create a new message.
  */
 export const AuthenticateSchema: GenMessage<Authenticate> = /*@__PURE__*/
-  messageDesc(file_messages, 17);
+  messageDesc(file_messages, 23);
 
 /**
  * Opt-in local password login (ADR 0016). Single round trip: on success the
@@ -921,7 +1119,7 @@ export type PasswordRequest = Message<"holdfast.v0.PasswordRequest"> & {
  * Use `create(PasswordRequestSchema)` to create a new message.
  */
 export const PasswordRequestSchema: GenMessage<PasswordRequest> = /*@__PURE__*/
-  messageDesc(file_messages, 18);
+  messageDesc(file_messages, 24);
 
 /**
  * @generated from message holdfast.v0.SshChallengeRequest
@@ -945,7 +1143,7 @@ export type SshChallengeRequest = Message<"holdfast.v0.SshChallengeRequest"> & {
  * Use `create(SshChallengeRequestSchema)` to create a new message.
  */
 export const SshChallengeRequestSchema: GenMessage<SshChallengeRequest> = /*@__PURE__*/
-  messageDesc(file_messages, 19);
+  messageDesc(file_messages, 25);
 
 /**
  * @generated from message holdfast.v0.SshChallengeResponse
@@ -971,7 +1169,7 @@ export type SshChallengeResponse = Message<"holdfast.v0.SshChallengeResponse"> &
  * Use `create(SshChallengeResponseSchema)` to create a new message.
  */
 export const SshChallengeResponseSchema: GenMessage<SshChallengeResponse> = /*@__PURE__*/
-  messageDesc(file_messages, 20);
+  messageDesc(file_messages, 26);
 
 /**
  * @generated from message holdfast.v0.AuthenticationResult
@@ -1015,7 +1213,7 @@ export type AuthenticationResult = Message<"holdfast.v0.AuthenticationResult"> &
  * Use `create(AuthenticationResultSchema)` to create a new message.
  */
 export const AuthenticationResultSchema: GenMessage<AuthenticationResult> = /*@__PURE__*/
-  messageDesc(file_messages, 21);
+  messageDesc(file_messages, 27);
 
 /**
  * @generated from message holdfast.v0.ListServers
@@ -1028,7 +1226,7 @@ export type ListServers = Message<"holdfast.v0.ListServers"> & {
  * Use `create(ListServersSchema)` to create a new message.
  */
 export const ListServersSchema: GenMessage<ListServers> = /*@__PURE__*/
-  messageDesc(file_messages, 22);
+  messageDesc(file_messages, 28);
 
 /**
  * @generated from message holdfast.v0.ServerInfo
@@ -1055,7 +1253,7 @@ export type ServerInfo = Message<"holdfast.v0.ServerInfo"> & {
  * Use `create(ServerInfoSchema)` to create a new message.
  */
 export const ServerInfoSchema: GenMessage<ServerInfo> = /*@__PURE__*/
-  messageDesc(file_messages, 23);
+  messageDesc(file_messages, 29);
 
 /**
  * @generated from message holdfast.v0.ServerList
@@ -1072,7 +1270,7 @@ export type ServerList = Message<"holdfast.v0.ServerList"> & {
  * Use `create(ServerListSchema)` to create a new message.
  */
 export const ServerListSchema: GenMessage<ServerList> = /*@__PURE__*/
-  messageDesc(file_messages, 24);
+  messageDesc(file_messages, 30);
 
 /**
  * Filter by envelope server_id when non-empty.
@@ -1087,7 +1285,7 @@ export type ListShells = Message<"holdfast.v0.ListShells"> & {
  * Use `create(ListShellsSchema)` to create a new message.
  */
 export const ListShellsSchema: GenMessage<ListShells> = /*@__PURE__*/
-  messageDesc(file_messages, 25);
+  messageDesc(file_messages, 31);
 
 /**
  * @generated from message holdfast.v0.ShellInfo
@@ -1129,7 +1327,7 @@ export type ShellInfo = Message<"holdfast.v0.ShellInfo"> & {
  * Use `create(ShellInfoSchema)` to create a new message.
  */
 export const ShellInfoSchema: GenMessage<ShellInfo> = /*@__PURE__*/
-  messageDesc(file_messages, 26);
+  messageDesc(file_messages, 32);
 
 /**
  * @generated from message holdfast.v0.ShellList
@@ -1146,7 +1344,7 @@ export type ShellList = Message<"holdfast.v0.ShellList"> & {
  * Use `create(ShellListSchema)` to create a new message.
  */
 export const ShellListSchema: GenMessage<ShellList> = /*@__PURE__*/
-  messageDesc(file_messages, 27);
+  messageDesc(file_messages, 33);
 
 /**
  * @generated from message holdfast.v0.OpenShell
@@ -1189,7 +1387,7 @@ export type OpenShell = Message<"holdfast.v0.OpenShell"> & {
  * Use `create(OpenShellSchema)` to create a new message.
  */
 export const OpenShellSchema: GenMessage<OpenShell> = /*@__PURE__*/
-  messageDesc(file_messages, 28);
+  messageDesc(file_messages, 34);
 
 /**
  * @generated from message holdfast.v0.ShellOpened
@@ -1213,7 +1411,7 @@ export type ShellOpened = Message<"holdfast.v0.ShellOpened"> & {
  * Use `create(ShellOpenedSchema)` to create a new message.
  */
 export const ShellOpenedSchema: GenMessage<ShellOpened> = /*@__PURE__*/
-  messageDesc(file_messages, 29);
+  messageDesc(file_messages, 35);
 
 /**
  * @generated from message holdfast.v0.AttachShell
@@ -1254,7 +1452,7 @@ export type AttachShell = Message<"holdfast.v0.AttachShell"> & {
  * Use `create(AttachShellSchema)` to create a new message.
  */
 export const AttachShellSchema: GenMessage<AttachShell> = /*@__PURE__*/
-  messageDesc(file_messages, 30);
+  messageDesc(file_messages, 36);
 
 /**
  * @generated from message holdfast.v0.ShellAttached
@@ -1295,7 +1493,7 @@ export type ShellAttached = Message<"holdfast.v0.ShellAttached"> & {
  * Use `create(ShellAttachedSchema)` to create a new message.
  */
 export const ShellAttachedSchema: GenMessage<ShellAttached> = /*@__PURE__*/
-  messageDesc(file_messages, 31);
+  messageDesc(file_messages, 37);
 
 /**
  * @generated from message holdfast.v0.DetachShell
@@ -1308,7 +1506,7 @@ export type DetachShell = Message<"holdfast.v0.DetachShell"> & {
  * Use `create(DetachShellSchema)` to create a new message.
  */
 export const DetachShellSchema: GenMessage<DetachShell> = /*@__PURE__*/
-  messageDesc(file_messages, 32);
+  messageDesc(file_messages, 38);
 
 /**
  * @generated from message holdfast.v0.TerminateShell
@@ -1321,7 +1519,7 @@ export type TerminateShell = Message<"holdfast.v0.TerminateShell"> & {
  * Use `create(TerminateShellSchema)` to create a new message.
  */
 export const TerminateShellSchema: GenMessage<TerminateShell> = /*@__PURE__*/
-  messageDesc(file_messages, 33);
+  messageDesc(file_messages, 39);
 
 /**
  * @generated from message holdfast.v0.ShellExited
@@ -1352,7 +1550,7 @@ export type ShellExited = Message<"holdfast.v0.ShellExited"> & {
  * Use `create(ShellExitedSchema)` to create a new message.
  */
 export const ShellExitedSchema: GenMessage<ShellExited> = /*@__PURE__*/
-  messageDesc(file_messages, 34);
+  messageDesc(file_messages, 40);
 
 /**
  * @generated from message holdfast.v0.RequestHistory
@@ -1381,7 +1579,7 @@ export type RequestHistory = Message<"holdfast.v0.RequestHistory"> & {
  * Use `create(RequestHistorySchema)` to create a new message.
  */
 export const RequestHistorySchema: GenMessage<RequestHistory> = /*@__PURE__*/
-  messageDesc(file_messages, 35);
+  messageDesc(file_messages, 41);
 
 /**
  * @generated from message holdfast.v0.HistoryChunk
@@ -1410,7 +1608,7 @@ export type HistoryChunk = Message<"holdfast.v0.HistoryChunk"> & {
  * Use `create(HistoryChunkSchema)` to create a new message.
  */
 export const HistoryChunkSchema: GenMessage<HistoryChunk> = /*@__PURE__*/
-  messageDesc(file_messages, 36);
+  messageDesc(file_messages, 42);
 
 /**
  * @generated from message holdfast.v0.HistoryEnd
@@ -1427,7 +1625,7 @@ export type HistoryEnd = Message<"holdfast.v0.HistoryEnd"> & {
  * Use `create(HistoryEndSchema)` to create a new message.
  */
 export const HistoryEndSchema: GenMessage<HistoryEnd> = /*@__PURE__*/
-  messageDesc(file_messages, 37);
+  messageDesc(file_messages, 43);
 
 /**
  * @generated from message holdfast.v0.ScreenSnapshot
@@ -1449,7 +1647,7 @@ export type ScreenSnapshot = Message<"holdfast.v0.ScreenSnapshot"> & {
  * Use `create(ScreenSnapshotSchema)` to create a new message.
  */
 export const ScreenSnapshotSchema: GenMessage<ScreenSnapshot> = /*@__PURE__*/
-  messageDesc(file_messages, 38);
+  messageDesc(file_messages, 44);
 
 /**
  * @generated from message holdfast.v0.ScreenDelta
@@ -1476,7 +1674,7 @@ export type ScreenDelta = Message<"holdfast.v0.ScreenDelta"> & {
  * Use `create(ScreenDeltaSchema)` to create a new message.
  */
 export const ScreenDeltaSchema: GenMessage<ScreenDelta> = /*@__PURE__*/
-  messageDesc(file_messages, 39);
+  messageDesc(file_messages, 45);
 
 /**
  * @generated from message holdfast.v0.AckScreenRevision
@@ -1493,7 +1691,7 @@ export type AckScreenRevision = Message<"holdfast.v0.AckScreenRevision"> & {
  * Use `create(AckScreenRevisionSchema)` to create a new message.
  */
 export const AckScreenRevisionSchema: GenMessage<AckScreenRevision> = /*@__PURE__*/
-  messageDesc(file_messages, 40);
+  messageDesc(file_messages, 46);
 
 /**
  * @generated from message holdfast.v0.Ping
@@ -1510,7 +1708,7 @@ export type Ping = Message<"holdfast.v0.Ping"> & {
  * Use `create(PingSchema)` to create a new message.
  */
 export const PingSchema: GenMessage<Ping> = /*@__PURE__*/
-  messageDesc(file_messages, 41);
+  messageDesc(file_messages, 47);
 
 /**
  * @generated from message holdfast.v0.Pong
@@ -1527,7 +1725,7 @@ export type Pong = Message<"holdfast.v0.Pong"> & {
  * Use `create(PongSchema)` to create a new message.
  */
 export const PongSchema: GenMessage<Pong> = /*@__PURE__*/
-  messageDesc(file_messages, 42);
+  messageDesc(file_messages, 48);
 
 /**
  * @generated from message holdfast.v0.Close
@@ -1549,7 +1747,7 @@ export type Close = Message<"holdfast.v0.Close"> & {
  * Use `create(CloseSchema)` to create a new message.
  */
 export const CloseSchema: GenMessage<Close> = /*@__PURE__*/
-  messageDesc(file_messages, 43);
+  messageDesc(file_messages, 49);
 
 /**
  * @generated from enum holdfast.v0.ClientKind
@@ -1760,6 +1958,16 @@ export enum ErrorCode {
    * @generated from enum value: ERR_INTERNAL = 14;
    */
   ERR_INTERNAL = 14,
+
+  /**
+   * @generated from enum value: ERR_INVALID_ARGUMENT = 15;
+   */
+  ERR_INVALID_ARGUMENT = 15,
+
+  /**
+   * @generated from enum value: ERR_CHECKSUM_MISMATCH = 16;
+   */
+  ERR_CHECKSUM_MISMATCH = 16,
 }
 
 /**

@@ -165,6 +165,33 @@ async fn main() -> anyhow::Result<()> {
                         .into(),
                 );
             }
+            "--upload-root" => {
+                config.upload_root = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--upload-root needs an absolute path"))?
+                        .into(),
+                );
+            }
+            "--upload-max-bytes" => {
+                config.upload_max_file_bytes = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--upload-max-bytes needs a byte count"))?
+                    .parse()?;
+            }
+            "--upload-retention-hours" => {
+                let hours: u64 = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--upload-retention-hours needs a value"))?
+                    .parse()?;
+                if hours == 0 {
+                    anyhow::bail!("--upload-retention-hours must be greater than zero");
+                }
+                config.upload_retention = std::time::Duration::from_secs(
+                    hours
+                        .checked_mul(60 * 60)
+                        .ok_or_else(|| anyhow::anyhow!("upload retention is too large"))?,
+                );
+            }
             "--shell-max-processes" => {
                 let value: u64 = args
                     .next()

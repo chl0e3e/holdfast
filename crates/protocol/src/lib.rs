@@ -7,6 +7,7 @@
 pub mod framing;
 pub mod ids;
 pub mod negotiate;
+pub mod upload;
 
 /// Generated protobuf types for `holdfast.v0`.
 pub mod pb {
@@ -15,7 +16,19 @@ pub mod pb {
 
 /// Protocol version implemented by this crate (spec §4).
 pub const PROTOCOL_MAJOR: u32 = 0;
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
+
+/// File transfer was added as an optional capability in protocol minor 2.
+pub const FILE_TRANSFER_PROTOCOL_MINOR: u32 = 2;
+/// Absolute per-chunk payload ceiling. A server selects a lower value when the
+/// negotiated frame limit cannot carry this payload plus protobuf overhead.
+pub const UPLOAD_CHUNK_BYTES_MAX: usize = 64 * 1024;
+pub const UPLOAD_FILE_BYTES_DEFAULT: u64 = 256 * 1024 * 1024;
+pub const UPLOAD_FILE_BYTES_HARD_MAX: u64 = 4 * 1024 * 1024 * 1024;
+pub const UPLOAD_ORIGINAL_NAME_BYTES_MAX: usize = 255;
+pub const UPLOAD_ID_BYTES: usize = 16;
+pub const UPLOAD_SHA256_BYTES: usize = 32;
+pub const UPLOAD_ABORT_REASON_BYTES_MAX: usize = 128;
 
 /// Absolute ceiling for a reliable frame payload (spec §3). Negotiated values
 /// may be lower, never higher.

@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use hf_daemon::wire;
 use hf_daemon::{Daemon, DaemonConfig};
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
-use hf_protocol::{FRAME_BYTES_DEFAULT, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use hf_protocol::{FRAME_BYTES_DEFAULT, PROTOCOL_MAJOR, PROTOCOL_MINOR, UPLOAD_FILE_BYTES_DEFAULT};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 const T: Duration = Duration::from_secs(10);
@@ -85,7 +85,7 @@ impl Client {
                 protocol_minor: PROTOCOL_MINOR,
                 client_kind: pb::ClientKind::BrowserWebsocket as i32,
                 client_build: "ws-test".into(),
-                capabilities: vec![],
+                capabilities: vec![pb::Capability::FileTransfer as i32],
                 max_frame_bytes: FRAME_BYTES_DEFAULT,
                 max_datagram_bytes: 0,
                 encodings: vec![pb::Encoding::Utf8 as i32],
@@ -330,6 +330,293 @@ async fn browser_reload_reattaches_two_shells_with_screen_and_scrollback() {
     }
 
     daemon.abort();
+}
+
+#[tokio::test]
+async fn websocket_upload_commits_and_abort_cleans_the_partial() {
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().unwrap();
+    let upload_root = temp.path().join("uploads");
+    let daemon = Daemon::start(DaemonConfig {
+        enable_websocket: true,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        upload_root: Some(upload_root.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let mut client = Client::connect(daemon.local_addr).await;
+    client.hello_and_auth().await;
+    let (shell_id, _) = client.open_shell(91).await;
+
+    // Reject an oversized declaration before creating an upload directory.
+    let mut oversized = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "too-large.bin".into(),
+        total_bytes: UPLOAD_FILE_BYTES_DEFAULT + 1,
+        sha256: vec![0; 32],
+    }));
+    oversized.shell_id = shell_id.clone();
+    client.send(3, oversized).await;
+    let declaration_error = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (3, Some(Msg::Error(error))) => Some(error.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        declaration_error.code,
+        pb::ErrorCode::ErrLimitExceeded as i32
+    );
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 0);
+
+    let content = b"file bytes over the reliable upload channel";
+    let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "../../demo payload.txt".into(),
+        total_bytes: content.len() as u64,
+        sha256: Sha256::digest(content).to_vec(),
+    }));
+    begin.shell_id = shell_id.clone();
+    client.send(5, begin).await;
+    let accepted = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (5, Some(Msg::UploadAccepted(accepted))) => Some(accepted.clone()),
+            (5, Some(Msg::Error(error))) => panic!("upload rejected: {error:?}"),
+            _ => None,
+        })
+        .await;
+    assert!(accepted.maximum_chunk_bytes > 0);
+    client
+        .send(
+            5,
+            plain(Msg::UploadChunk(pb::UploadChunk {
+                upload_id: accepted.upload_id.clone(),
+                offset: 0,
+                data: content.to_vec(),
+            })),
+        )
+        .await;
+    client
+        .send(
+            5,
+            plain(Msg::FinishUpload(pb::FinishUpload {
+                upload_id: accepted.upload_id,
+            })),
+        )
+        .await;
+    let finished = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (5, Some(Msg::UploadFinished(finished))) => Some(finished.clone()),
+            (5, Some(Msg::Error(error))) => panic!("upload failed: {error:?}"),
+            _ => None,
+        })
+        .await;
+    assert_eq!(std::fs::read(&finished.remote_path).unwrap(), content);
+    assert_eq!(finished.bytes_written, content.len() as u64);
+    assert_eq!(finished.sha256, Sha256::digest(content).as_slice());
+    assert!(finished.remote_path.ends_with("demo_payload.txt"));
+
+    let partial = b"will be cancelled";
+    let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "cancel.txt".into(),
+        total_bytes: partial.len() as u64,
+        sha256: Sha256::digest(partial).to_vec(),
+    }));
+    begin.shell_id = shell_id.clone();
+    client.send(7, begin).await;
+    let accepted = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (7, Some(Msg::UploadAccepted(accepted))) => Some(accepted.clone()),
+            _ => None,
+        })
+        .await;
+    client
+        .send(
+            7,
+            plain(Msg::AbortUpload(pb::AbortUpload {
+                upload_id: accepted.upload_id,
+                reason: "test cancellation".into(),
+            })),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 1);
+
+    // A chunk larger than the server-selected bound is rejected by the
+    // upload actor before any of its bytes reach the partial file.
+    let too_large_chunk = vec![0x5a; hf_protocol::UPLOAD_CHUNK_BYTES_MAX + 1];
+    let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "oversized-chunk.bin".into(),
+        total_bytes: too_large_chunk.len() as u64,
+        sha256: Sha256::digest(&too_large_chunk).to_vec(),
+    }));
+    begin.shell_id = shell_id.clone();
+    client.send(8, begin).await;
+    let accepted = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (8, Some(Msg::UploadAccepted(accepted))) => Some(accepted.clone()),
+            _ => None,
+        })
+        .await;
+    assert!(too_large_chunk.len() > accepted.maximum_chunk_bytes as usize);
+    client
+        .send(
+            8,
+            plain(Msg::UploadChunk(pb::UploadChunk {
+                upload_id: accepted.upload_id,
+                offset: 0,
+                data: too_large_chunk,
+            })),
+        )
+        .await;
+    let chunk_error = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (8, Some(Msg::Error(error))) => Some(error.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(chunk_error.code, pb::ErrorCode::ErrInvalidArgument as i32);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 1);
+
+    // The connection bound is two live upload actors. A third declaration is
+    // rejected without opening another destination; abort releases both.
+    let mut live_uploads = Vec::new();
+    for channel in [9, 11] {
+        let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+            original_name: format!("pending-{channel}.bin"),
+            total_bytes: 1,
+            sha256: Sha256::digest([channel as u8]).to_vec(),
+        }));
+        begin.shell_id = shell_id.clone();
+        client.send(channel, begin).await;
+        let accepted = client
+            .recv_until(
+                |reply_channel, envelope| match (reply_channel, &envelope.message) {
+                    (c, Some(Msg::UploadAccepted(accepted))) if c == channel => {
+                        Some(accepted.clone())
+                    }
+                    _ => None,
+                },
+            )
+            .await;
+        live_uploads.push((channel, accepted.upload_id));
+    }
+    let mut third = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "third.bin".into(),
+        total_bytes: 1,
+        sha256: Sha256::digest([13u8]).to_vec(),
+    }));
+    third.shell_id = shell_id.clone();
+    client.send(13, third).await;
+    let concurrency_error = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (13, Some(Msg::Error(error))) => Some(error.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        concurrency_error.code,
+        pb::ErrorCode::ErrLimitExceeded as i32
+    );
+    for (channel, upload_id) in live_uploads {
+        client
+            .send(
+                channel,
+                plain(Msg::AbortUpload(pb::AbortUpload {
+                    upload_id,
+                    reason: "test cleanup".into(),
+                })),
+            )
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 1);
+
+    // Losing the transport drops the bounded sender and removes its partial.
+    let mut disconnect = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "disconnect.bin".into(),
+        total_bytes: 1,
+        sha256: Sha256::digest([1u8]).to_vec(),
+    }));
+    disconnect.shell_id = shell_id;
+    client.send(15, disconnect).await;
+    client
+        .recv_until(|channel, envelope| {
+            matches!(
+                (channel, &envelope.message),
+                (15, Some(Msg::UploadAccepted(_)))
+            )
+            .then_some(())
+        })
+        .await;
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 1);
+    let metrics = daemon.metrics();
+    assert_eq!(metrics.uploads_completed, 1);
+    assert_eq!(metrics.uploads_cancelled, 4);
+    assert_eq!(metrics.uploads_failed, 1);
+    assert_eq!(metrics.uploads_rejected, 2);
+    assert_eq!(metrics.uploads_active, 0);
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn upload_capability_stays_disabled_without_an_explicit_root() {
+    use sha2::{Digest, Sha256};
+
+    let daemon = Daemon::start(DaemonConfig {
+        enable_websocket: true,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let mut client = Client::connect(daemon.local_addr).await;
+    client.hello_and_auth().await;
+    let (shell_id, _) = client.open_shell(92).await;
+    let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "disabled.txt".into(),
+        total_bytes: 0,
+        sha256: Sha256::digest([]).to_vec(),
+    }));
+    begin.shell_id = shell_id;
+    client.send(5, begin).await;
+    let error = client
+        .recv_until(|channel, envelope| match (channel, &envelope.message) {
+            (5, Some(Msg::Error(error))) => Some(error.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(error.code, pb::ErrorCode::ErrUnknownMessage as i32);
+    assert_eq!(daemon.metrics().uploads_active, 0);
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn upload_root_symlink_is_rejected_without_chmodding_its_target() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = temp.path().join("upload-link");
+    symlink(&target, &link).unwrap();
+    let result = Daemon::start(DaemonConfig {
+        enable_websocket: true,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        webtransport_bind: None,
+        upload_root: Some(link),
+        ..Default::default()
+    })
+    .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
 }
 
 #[tokio::test]

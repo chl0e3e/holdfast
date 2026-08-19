@@ -26,6 +26,7 @@ hf-auth = { path = "../auth" }
 rand.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
+sha2.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 wtransport.workspace = true
@@ -46,7 +47,6 @@ h3 = { workspace = true, features = ["i-implement-a-third-party-backend-and-opt-
 http.workspace = true
 msquic = { version = "2.5.1-beta", default-features = false, features = ["find"] }
 msquic-async = { path = "../../vendor/msquic-async-schannel", default-features = false, features = ["msquic-2-5", "tokio"] }
-sha2.workspace = true
 windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography"] }
 
 [dev-dependencies]

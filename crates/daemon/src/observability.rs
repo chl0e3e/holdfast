@@ -34,6 +34,13 @@ pub enum ShellOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadOutcome {
+    Cancelled,
+    TimedOut,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
     RateLimited,
     Forbidden,
@@ -93,6 +100,29 @@ pub enum AuditEvent {
         shell_id: ShellId,
         exit_code: u32,
     },
+    UploadStarted {
+        user: String,
+        shell_id: ShellId,
+        original_name: String,
+        bytes: u64,
+    },
+    UploadCompleted {
+        user: String,
+        shell_id: ShellId,
+        stored_basename: String,
+        bytes: u64,
+        duration_ms: u64,
+    },
+    UploadEnded {
+        user: String,
+        shell_id: ShellId,
+        outcome: UploadOutcome,
+    },
+    UploadRejected {
+        user: String,
+        shell_id: Option<ShellId>,
+        reason: RejectReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +146,13 @@ pub struct MetricsSnapshot {
     pub limit_hits: u64,
     pub token_replays_detected: u64,
     pub shells_expired: u64,
+    pub uploads_active: u64,
+    pub uploads_completed: u64,
+    pub uploads_cancelled: u64,
+    pub uploads_timed_out: u64,
+    pub uploads_failed: u64,
+    pub uploads_rejected: u64,
+    pub upload_bytes_completed: u64,
 }
 
 #[derive(Default)]
@@ -132,6 +169,13 @@ struct Counters {
     limit_hits: AtomicU64,
     token_replays_detected: AtomicU64,
     shells_expired: AtomicU64,
+    uploads_active: AtomicU64,
+    uploads_completed: AtomicU64,
+    uploads_cancelled: AtomicU64,
+    uploads_timed_out: AtomicU64,
+    uploads_failed: AtomicU64,
+    uploads_rejected: AtomicU64,
+    upload_bytes_completed: AtomicU64,
 }
 
 struct AuditRing {
@@ -211,6 +255,13 @@ impl Observability {
             limit_hits: c.limit_hits.load(Ordering::Relaxed),
             token_replays_detected: c.token_replays_detected.load(Ordering::Relaxed),
             shells_expired: c.shells_expired.load(Ordering::Relaxed),
+            uploads_active: c.uploads_active.load(Ordering::Relaxed),
+            uploads_completed: c.uploads_completed.load(Ordering::Relaxed),
+            uploads_cancelled: c.uploads_cancelled.load(Ordering::Relaxed),
+            uploads_timed_out: c.uploads_timed_out.load(Ordering::Relaxed),
+            uploads_failed: c.uploads_failed.load(Ordering::Relaxed),
+            uploads_rejected: c.uploads_rejected.load(Ordering::Relaxed),
+            upload_bytes_completed: c.upload_bytes_completed.load(Ordering::Relaxed),
         }
     }
 
@@ -254,6 +305,38 @@ impl Observability {
             }
             AuditEvent::ShellExpired { .. } => {
                 c.shells_expired.fetch_add(1, Ordering::Relaxed);
+            }
+            AuditEvent::UploadStarted { .. } => {
+                c.uploads_active.fetch_add(1, Ordering::Relaxed);
+            }
+            AuditEvent::UploadCompleted { bytes, .. } => {
+                let _ =
+                    c.uploads_active
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                            Some(active.saturating_sub(1))
+                        });
+                c.uploads_completed.fetch_add(1, Ordering::Relaxed);
+                c.upload_bytes_completed
+                    .fetch_add(*bytes, Ordering::Relaxed);
+            }
+            AuditEvent::UploadEnded { outcome, .. } => {
+                let _ =
+                    c.uploads_active
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                            Some(active.saturating_sub(1))
+                        });
+                match outcome {
+                    UploadOutcome::Cancelled => &c.uploads_cancelled,
+                    UploadOutcome::TimedOut => &c.uploads_timed_out,
+                    UploadOutcome::Failed => &c.uploads_failed,
+                }
+                .fetch_add(1, Ordering::Relaxed);
+            }
+            AuditEvent::UploadRejected { reason, .. } => {
+                c.uploads_rejected.fetch_add(1, Ordering::Relaxed);
+                if *reason == RejectReason::LimitExceeded {
+                    c.limit_hits.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -317,6 +400,48 @@ fn sanitize_event(event: AuditEvent) -> AuditEvent {
             user: safe_metadata(&user),
             shell_id,
             exit_code,
+        },
+        AuditEvent::UploadStarted {
+            user,
+            shell_id,
+            original_name,
+            bytes,
+        } => AuditEvent::UploadStarted {
+            user: safe_metadata(&user),
+            shell_id,
+            original_name: safe_metadata(&original_name),
+            bytes,
+        },
+        AuditEvent::UploadCompleted {
+            user,
+            shell_id,
+            stored_basename,
+            bytes,
+            duration_ms,
+        } => AuditEvent::UploadCompleted {
+            user: safe_metadata(&user),
+            shell_id,
+            stored_basename: safe_metadata(&stored_basename),
+            bytes,
+            duration_ms,
+        },
+        AuditEvent::UploadEnded {
+            user,
+            shell_id,
+            outcome,
+        } => AuditEvent::UploadEnded {
+            user: safe_metadata(&user),
+            shell_id,
+            outcome,
+        },
+        AuditEvent::UploadRejected {
+            user,
+            shell_id,
+            reason,
+        } => AuditEvent::UploadRejected {
+            user: safe_metadata(&user),
+            shell_id,
+            reason,
         },
         failed @ AuditEvent::AuthenticationFailed { .. } => failed,
     }
@@ -385,11 +510,27 @@ mod tests {
             operation: ShellOperation::Open,
             reason: RejectReason::LimitExceeded,
         });
+        obs.record(AuditEvent::UploadStarted {
+            user: "alice".into(),
+            shell_id: ShellId([4; 16]),
+            original_name: "payload\nforged".into(),
+            bytes: 12,
+        });
+        obs.record(AuditEvent::UploadCompleted {
+            user: "alice".into(),
+            shell_id: ShellId([4; 16]),
+            stored_basename: "payload.txt".into(),
+            bytes: 12,
+            duration_ms: 5,
+        });
         let metrics = obs.metrics();
         assert_eq!(metrics.authentication_failed, 1);
         assert_eq!(metrics.authentication_rate_limited, 1);
         assert_eq!(metrics.shell_operations_rejected, 1);
         assert_eq!(metrics.limit_hits, 1);
+        assert_eq!(metrics.uploads_active, 0);
+        assert_eq!(metrics.uploads_completed, 1);
+        assert_eq!(metrics.upload_bytes_completed, 12);
         assert!(
             obs.audit_events().is_empty(),
             "capacity zero disables retention"
@@ -413,5 +554,17 @@ mod tests {
         ] {
             assert!(!rendered.contains(forbidden));
         }
+
+        let upload = AuditEvent::UploadCompleted {
+            user: "alice".into(),
+            shell_id: ShellId([5; 16]),
+            stored_basename: "safe.txt".into(),
+            bytes: 9,
+            duration_ms: 3,
+        };
+        let rendered = format!("{upload:?}");
+        assert!(!rendered.contains("remote_path"));
+        assert!(!rendered.contains("local_path"));
+        assert!(!rendered.contains("sha256"));
     }
 }

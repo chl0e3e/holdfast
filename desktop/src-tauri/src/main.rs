@@ -39,6 +39,8 @@ fn main() {
                         CoreEvent::ShellState { .. } => "shell-state",
                         CoreEvent::ShellsUpdated { .. } => "shells-updated",
                         CoreEvent::StoreWarning { .. } => "store-warning",
+                        CoreEvent::ServerCapabilities { .. } => "server-capabilities",
+                        CoreEvent::UploadProgress { .. } => "upload-progress",
                     };
                     let _ = handle.emit(name, &event);
                 }
@@ -59,6 +61,8 @@ fn main() {
             commands::request_history,
             commands::forget_shell,
             commands::rename_shell,
+            commands::pick_and_upload,
+            commands::cancel_upload,
             commands::open_external,
             dockerwm::open_in_dockerwm,
         ])

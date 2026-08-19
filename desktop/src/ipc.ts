@@ -19,6 +19,7 @@ export type ServerView = {
    *  frontend subscribed (e.g. auth-required right after launch). */
   status?: ServerStatus;
   statusDetail?: string;
+  fileUploads: boolean;
 };
 export type BootstrapView = { servers: ServerView[] };
 
@@ -50,6 +51,24 @@ export type ShellsUpdatedEvent = {
   shells: ShellRow[];
 };
 export type StoreWarningEvent = { type: "storeWarning"; message: string };
+export type ServerCapabilitiesEvent = {
+  type: "serverCapabilities";
+  server: string;
+  fileUploads: boolean;
+};
+export type UploadProgressEvent = {
+  type: "uploadProgress";
+  server: string;
+  shell: string;
+  phase: "hashing" | "uploading";
+  bytes: number;
+  totalBytes: number;
+};
+export type UploadReply = {
+  remotePath: string;
+  bytesWritten: number;
+  sha256: string;
+};
 
 export type AttachReply = {
   oldestHistoryLineId: number;
@@ -110,6 +129,13 @@ export const ipc = {
   renameShell: (server: string, shell: string, name: string) =>
     invoke<void>("rename_shell", { server, shell, name }),
 
+  /** Rust opens the native picker; no local path or bytes cross this API. */
+  pickAndUpload: (server: string, shell: string) =>
+    invoke<UploadReply | null>("pick_and_upload", { server, shell }),
+
+  cancelUpload: (server: string, shell: string) =>
+    invoke<void>("cancel_upload", { server, shell }),
+
   /** Open an http(s) URL in the OS default browser (scheme re-validated in
    *  Rust — hostile terminal output must not reach other scheme handlers). */
   openExternal: (url: string) => invoke<void>("open_external", { url }),
@@ -124,6 +150,8 @@ export type Events = {
   shellState: (event: ShellStateEvent) => void;
   shellsUpdated: (event: ShellsUpdatedEvent) => void;
   storeWarning: (event: StoreWarningEvent) => void;
+  serverCapabilities: (event: ServerCapabilitiesEvent) => void;
+  uploadProgress: (event: UploadProgressEvent) => void;
 };
 
 export async function subscribe(handlers: Events): Promise<UnlistenFn[]> {
@@ -132,5 +160,8 @@ export async function subscribe(handlers: Events): Promise<UnlistenFn[]> {
     listen<ShellStateEvent>("shell-state", (e) => handlers.shellState(e.payload)),
     listen<ShellsUpdatedEvent>("shells-updated", (e) => handlers.shellsUpdated(e.payload)),
     listen<StoreWarningEvent>("store-warning", (e) => handlers.storeWarning(e.payload)),
+    listen<ServerCapabilitiesEvent>("server-capabilities", (e) =>
+      handlers.serverCapabilities(e.payload)),
+    listen<UploadProgressEvent>("upload-progress", (e) => handlers.uploadProgress(e.payload)),
   ]);
 }

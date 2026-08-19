@@ -14,11 +14,15 @@ use hf_auth::ConnectionGrant;
 use hf_protocol::ids::ShellId;
 use hf_protocol::negotiate::{negotiate_server, server_hello, Negotiated};
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
-use hf_protocol::FRAME_BYTES_DEFAULT;
+use hf_protocol::{FRAME_BYTES_DEFAULT, UPLOAD_ABORT_REASON_BYTES_MAX};
 use hf_session_core::{AttachmentEvent, OpenShellRequest, ResumeToken, SessionError, ShellState};
 
 use crate::auth::AuthMode;
-use crate::observability::{AuditEvent, AuthMethod, RejectReason, ShellOperation};
+use crate::observability::{AuditEvent, AuthMethod, RejectReason, ShellOperation, UploadOutcome};
+use crate::uploads::{
+    ActiveUpload, UploadError, UploadPermit, MAX_UPLOADS_PER_CONNECTION,
+    UPLOAD_COMMAND_QUEUE_MESSAGES, UPLOAD_INACTIVITY_TIMEOUT,
+};
 use crate::AppState;
 
 pub(crate) const KEEPALIVE_INTERVAL_MS: u32 = 15_000;
@@ -52,12 +56,25 @@ pub(crate) struct Conn {
     transport_datagrams: bool,
     /// channel_id → attachment binding.
     attachments: HashMap<u64, Binding>,
+    /// channel_id → bounded command sender for one upload actor.
+    uploads: HashMap<u64, UploadBinding>,
     out: tokio::sync::mpsc::Sender<(u64, Envelope)>,
 }
 
 struct Binding {
     shell_id: ShellId,
     attachment_id: u64,
+}
+
+struct UploadBinding {
+    upload_id: Vec<u8>,
+    commands: tokio::sync::mpsc::Sender<UploadCommand>,
+}
+
+enum UploadCommand {
+    Chunk(pb::UploadChunk),
+    Finish(Vec<u8>),
+    Abort,
 }
 
 impl Conn {
@@ -79,6 +96,7 @@ impl Conn {
             pending_challenge: None,
             transport_datagrams,
             attachments: HashMap::new(),
+            uploads: HashMap::new(),
             out,
         }
     }
@@ -100,6 +118,7 @@ impl Conn {
 
     /// The transport saw a channel/stream close: drop its attachment, if any.
     pub(crate) fn channel_closed(&mut self, channel: u64) {
+        self.uploads.remove(&channel);
         if let Some(binding) = self.attachments.remove(&channel) {
             let _ = self
                 .state
@@ -115,6 +134,7 @@ impl Conn {
     /// Connection gone (reload, network loss, close): detach everything;
     /// shells keep running (spec §11).
     pub(crate) fn detach_all(&mut self) {
+        self.uploads.clear();
         for (_, binding) in self.attachments.drain() {
             let _ = self
                 .state
@@ -366,6 +386,12 @@ impl Conn {
 
     /// Returns false when the connection must close.
     pub(crate) async fn dispatch(&mut self, channel: u64, envelope: Envelope) -> bool {
+        // Upload actors own disk I/O and can terminate independently after a
+        // malformed chunk, timeout, or transport write failure. Closed
+        // bounded senders are no longer live channel bindings and must not
+        // consume the per-connection limit or accept later messages.
+        self.uploads
+            .retain(|_, binding| !binding.commands.is_closed());
         let request_id = envelope.request_id;
         let Some(message) = envelope.message.clone() else {
             return self
@@ -410,7 +436,11 @@ impl Conn {
             (0, Msg::ClientHello(hello)) => {
                 match negotiate_server(
                     &hello,
-                    &[],
+                    if self.state.uploads.is_some() {
+                        &[pb::Capability::FileTransfer]
+                    } else {
+                        &[]
+                    },
                     FRAME_BYTES_DEFAULT,
                     1200,
                     self.transport_datagrams,
@@ -698,6 +728,97 @@ impl Conn {
                     }
                 }
             }
+            // ---- Upload channels (client-opened, reliable, minor 2+) ----
+            (ch, Msg::BeginUpload(begin)) if ch != 0 => {
+                self.begin_upload(ch, &envelope, begin).await
+            }
+            (ch, Msg::UploadChunk(chunk)) if ch != 0 => {
+                let Some(binding) = self.uploads.get(&ch) else {
+                    return self
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrInvalidArgument,
+                                "no upload on channel",
+                                false,
+                            ),
+                        )
+                        .await;
+                };
+                if chunk.upload_id != binding.upload_id {
+                    return self
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrInvalidArgument,
+                                "upload id mismatch",
+                                false,
+                            ),
+                        )
+                        .await;
+                }
+                binding
+                    .commands
+                    .send(UploadCommand::Chunk(chunk))
+                    .await
+                    .is_ok()
+            }
+            (ch, Msg::FinishUpload(finish)) if ch != 0 => {
+                let Some(binding) = self.uploads.remove(&ch) else {
+                    return self
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrInvalidArgument,
+                                "no upload on channel",
+                                false,
+                            ),
+                        )
+                        .await;
+                };
+                if finish.upload_id != binding.upload_id {
+                    return self
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrInvalidArgument,
+                                "upload id mismatch",
+                                false,
+                            ),
+                        )
+                        .await;
+                }
+                binding
+                    .commands
+                    .send(UploadCommand::Finish(finish.upload_id))
+                    .await
+                    .is_ok()
+            }
+            (ch, Msg::AbortUpload(abort)) if ch != 0 => {
+                let Some(binding) = self.uploads.remove(&ch) else {
+                    return true;
+                };
+                if abort.reason.len() > UPLOAD_ABORT_REASON_BYTES_MAX
+                    || abort.upload_id != binding.upload_id
+                {
+                    return self
+                        .send(
+                            ch,
+                            error_envelope(
+                                request_id,
+                                pb::ErrorCode::ErrInvalidArgument,
+                                "invalid upload abort",
+                                false,
+                            ),
+                        )
+                        .await;
+                }
+                binding.commands.send(UploadCommand::Abort).await.is_ok()
+            }
             // ---- Attachment channels (client-opened, odd IDs) ----
             (ch, Msg::AttachShell(attach)) if ch != 0 => self.attach(ch, &envelope, attach).await,
             (ch, Msg::TerminalInput(input)) if ch != 0 => {
@@ -797,6 +918,202 @@ impl Conn {
                 .await
             }
         }
+    }
+
+    async fn begin_upload(
+        &mut self,
+        channel: u64,
+        envelope: &Envelope,
+        begin: pb::BeginUpload,
+    ) -> bool {
+        let request_id = envelope.request_id;
+        let capability_enabled = self.negotiated.as_ref().is_some_and(|negotiated| {
+            negotiated
+                .capabilities
+                .contains(&pb::Capability::FileTransfer)
+        });
+        let Some(service) = self.state.uploads.as_ref().cloned() else {
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnknownMessage,
+                        "file transfer is disabled",
+                        false,
+                    ),
+                )
+                .await;
+        };
+        if !capability_enabled {
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrUnknownMessage,
+                        "file transfer was not negotiated",
+                        false,
+                    ),
+                )
+                .await;
+        }
+        if !self.permits("upload") {
+            self.record_upload_rejected(None, RejectReason::Forbidden);
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrForbidden,
+                        "grant does not permit upload",
+                        false,
+                    ),
+                )
+                .await;
+        }
+        if request_id == 0
+            || self.attachments.contains_key(&channel)
+            || self.uploads.contains_key(&channel)
+        {
+            self.record_upload_rejected(None, RejectReason::InvalidRequest);
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrInvalidArgument,
+                        "invalid or reused upload channel",
+                        false,
+                    ),
+                )
+                .await;
+        }
+        let Ok(shell_id) = ShellId::from_wire(&envelope.shell_id) else {
+            self.record_upload_rejected(None, RejectReason::Forbidden);
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrForbidden,
+                        "upload denied",
+                        false,
+                    ),
+                )
+                .await;
+        };
+        let shell = match self.state.manager.shell_info(&shell_id) {
+            Ok(info) if info.owner == self.user_id && info.state == ShellState::Running => info,
+            _ => {
+                self.record_upload_rejected(Some(shell_id), RejectReason::Forbidden);
+                return self
+                    .send(
+                        channel,
+                        error_envelope(
+                            request_id,
+                            pb::ErrorCode::ErrForbidden,
+                            "upload denied",
+                            false,
+                        ),
+                    )
+                    .await;
+            }
+        };
+        if self.uploads.len() >= MAX_UPLOADS_PER_CONNECTION {
+            self.record_upload_rejected(Some(shell_id), RejectReason::LimitExceeded);
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        request_id,
+                        pb::ErrorCode::ErrLimitExceeded,
+                        "too many uploads on this connection",
+                        true,
+                    ),
+                )
+                .await;
+        }
+        let permit = match service.try_acquire(&self.user_id) {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.record_upload_rejected(Some(shell_id), RejectReason::LimitExceeded);
+                return self
+                    .send(channel, upload_error_envelope(request_id, &error))
+                    .await;
+            }
+        };
+
+        // Reserve generous protobuf/envelope headroom under even the smallest
+        // negotiated frame. The store/helper enforces this selected value too.
+        let maximum_chunk_bytes = self
+            .max_frame_bytes()
+            .saturating_sub(512)
+            .min(hf_protocol::UPLOAD_CHUNK_BYTES_MAX as u32);
+        let account = shell.account.clone();
+        let begin_for_backend = begin.clone();
+        let backend_service = Arc::clone(&service);
+        let active = tokio::task::spawn_blocking(move || {
+            backend_service.begin(account.as_deref(), &begin_for_backend, maximum_chunk_bytes)
+        })
+        .await
+        .unwrap_or_else(|error| Err(UploadError::Worker(error.to_string())));
+        let active = match active {
+            Ok(active) => active,
+            Err(error) => {
+                self.record_upload_rejected(Some(shell_id), upload_reject_reason(&error));
+                return self
+                    .send(channel, upload_error_envelope(request_id, &error))
+                    .await;
+            }
+        };
+        let upload_id = active.upload_id();
+        let selected_chunk_bytes = active.maximum_chunk_bytes();
+        let (commands, receiver) =
+            tokio::sync::mpsc::channel::<UploadCommand>(UPLOAD_COMMAND_QUEUE_MESSAGES);
+        self.uploads.insert(
+            channel,
+            UploadBinding {
+                upload_id: upload_id.clone(),
+                commands,
+            },
+        );
+        self.state.observability.record(AuditEvent::UploadStarted {
+            user: self.user_id.clone(),
+            shell_id,
+            original_name: begin.original_name,
+            bytes: begin.total_bytes,
+        });
+        tokio::spawn(run_upload(
+            active,
+            permit,
+            receiver,
+            self.out.clone(),
+            Arc::clone(&self.state),
+            channel,
+            request_id,
+            self.user_id.clone(),
+            shell_id,
+        ));
+
+        let mut response = respond(
+            request_id,
+            Msg::UploadAccepted(pb::UploadAccepted {
+                upload_id,
+                maximum_chunk_bytes: selected_chunk_bytes,
+            }),
+        );
+        response.server_id = self.state.server_id.to_wire();
+        response.shell_id = shell_id.to_wire();
+        self.send(channel, response).await
+    }
+
+    fn record_upload_rejected(&self, shell_id: Option<ShellId>, reason: RejectReason) {
+        self.state.observability.record(AuditEvent::UploadRejected {
+            user: self.user_id.clone(),
+            shell_id,
+            reason,
+        });
     }
 
     async fn attach(&mut self, channel: u64, envelope: &Envelope, attach: pb::AttachShell) -> bool {
@@ -968,6 +1285,192 @@ impl Conn {
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_upload(
+    mut active: ActiveUpload,
+    _permit: UploadPermit,
+    mut commands: tokio::sync::mpsc::Receiver<UploadCommand>,
+    out: tokio::sync::mpsc::Sender<(u64, Envelope)>,
+    state: Arc<AppState>,
+    channel: u64,
+    request_id: u64,
+    user: String,
+    shell_id: ShellId,
+) {
+    let started = Instant::now();
+    loop {
+        let command = match tokio::time::timeout(UPLOAD_INACTIVITY_TIMEOUT, commands.recv()).await {
+            Ok(None) | Ok(Some(UploadCommand::Abort)) => {
+                state.observability.record(AuditEvent::UploadEnded {
+                    user,
+                    shell_id,
+                    outcome: UploadOutcome::Cancelled,
+                });
+                return;
+            }
+            Ok(Some(command)) => command,
+            Err(_) => {
+                state.observability.record(AuditEvent::UploadEnded {
+                    user,
+                    shell_id,
+                    outcome: UploadOutcome::TimedOut,
+                });
+                let _ = out
+                    .send((
+                        channel,
+                        error_envelope(
+                            request_id,
+                            pb::ErrorCode::ErrTooSlow,
+                            "upload timed out waiting for data",
+                            true,
+                        ),
+                    ))
+                    .await;
+                return;
+            }
+        };
+
+        match command {
+            UploadCommand::Chunk(chunk) => {
+                let joined = tokio::task::spawn_blocking(move || {
+                    let result = active.write_chunk(&chunk);
+                    (active, result)
+                })
+                .await;
+                match joined {
+                    Ok((returned, Ok(()))) => active = returned,
+                    Ok((_returned, Err(error))) => {
+                        fail_active_upload(
+                            &out, &state, channel, request_id, &user, shell_id, &error,
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(error) => {
+                        let error = UploadError::Worker(error.to_string());
+                        fail_active_upload(
+                            &out, &state, channel, request_id, &user, shell_id, &error,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+            UploadCommand::Finish(upload_id) => {
+                let joined = tokio::task::spawn_blocking(move || active.finish(&upload_id)).await;
+                match joined {
+                    Ok(Ok(finished)) => {
+                        let stored_basename = std::path::Path::new(&finished.remote_path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("upload")
+                            .to_string();
+                        state.observability.record(AuditEvent::UploadCompleted {
+                            user,
+                            shell_id,
+                            stored_basename,
+                            bytes: finished.bytes_written,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                        });
+                        let mut response = respond(
+                            request_id,
+                            Msg::UploadFinished(pb::UploadFinished {
+                                upload_id: finished.upload_id.to_vec(),
+                                remote_path: finished.remote_path,
+                                bytes_written: finished.bytes_written,
+                                sha256: finished.sha256.to_vec(),
+                            }),
+                        );
+                        response.server_id = state.server_id.to_wire();
+                        response.shell_id = shell_id.to_wire();
+                        let _ = out.send((channel, response)).await;
+                    }
+                    Ok(Err(error)) => {
+                        fail_active_upload(
+                            &out, &state, channel, request_id, &user, shell_id, &error,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let error = UploadError::Worker(error.to_string());
+                        fail_active_upload(
+                            &out, &state, channel, request_id, &user, shell_id, &error,
+                        )
+                        .await;
+                    }
+                }
+                return;
+            }
+            UploadCommand::Abort => unreachable!("handled above"),
+        }
+    }
+}
+
+async fn fail_active_upload(
+    out: &tokio::sync::mpsc::Sender<(u64, Envelope)>,
+    state: &AppState,
+    channel: u64,
+    request_id: u64,
+    user: &str,
+    shell_id: ShellId,
+    error: &UploadError,
+) {
+    state.observability.record(AuditEvent::UploadEnded {
+        user: user.to_string(),
+        shell_id,
+        outcome: UploadOutcome::Failed,
+    });
+    let _ = out
+        .send((channel, upload_error_envelope(request_id, error)))
+        .await;
+}
+
+fn upload_reject_reason(error: &UploadError) -> RejectReason {
+    match error {
+        UploadError::LimitExceeded => RejectReason::LimitExceeded,
+        UploadError::Validation(_)
+        | UploadError::Store(hf_upload_store::StoreError::InvalidUpload(_)) => {
+            RejectReason::InvalidRequest
+        }
+        UploadError::Spawner(hf_spawner::SpawnError::Forbidden(_))
+        | UploadError::MissingAccount => RejectReason::Forbidden,
+        UploadError::Store(_)
+        | UploadError::Spawner(_)
+        | UploadError::MalformedBackendResponse
+        | UploadError::NonUtf8Path
+        | UploadError::Worker(_) => RejectReason::Internal,
+    }
+}
+
+fn upload_error_envelope(request_id: u64, error: &UploadError) -> Envelope {
+    let (code, retryable) = match error {
+        UploadError::LimitExceeded
+        | UploadError::Validation(hf_protocol::upload::UploadValidationError::FileTooLarge {
+            ..
+        })
+        | UploadError::Store(hf_upload_store::StoreError::InvalidUpload(
+            hf_protocol::upload::UploadValidationError::FileTooLarge { .. },
+        )) => (pb::ErrorCode::ErrLimitExceeded, false),
+        UploadError::Store(hf_upload_store::StoreError::ChecksumMismatch) => {
+            (pb::ErrorCode::ErrChecksumMismatch, false)
+        }
+        UploadError::Validation(_)
+        | UploadError::Store(hf_upload_store::StoreError::InvalidUpload(_))
+        | UploadError::Store(hf_upload_store::StoreError::LengthMismatch { .. })
+        | UploadError::Store(hf_upload_store::StoreError::InvalidChunkLimit)
+        | UploadError::MissingAccount => (pb::ErrorCode::ErrInvalidArgument, false),
+        UploadError::Spawner(hf_spawner::SpawnError::Forbidden(_)) => {
+            (pb::ErrorCode::ErrForbidden, false)
+        }
+        UploadError::Store(_)
+        | UploadError::Spawner(_)
+        | UploadError::MalformedBackendResponse
+        | UploadError::NonUtf8Path
+        | UploadError::Worker(_) => (pb::ErrorCode::ErrInternal, true),
+    };
+    error_envelope(request_id, code, &error.to_string(), retryable)
 }
 
 fn reject_reason(error: &SessionError) -> RejectReason {

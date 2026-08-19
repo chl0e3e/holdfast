@@ -1,10 +1,10 @@
 # Holdfast protocol specification
 
 ```text
-Protocol version: 0.1 (draft)
-Status: Phase 0 draft — normative once Phase 1 begins; every change to this
-        document must ship with the matching change to messages.proto
-Last updated: 2026-07-18
+Protocol version: 0.2 (draft)
+Status: Normative; every wire change to this document must ship with the
+        matching change to messages.proto
+Last updated: 2026-08-19
 ```
 
 This protocol is transport-independent. It runs over any transport that provides
@@ -76,6 +76,9 @@ gateway enforces its own per-user limits (§8) regardless of transport limits.
 - **Attachment stream** — one bidirectional stream per attached shell, opened by
   the client, beginning with `AttachShell`. Carries that shell's input, output,
   resize and history messages.
+- **Upload stream** — one bidirectional stream per file upload, opened by the
+  client, beginning with `BeginUpload`. Carries only that upload's messages and
+  is available only when `FILE_TRANSFER` was negotiated.
 - **Datagrams (optional)** — screen snapshots/deltas and revision acks only
   (§7). Never input, never authentication, never history.
 
@@ -92,7 +95,7 @@ payload : one protobuf-encoded Envelope message
 - `MAX_FRAME_BYTES` is negotiated (§4); the protocol ceiling is 1 MiB, the
   default is 256 KiB. A receiver MUST reject a frame whose length exceeds the
   negotiated maximum *before allocating* the payload buffer, then close the
-  stream (attachment streams) or connection (control channel) with
+  stream (attachment or upload streams) or connection (control channel) with
   `ERR_FRAME_TOO_LARGE`.
 - Datagrams carry a single protobuf `DatagramEnvelope` with no length prefix
   (the transport delimits them). Maximum datagram size is negotiated and must
@@ -109,7 +112,7 @@ The first frame in each direction on the control channel:
 
 ```text
 client -> ClientHello {
-    protocol_major = 0, protocol_minor = 1
+    protocol_major = 0, protocol_minor = 2
     client_kind    (BROWSER_WEBTRANSPORT | BROWSER_WEBSOCKET | NATIVE_QUIC | ADAPTER)
     client_build   (informational string)
     capabilities   (repeated enum: DATAGRAMS, CLIPBOARD, FILE_TRANSFER, ...)
@@ -131,6 +134,8 @@ Rules:
   minor version.
 - A capability is enabled only if both sides listed it. Datagram capability is
   additionally disabled if the transport reports datagrams Unsupported.
+- `FILE_TRANSFER` requires selected minor 2. A minor-1 peer advertising the
+  reserved enum value does not enable file transfer.
 - Anything after `ServerHello` and before a successful `Authenticate` exchange
   other than `Authenticate`, `Ping`, `Pong`, `Close` is rejected with
   `ERR_UNAUTHENTICATED`.
@@ -198,6 +203,10 @@ All messages ride in `Envelope`. Requests carry a client-chosen `request_id`
 | RequestHistory / HistoryChunk / HistoryEnd | attachment stream | c→s / s→c | §10 |
 | ScreenSnapshot / ScreenDelta | datagram (or attachment stream if no datagrams) | s→c | §7 |
 | AckScreenRevision | datagram (or attachment stream) | c→s | §7 |
+| BeginUpload / UploadAccepted | upload stream | c→s / s→c | §6.1; first exchange |
+| UploadChunk | upload stream | c→s | §6.1; reliable, ordered bytes |
+| FinishUpload / UploadFinished | upload stream | c→s / s→c | §6.1; commit exchange |
+| AbortUpload | upload stream | c→s | §6.1; removes the partial |
 | Ping / Pong | any | both | keepalive, RTT estimate |
 | Error | any | both | code, message, echoed request_id |
 | Close | control | both | code, reason; last message |
@@ -218,6 +227,65 @@ AttachShell   { server_id, shell_id, resume_token, cols, rows,
 ShellAttached { screen_snapshot, screen_revision, rotated_resume_token,
                 oldest_history_line_id, newest_history_line_id }
 ```
+
+### 6.1 Shell-scoped temporary file upload (minor 2)
+
+File upload is an optional, reliable-stream capability. It is disabled unless
+`CAPABILITY_FILE_TRANSFER` was negotiated. Each upload uses a new client-opened
+bidirectional channel whose first frame is:
+
+```text
+Envelope {
+    request_id: nonzero and unique
+    server_id: selected server (empty only for a standalone daemon)
+    shell_id: exactly 16 bytes
+    begin_upload: BeginUpload {
+        original_name: UTF-8 display name, at most 255 encoded bytes
+        total_bytes: declared final length
+        sha256: exactly 32 bytes
+    }
+}
+```
+
+The server first verifies the authenticated user, the `upload` grant operation,
+and ownership of a running shell. A forbidden shell and an unknown shell are
+both reported as `ERR_FORBIDDEN`. The server chooses the destination; the
+client-supplied name is never a path. If accepted, it echoes `request_id` and
+returns `UploadAccepted { upload_id, maximum_chunk_bytes }`, where `upload_id`
+is exactly 16 random bytes and the selected chunk bound is no more than 64 KiB
+and must fit in the negotiated frame limit including envelope overhead.
+
+The client then sends contiguous chunks:
+
+```text
+UploadChunk { upload_id, offset, data }
+```
+
+The ID must match, `offset` must equal the number of previously accepted bytes,
+`data` must be non-empty and no larger than `maximum_chunk_bytes`, and accepting
+it must not exceed `total_bytes`. The server validates all of those conditions
+before writing the chunk. `request_id` is zero on chunks.
+
+After sending exactly `total_bytes`, the client sends
+`FinishUpload { upload_id }` with the original nonzero `request_id`. The server
+commits only if the streamed SHA-256 matches the declaration, then replies with:
+
+```text
+UploadFinished { upload_id, remote_path, bytes_written, sha256 }
+```
+
+`remote_path` is an absolute, server-selected path. It is not returned before a
+successful commit. A checksum mismatch is `ERR_CHECKSUM_MISMATCH`; malformed
+IDs, offsets, names, lengths, or message ordering are `ERR_INVALID_ARGUMENT`;
+configured size or concurrency bounds use `ERR_LIMIT_EXCEEDED`. These errors
+close only the upload channel and remove its uncommitted partial. Closing the
+channel or sending a matching `AbortUpload` has the same cleanup semantics.
+`AbortUpload.reason` is at most 128 UTF-8 bytes and is diagnostic intent only.
+
+Upload messages are invalid on the control or attachment channel. Attachment,
+terminal, history and datagram messages are invalid on an upload channel. File
+contents never enter terminal input/output, scrollback, or control-plane
+messages. Upload forwarding over `AgentEnvelope` is not defined in minor 2.
 
 ## 7. Screen synchronization
 
@@ -265,6 +333,10 @@ max_shells_per_user            16
 max_attachments_per_shell      4       (multi-client attach is an open question;
                                         v0 allows it, revisit in docs/decisions)
 max_concurrent_streams/user    64
+max_concurrent_uploads         2 per connection, 4 per user, 16 per daemon
+upload file                    256 MiB default, 4 GiB hard ceiling
+upload chunk                   64 KiB ceiling (server may select lower)
+upload inactivity              30 s between accepted chunks
 max_inflight_history_requests  2 per attachment
 input queue                    256 KiB or 1024 messages
 output queue                   1 MiB per attachment
@@ -325,6 +397,15 @@ Attachment:
 authorizing → synchronizing → live → { detached | closed }
 ```
 
+Upload:
+
+```text
+authorizing → accepted → streaming → verifying → { committed | aborted }
+```
+
+Any error, timeout or channel/connection loss before `committed` removes the
+partial. An upload never changes shell lifecycle or attachment state.
+
 - In `synchronizing` the server sends the coherent screen snapshot + revision;
   client input received before `live` is buffered up to 4 KiB, beyond which it
   is rejected with `ERR_NOT_READY`.
@@ -352,7 +433,8 @@ authorizing → synchronizing → live → { detached | closed }
 ERR_VERSION, ERR_UNAUTHENTICATED, ERR_FORBIDDEN, ERR_NOT_FOUND,
 ERR_FRAME_TOO_LARGE, ERR_UNKNOWN_MESSAGE, ERR_INPUT_OVERFLOW, ERR_TOO_SLOW,
 ERR_NOT_READY, ERR_TOKEN_EXPIRED, ERR_TOKEN_REPLAYED, ERR_LIMIT_EXCEEDED,
-ERR_SERVER_UNAVAILABLE, ERR_INTERNAL
+ERR_SERVER_UNAVAILABLE, ERR_INTERNAL, ERR_INVALID_ARGUMENT,
+ERR_CHECKSUM_MISMATCH
 ```
 
 `Close { code, reason }` terminates the session; the server sends it before
@@ -373,6 +455,9 @@ pongs → the server treats the session as dead, detaches its attachments
 - All IDs (`server_id`, `shell_id`, token IDs) are opaque 128-bit values,
   rendered as lowercase hex with a type prefix in logs/UI (`srv_…`, `sh_…`).
   Authorization keys are these opaque IDs, never display names.
+- Upload implementations validate declared size, name length, digest length,
+  ID length and chunk length before filesystem creation or allocation. They
+  stream and hash incrementally; they never buffer a whole file.
 
 ## 16. Managed-server agent link (overlay extension)
 

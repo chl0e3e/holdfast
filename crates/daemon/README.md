@@ -25,6 +25,52 @@ cargo run -p hf-daemon -- \
 The configured key must be mode 0600 or stricter. Renewed files take effect
 after restarting the daemon.
 
+## Temporary file uploads
+
+Uploads are off by default. Enable them on a standalone daemon with an
+absolute root:
+
+```bash
+holdfastd \
+  --upload-root /var/lib/holdfast/uploads \
+  --upload-max-bytes 268435456 \
+  --upload-retention-hours 24 \
+  # ...the normal bind, TLS and authentication options
+```
+
+The daemon creates private `0700` per-upload directories and `0600` files,
+streams no more than 64 KiB at a time, checks the declared length and SHA-256,
+and returns a path only after commit. The default file limit is 256 MiB, with a
+hard 4 GiB ceiling. Limits are 2 active uploads per connection, 4 per user and
+16 per daemon; inactive and disconnected uploads are aborted after 30 seconds.
+Committed files are temporary and the bounded in-process reaper removes them
+after the configured retention period.
+
+Privilege-dropped multi-user deployments must configure the same upload root
+on both `holdfastd` and `holdfast-spawner`, and install the tmpfiles rule:
+
+```bash
+sudo install -Dm644 deploy/tmpfiles.d/holdfast-uploads.conf \
+  /etc/tmpfiles.d/holdfast-uploads.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/holdfast-uploads.conf
+```
+
+The spawner repeats peer/account authorization and changes ownership only
+after verification. The network daemon does not gain `CAP_CHOWN`. Remove the
+`--upload-root` argument (from both services in multi-user mode) to disable the
+capability. Gateway/agent forwarding and browser uploads are intentionally not
+implemented in this release.
+
+Reproduce the upload gates with:
+
+```bash
+cargo test -p hf-upload-store --locked
+cargo test -p hf-spawner --locked
+cargo test -p hf-daemon --test ws --test webtransport --test auth --locked
+cargo test -p hf-native-client --test client --locked
+cargo test -p hf-client-core --locked
+```
+
 The optional administration overlay enables an outbound-only agent runtime. It
 starts no inbound HTTP/WebSocket/WebTransport listener:
 

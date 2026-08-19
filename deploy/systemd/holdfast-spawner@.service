@@ -29,9 +29,11 @@ Slice=holdfast.slice
 
 # Enough to become the target account, and to signal a shell that now runs
 # under a different uid (without CAP_KILL, terminating one fails with EPERM —
-# being its parent is not sufficient). The launcher clears the inheritable and
-# ambient sets before exec, so none of this reaches the shell.
-AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
+# being its parent is not sufficient). CAP_CHOWN is used only after a complete,
+# hash-verified upload, to transfer its private 0600 file and 0700 directory to
+# the same allowlisted account. The launcher clears the inheritable and ambient
+# sets before exec, so none of this reaches the shell.
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN
 
 # CRITICAL: do NOT set CapabilityBoundingSet= or NoNewPrivileges= here. This
 # process's bounding set is the one the shell inherits, and the whole purpose of
@@ -48,6 +50,7 @@ StandardError=journal
 
 ExecStart=/usr/local/bin/holdfast-spawner \
     --peer-user holdfast \
+    --upload-root /tmp/holdfast-uploads \
     --allow-account alice \
     --allow-account bob
 

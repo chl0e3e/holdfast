@@ -10,7 +10,7 @@
 //! cannot be used on Windows.
 
 use base64::Engine as _;
-use hf_client_core::{AttachInfo, BootstrapView, HistoryPage, ServerConfig};
+use hf_client_core::{AttachInfo, BootstrapView, HistoryPage, ServerConfig, UploadReply};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
@@ -158,7 +158,11 @@ pub async fn resize_shell(
 }
 
 #[tauri::command]
-pub async fn detach_shell(state: State<'_, AppState>, server: String, shell: String) -> CmdResult<()> {
+pub async fn detach_shell(
+    state: State<'_, AppState>,
+    server: String,
+    shell: String,
+) -> CmdResult<()> {
     state.core.detach_shell(&server, &shell).await.map_err(err)
 }
 
@@ -191,7 +195,11 @@ pub async fn request_history(
 }
 
 #[tauri::command]
-pub async fn forget_shell(state: State<'_, AppState>, server: String, shell: String) -> CmdResult<()> {
+pub async fn forget_shell(
+    state: State<'_, AppState>,
+    server: String,
+    shell: String,
+) -> CmdResult<()> {
     state.core.forget_shell(&server, &shell).await.map_err(err)
 }
 
@@ -207,6 +215,53 @@ pub async fn rename_shell(
         .rename_shell(&server, &shell, &name)
         .await
         .map_err(err)
+}
+
+/// Open the OS picker on the Rust side, retain its path here, and stream the
+/// selected handle through client-core. There is deliberately no `path`
+/// command argument: a compromised webview cannot nominate arbitrary files.
+#[tauri::command]
+pub async fn pick_and_upload(
+    state: State<'_, AppState>,
+    server: String,
+    shell: String,
+) -> CmdResult<Option<UploadReply>> {
+    #[cfg(not(windows))]
+    {
+        let _ = (state, server, shell);
+        return Err(
+            "the native upload picker is currently available in the Windows desktop client".into(),
+        );
+    }
+    #[cfg(windows)]
+    let selected = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Upload file to shell")
+            .pick_file()
+    })
+    .await
+    .map_err(err)?;
+    #[cfg(windows)]
+    let Some(path) = selected
+    else {
+        return Ok(None);
+    };
+    #[cfg(windows)]
+    state
+        .core
+        .upload_file(&server, &shell, path)
+        .await
+        .map(Some)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn cancel_upload(
+    state: State<'_, AppState>,
+    server: String,
+    shell: String,
+) -> CmdResult<()> {
+    state.core.cancel_upload(&server, &shell).await.map_err(err)
 }
 
 /// Open an http(s) URL in the OS default browser (terminal link popover).

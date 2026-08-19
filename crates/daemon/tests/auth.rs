@@ -10,6 +10,7 @@ use hf_daemon::observability::AuditEvent;
 use hf_daemon::{wire, AuthConfig, Daemon, DaemonConfig};
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use hf_protocol::{FRAME_BYTES_DEFAULT, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use sha2::Digest;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -63,7 +64,7 @@ async fn connect(daemon: &Daemon) -> Ws {
             protocol_minor: PROTOCOL_MINOR,
             client_kind: pb::ClientKind::BrowserWebsocket as i32,
             client_build: "auth-test".into(),
-            capabilities: vec![],
+            capabilities: vec![pb::Capability::FileTransfer as i32],
             max_frame_bytes: FRAME_BYTES_DEFAULT,
             max_datagram_bytes: 0,
             encodings: vec![pb::Encoding::Utf8 as i32],
@@ -434,11 +435,13 @@ async fn users_cannot_see_or_terminate_each_others_shells() {
         "bob".to_string(),
         format!("{}\n", bob_key.public_key().to_openssh().unwrap()),
     );
+    let temp = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(DaemonConfig {
         enable_websocket: true,
         bind: "127.0.0.1:0".parse().unwrap(),
         webtransport_bind: None,
         auth: AuthConfig::SshKeys { users },
+        upload_root: Some(temp.path().join("uploads")),
         ..Default::default()
     })
     .await
@@ -459,6 +462,22 @@ async fn users_cannot_see_or_terminate_each_others_shells() {
     // Bob authenticates on his own connection.
     let mut bob = connect(&daemon).await;
     assert!(ssh_authenticate(&mut bob, "bob", &bob_key).await.ok);
+
+    // Upload authorization is shell-scoped too. A valid declaration must not
+    // reveal whether the copied shell id belongs to another user.
+    let mut upload = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "probe.txt".into(),
+        total_bytes: 0,
+        sha256: sha2::Sha256::digest([]).to_vec(),
+    }));
+    upload.shell_id = alice_shell.clone();
+    send_on(&mut bob, 3, upload).await;
+    let upload_reply = recv(&mut bob).await;
+    assert!(
+        matches!(&upload_reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrForbidden as i32),
+        "bob uploading to alice's shell must be ErrForbidden, got {:?}",
+        upload_reply.message
+    );
 
     // Bob's ListShells must not reveal Alice's shell.
     send(&mut bob, plain(Msg::ListShells(pb::ListShells {}))).await;
@@ -532,6 +551,7 @@ async fn scoped_grant_ops_are_enforced() {
     // Pin the grant signing key so the test can mint a scoped grant the daemon
     // will accept. Empty SSH user set: we authenticate purely via the grant.
     let grant_key = [7u8; 32];
+    let temp = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(DaemonConfig {
         enable_websocket: true,
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -540,6 +560,7 @@ async fn scoped_grant_ops_are_enforced() {
             users: BTreeMap::new(),
         },
         grant_signing_key: Some(grant_key),
+        upload_root: Some(temp.path().join("uploads")),
         ..Default::default()
     })
     .await
@@ -598,6 +619,20 @@ async fn scoped_grant_ops_are_enforced() {
         matches!(&term_reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrForbidden as i32),
         "terminate must be forbidden for a list-only grant, got {:?}",
         term_reply.message
+    );
+
+    let mut upload = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "forbidden.txt".into(),
+        total_bytes: 0,
+        sha256: sha2::Sha256::digest([]).to_vec(),
+    }));
+    upload.shell_id = vec![8u8; 16];
+    send_on(&mut ws, 3, upload).await;
+    let upload_reply = recv(&mut ws).await;
+    assert!(
+        matches!(&upload_reply.message, Some(Msg::Error(e)) if e.code == pb::ErrorCode::ErrForbidden as i32),
+        "upload must be forbidden for a list-only grant, got {:?}",
+        upload_reply.message
     );
 
     daemon.abort();

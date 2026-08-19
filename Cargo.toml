@@ -15,6 +15,7 @@ exclude = [
 ]
 members = [
     "crates/protocol",
+    "crates/upload-store",
     "crates/daemon",
     "crates/transport",
     "crates/terminal-model",
@@ -39,7 +40,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.0.4"
+version = "0.0.5"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
@@ -61,7 +62,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 portable-pty = "0.9"
-nix = { version = "0.31", features = ["process", "signal", "term"] }
+nix = { version = "0.31", features = ["fs", "process", "signal", "term"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 rustls-pki-types = "1"

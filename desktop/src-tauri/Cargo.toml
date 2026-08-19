@@ -8,7 +8,7 @@
 [package]
 name = "hf-desktop"
 description = "Holdfast desktop client: multi-shell, multi-server tabbed terminals (Tauri 2 + xterm.js)."
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
@@ -26,6 +26,11 @@ anyhow = "1"
 base64 = "0.22"
 # Default-browser launcher for the link popover's open_external command.
 open = "5"
+
+[target.'cfg(windows)'.dependencies]
+# Native Windows picker used only from Rust. The webview never receives or
+# supplies a local path, and file bytes stay in hf-client-core/native-client.
+rfd = "0.15"
 
 [profile.release]
 lto = "thin"

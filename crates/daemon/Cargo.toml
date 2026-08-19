@@ -21,6 +21,8 @@ agent-mode = ["dep:hf-agent", "dep:rustls-pemfile"]
 [dependencies]
 hf-protocol = { path = "../protocol" }
 hf-session-core = { path = "../session-core" }
+hf-spawner = { path = "../spawner" }
+hf-upload-store = { path = "../upload-store" }
 hf-agent = { path = "../agent", optional = true }
 axum.workspace = true
 h3.workspace = true
@@ -62,3 +64,4 @@ hf-gateway = { path = "../gateway" }
 rcgen.workspace = true
 ssh-key = { version = "0.6", features = ["ed25519", "std", "getrandom"] }
 base64.workspace = true
+tempfile = "3"

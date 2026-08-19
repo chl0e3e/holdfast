@@ -43,7 +43,7 @@ import { InsertedTextForwarder } from "./inserted-text.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 
 const PROTOCOL_MAJOR = 0;
-const PROTOCOL_MINOR = 1;
+const PROTOCOL_MINOR = 2;
 const STORAGE_KEY = "holdfast.shells.v1";
 const GRANT_KEY = "holdfast.grant.v1";
 const HISTORY_PAGE_LINES = 200;

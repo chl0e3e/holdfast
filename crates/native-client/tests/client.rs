@@ -8,7 +8,9 @@
 use std::time::Duration;
 
 use hf_daemon::{Daemon, DaemonConfig};
-use hf_native_client::{connect, AttachError, ShellEvent};
+use hf_native_client::{
+    connect, upload_file, AttachError, ShellEvent, UploadCancellation, UploadPhase,
+};
 use hf_protocol::pb;
 
 async fn wait_output(shell: &mut hf_native_client::AttachedShell, needle: &str) {
@@ -109,6 +111,95 @@ async fn list_open_attach_detach_and_network_transition_resume() {
 }
 
 #[tokio::test]
+async fn upload_streams_a_file_and_cancellation_removes_the_partial() {
+    use sha2::{Digest, Sha256};
+
+    let temp = std::env::temp_dir().join(format!(
+        "hf-native-upload-test-{:032x}",
+        rand::random::<u128>()
+    ));
+    let upload_root = temp.join("remote");
+    std::fs::create_dir_all(&temp).unwrap();
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        upload_root: Some(upload_root.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let url = format!("http://{}", daemon.local_addr);
+    let mut conn = connect(&url).await.unwrap();
+    assert!(conn
+        .hello
+        .capabilities
+        .contains(&(pb::Capability::FileTransfer as i32)));
+    let (shell_id, _) = conn
+        .open_shell(Some("bash"), 40, 6, rand::random())
+        .await
+        .unwrap();
+
+    let content = (0..(hf_protocol::UPLOAD_CHUNK_BYTES_MAX * 2 + 17))
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let source = temp.join("native payload.bin");
+    std::fs::write(&source, &content).unwrap();
+    let symlink = temp.join("source-link.bin");
+    std::os::unix::fs::symlink(&source, &symlink).unwrap();
+    let symlink_error = upload_file(
+        &conn.connection,
+        &shell_id,
+        &symlink,
+        UploadCancellation::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("native source symlinks must be refused");
+    assert!(symlink_error.to_string().contains("non-symlink regular file"));
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 0);
+    let mut progress_events = Vec::new();
+    let result = upload_file(
+        &conn.connection,
+        &shell_id,
+        &source,
+        UploadCancellation::default(),
+        |progress| progress_events.push(progress),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&result.remote_path).unwrap(), content);
+    assert_eq!(result.bytes_written, content.len() as u64);
+    assert_eq!(result.sha256, Sha256::digest(&content).as_slice());
+    assert!(progress_events
+        .iter()
+        .any(|progress| progress.phase == UploadPhase::Hashing));
+    assert_eq!(progress_events.last().unwrap().bytes, content.len() as u64);
+
+    let cancelled_source = temp.join("cancel.bin");
+    std::fs::write(&cancelled_source, vec![0x7a; 256 * 1024]).unwrap();
+    let cancellation = UploadCancellation::default();
+    let trigger = cancellation.clone();
+    let error = upload_file(
+        &conn.connection,
+        &shell_id,
+        &cancelled_source,
+        cancellation,
+        move |progress| {
+            if progress.phase == UploadPhase::Uploading && progress.bytes > 0 {
+                trigger.cancel();
+            }
+        },
+    )
+    .await
+    .expect_err("cancelled upload must fail without hidden resumption");
+    assert!(error.to_string().contains("cancelled"));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read_dir(&upload_root).unwrap().count(), 1);
+
+    daemon.abort();
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[tokio::test]
 async fn stale_token_fails_and_reports_cleanly() {
     let daemon = Daemon::start(DaemonConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -179,11 +270,11 @@ async fn lost_token_recovers_via_idempotency_key_with_scrollback_intact() {
 
     // …but re-opening with the same idempotency key returns the SAME shell
     // with a fresh token (spec §9), and everything is still there.
-    let (recovered_id, fresh_token) = conn
-        .open_shell(None, 40, 6, idempotency_key)
-        .await
-        .unwrap();
-    assert_eq!(recovered_id, shell_id, "same key must return the same shell");
+    let (recovered_id, fresh_token) = conn.open_shell(None, 40, 6, idempotency_key).await.unwrap();
+    assert_eq!(
+        recovered_id, shell_id,
+        "same key must return the same shell"
+    );
     let mut shell = conn
         .attach(&shell_id, &fresh_token, 40, 6)
         .await

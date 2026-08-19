@@ -45,6 +45,12 @@ message Envelope {
     Ping ping = 35;
     Pong pong = 36;
     Close close = 37;
+    BeginUpload begin_upload = 38;
+    UploadAccepted upload_accepted = 39;
+    UploadChunk upload_chunk = 40;
+    FinishUpload finish_upload = 41;
+    UploadFinished upload_finished = 42;
+    AbortUpload abort_upload = 43;
   }
 }
 
@@ -189,6 +195,8 @@ enum ErrorCode {
   ERR_LIMIT_EXCEEDED = 12;
   ERR_SERVER_UNAVAILABLE = 13;
   ERR_INTERNAL = 14;
+  ERR_INVALID_ARGUMENT = 15;
+  ERR_CHECKSUM_MISMATCH = 16;
 }
 
 message ClientHello {
@@ -222,6 +230,41 @@ message TerminalOutput {
 message TerminalResize {
   uint32 cols = 1;
   uint32 rows = 2;
+}
+
+// File uploads (spec §6.1) use a dedicated reliable channel and are available
+// only when CAPABILITY_FILE_TRANSFER is negotiated at protocol minor 2+.
+message BeginUpload {
+  string original_name = 1; // display metadata; never a destination path
+  uint64 total_bytes = 2;
+  bytes sha256 = 3; // exactly 32 bytes
+}
+
+message UploadAccepted {
+  bytes upload_id = 1; // exactly 16 random bytes, selected by the server
+  uint32 maximum_chunk_bytes = 2;
+}
+
+message UploadChunk {
+  bytes upload_id = 1;
+  uint64 offset = 2; // must equal the number of bytes already accepted
+  bytes data = 3;
+}
+
+message FinishUpload {
+  bytes upload_id = 1;
+}
+
+message UploadFinished {
+  bytes upload_id = 1;
+  string remote_path = 2; // absolute server-selected path
+  uint64 bytes_written = 3;
+  bytes sha256 = 4;
+}
+
+message AbortUpload {
+  bytes upload_id = 1;
+  string reason = 2; // bounded diagnostic intent; not an error response
 }
 
 message Error {

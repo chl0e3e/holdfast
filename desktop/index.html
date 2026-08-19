@@ -26,6 +26,7 @@
       <div id="workspacebar">
         <nav id="tabs" aria-label="Servers and shells"></nav>
         <div id="shell-actions" class="button-row">
+          <button id="upload" title="Upload a local file to this shell's temporary directory" disabled>Upload</button>
           <button id="attachment-action" disabled>Detach</button>
           <button id="terminate" class="danger-button" title="Terminate: kill the shell" disabled>Terminate</button>
         </div>
@@ -72,6 +73,20 @@
         <menu>
           <button type="button" id="login-cancel">Cancel</button>
           <button class="primary-button" value="default">Log in</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="upload-finished-dialog">
+      <form method="dialog">
+        <p class="eyebrow">Upload complete</p>
+        <h2>File ready on the server</h2>
+        <label><span>Remote path</span><input id="upload-remote-path" readonly /></label>
+        <p class="hint">The file is private to the shell's Unix account and will be removed by the temporary-file retention policy.</p>
+        <menu>
+          <button id="upload-close" value="default">Close</button>
+          <button type="button" id="upload-copy">Copy path</button>
+          <button type="button" id="upload-insert" class="primary-button">Insert quoted path</button>
         </menu>
       </form>
     </dialog>

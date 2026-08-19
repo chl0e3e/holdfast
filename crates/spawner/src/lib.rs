@@ -57,6 +57,16 @@ use serde::{Deserialize, Serialize};
 /// short argv and small replies; anything larger is a bug or an attack, and is
 /// rejected rather than allocated for.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// JSON represents each byte as up to four characters (`255,`). Keeping the
+/// internal chunk at 8 KiB guarantees the complete seqpacket stays below
+/// `MAX_MESSAGE_BYTES` without a second allocation-sized trust assumption.
+pub const UPLOAD_CHUNK_BYTES_MAX: usize = 8 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InitialRequest {
+    SpawnShell(SpawnRequest),
+    ReceiveUpload(ReceiveUploadRequest),
+}
 
 /// Per-shell limits, mirrored on the wire so the spawner applies exactly what
 /// the daemon was configured with (`hf_launch::ShellResourceLimits` is not
@@ -103,6 +113,17 @@ pub struct SpawnRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiveUploadRequest {
+    pub account: String,
+    pub original_name: String,
+    pub total_bytes: u64,
+    pub sha256: Vec<u8>,
+    /// External connection-specific ceiling. The helper clamps this again to
+    /// its smaller JSON/seqpacket-safe bound.
+    pub maximum_chunk_bytes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpawnReply {
     /// Shell running as `pid`; the PTY master fd rides along in `SCM_RIGHTS`.
     Spawned { pid: u32 },
@@ -122,6 +143,39 @@ pub enum DaemonMsg {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpawnerMsg {
     Exited { success: bool, exit_code: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UploadDaemonMsg {
+    Chunk {
+        upload_id: Vec<u8>,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    Finish {
+        upload_id: Vec<u8>,
+    },
+    Abort {
+        upload_id: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UploadReply {
+    Ready {
+        upload_id: Vec<u8>,
+        maximum_chunk_bytes: u32,
+    },
+    Finished {
+        upload_id: Vec<u8>,
+        remote_path: String,
+        bytes_written: u64,
+        sha256: Vec<u8>,
+    },
+    Error {
+        message: String,
+        forbidden: bool,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,8 +209,8 @@ pub fn send_message<T: Serialize>(
     msg: &T,
     fd: Option<RawFd>,
 ) -> Result<(), SpawnError> {
-    let bytes = serde_json::to_vec(msg)
-        .map_err(|e| SpawnError::Protocol(format!("encode: {e}")))?;
+    let bytes =
+        serde_json::to_vec(msg).map_err(|e| SpawnError::Protocol(format!("encode: {e}")))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(SpawnError::Protocol(format!(
             "message of {} bytes exceeds the {MAX_MESSAGE_BYTES}-byte limit",
@@ -180,10 +234,9 @@ pub fn send_message<T: Serialize>(
 ///
 /// `Ok(None)` is a clean EOF (peer closed). `nonblocking` maps `EAGAIN` onto
 /// [`SpawnError::Protocol`]-free polling via [`recv_message_nonblocking`].
-fn recv_raw(
-    sock: RawFd,
-    flags: MsgFlags,
-) -> Result<Option<(Vec<u8>, Option<OwnedFd>)>, nix::Error> {
+type RawMessage = Option<(Vec<u8>, Option<OwnedFd>)>;
+
+fn recv_raw(sock: RawFd, flags: MsgFlags) -> Result<RawMessage, nix::Error> {
     let mut buf = vec![0u8; MAX_MESSAGE_BYTES];
     let mut iov = [IoSliceMut::new(&mut buf)];
     let mut cmsg = nix::cmsg_space!([RawFd; 1]);
@@ -272,26 +325,13 @@ pub fn spawn_shell(
     socket_path: &Path,
     req: &SpawnRequest,
 ) -> Result<(OwnedFd, RemoteShell), SpawnError> {
-    let sock = socket(
-        AddressFamily::Unix,
-        SockType::SeqPacket,
-        SockFlag::SOCK_CLOEXEC,
-        None,
-    )
-    .map_err(|e| SpawnError::Connect {
-        path: socket_path.display().to_string(),
-        source: std::io::Error::from(e),
-    })?;
-    let addr = UnixAddr::new(socket_path).map_err(|e| SpawnError::Connect {
-        path: socket_path.display().to_string(),
-        source: std::io::Error::from(e),
-    })?;
-    connect(sock.as_raw_fd(), &addr).map_err(|e| SpawnError::Connect {
-        path: socket_path.display().to_string(),
-        source: std::io::Error::from(e),
-    })?;
+    let sock = connect_spawner(socket_path)?;
 
-    send_message(sock.as_raw_fd(), req, None)?;
+    send_message(
+        sock.as_raw_fd(),
+        &InitialRequest::SpawnShell(req.clone()),
+        None,
+    )?;
 
     let (reply, fd): (SpawnReply, Option<OwnedFd>) = recv_message(sock.as_raw_fd())?
         .ok_or_else(|| SpawnError::Protocol("spawner closed before replying".into()))?;
@@ -318,6 +358,188 @@ pub fn spawn_shell(
     }
 }
 
+fn connect_spawner(socket_path: &Path) -> Result<OwnedFd, SpawnError> {
+    let sock = socket(
+        AddressFamily::Unix,
+        SockType::SeqPacket,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )
+    .map_err(|e| SpawnError::Connect {
+        path: socket_path.display().to_string(),
+        source: std::io::Error::from(e),
+    })?;
+    let addr = UnixAddr::new(socket_path).map_err(|e| SpawnError::Connect {
+        path: socket_path.display().to_string(),
+        source: std::io::Error::from(e),
+    })?;
+    connect(sock.as_raw_fd(), &addr).map_err(|e| SpawnError::Connect {
+        path: socket_path.display().to_string(),
+        source: std::io::Error::from(e),
+    })?;
+    Ok(sock)
+}
+
+/// Start one independently authorized, target-account upload operation.
+pub fn begin_upload(
+    socket_path: &Path,
+    request: &ReceiveUploadRequest,
+) -> Result<RemoteUpload, SpawnError> {
+    let sock = connect_spawner(socket_path)?;
+    send_message(
+        sock.as_raw_fd(),
+        &InitialRequest::ReceiveUpload(request.clone()),
+        None,
+    )?;
+    let (reply, fd): (UploadReply, Option<OwnedFd>) = recv_message(sock.as_raw_fd())?
+        .ok_or_else(|| SpawnError::Protocol("spawner closed before upload reply".into()))?;
+    if fd.is_some() {
+        return Err(SpawnError::Protocol(
+            "upload reply unexpectedly carried a descriptor".into(),
+        ));
+    }
+    match reply {
+        UploadReply::Ready {
+            upload_id,
+            maximum_chunk_bytes,
+        } => Ok(RemoteUpload {
+            sock: Some(sock),
+            upload_id,
+            maximum_chunk_bytes,
+            next_offset: 0,
+        }),
+        UploadReply::Error {
+            message,
+            forbidden: true,
+        } => Err(SpawnError::Forbidden(message)),
+        UploadReply::Error { message, .. } => Err(SpawnError::Spawner(message)),
+        UploadReply::Finished { .. } => Err(SpawnError::Protocol(
+            "spawner finished an upload before receiving bytes".into(),
+        )),
+    }
+}
+
+pub struct RemoteUpload {
+    sock: Option<OwnedFd>,
+    upload_id: Vec<u8>,
+    maximum_chunk_bytes: u32,
+    next_offset: u64,
+}
+
+impl RemoteUpload {
+    pub fn upload_id(&self) -> &[u8] {
+        &self.upload_id
+    }
+
+    pub fn maximum_chunk_bytes(&self) -> u32 {
+        self.maximum_chunk_bytes
+    }
+
+    pub fn write_chunk(&mut self, data: &[u8]) -> Result<(), SpawnError> {
+        let maximum = usize::try_from(self.maximum_chunk_bytes).unwrap_or(usize::MAX);
+        if data.is_empty() || data.len() > maximum || data.len() > UPLOAD_CHUNK_BYTES_MAX {
+            return Err(SpawnError::Protocol(format!(
+                "upload chunk of {} bytes is outside 1..={maximum}",
+                data.len()
+            )));
+        }
+        let sock = self
+            .sock
+            .as_ref()
+            .ok_or_else(|| SpawnError::Protocol("upload is already closed".into()))?;
+        send_message(
+            sock.as_raw_fd(),
+            &UploadDaemonMsg::Chunk {
+                upload_id: self.upload_id.clone(),
+                offset: self.next_offset,
+                data: data.to_vec(),
+            },
+            None,
+        )?;
+        self.next_offset = self
+            .next_offset
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| SpawnError::Protocol("upload offset overflow".into()))?;
+        Ok(())
+    }
+
+    pub fn write_wire_chunk(
+        &mut self,
+        chunk: &hf_protocol::pb::UploadChunk,
+    ) -> Result<(), SpawnError> {
+        if chunk.upload_id != self.upload_id {
+            return Err(SpawnError::Protocol(
+                "upload chunk carried the wrong id".into(),
+            ));
+        }
+        if chunk.offset != self.next_offset {
+            return Err(SpawnError::Protocol(format!(
+                "upload chunk offset {} does not match {}",
+                chunk.offset, self.next_offset
+            )));
+        }
+        self.write_chunk(&chunk.data)
+    }
+
+    pub fn finish(mut self) -> Result<UploadReply, SpawnError> {
+        let sock = self
+            .sock
+            .take()
+            .ok_or_else(|| SpawnError::Protocol("upload is already closed".into()))?;
+        send_message(
+            sock.as_raw_fd(),
+            &UploadDaemonMsg::Finish {
+                upload_id: self.upload_id.clone(),
+            },
+            None,
+        )?;
+        let (reply, fd): (UploadReply, Option<OwnedFd>) = recv_message(sock.as_raw_fd())?
+            .ok_or_else(|| SpawnError::Protocol("spawner closed before commit reply".into()))?;
+        if fd.is_some() {
+            return Err(SpawnError::Protocol(
+                "upload commit unexpectedly carried a descriptor".into(),
+            ));
+        }
+        match reply {
+            UploadReply::Finished { .. } => Ok(reply),
+            UploadReply::Error {
+                message,
+                forbidden: true,
+            } => Err(SpawnError::Forbidden(message)),
+            UploadReply::Error { message, .. } => Err(SpawnError::Spawner(message)),
+            UploadReply::Ready { .. } => Err(SpawnError::Protocol(
+                "spawner sent a second ready response".into(),
+            )),
+        }
+    }
+
+    pub fn abort(mut self) {
+        if let Some(sock) = self.sock.take() {
+            let _ = send_message(
+                sock.as_raw_fd(),
+                &UploadDaemonMsg::Abort {
+                    upload_id: self.upload_id.clone(),
+                },
+                None,
+            );
+        }
+    }
+}
+
+impl Drop for RemoteUpload {
+    fn drop(&mut self) {
+        if let Some(sock) = self.sock.take() {
+            let _ = send_message(
+                sock.as_raw_fd(),
+                &UploadDaemonMsg::Abort {
+                    upload_id: self.upload_id.clone(),
+                },
+                None,
+            );
+        }
+    }
+}
+
 /// The daemon's handle on a shell owned by the spawner.
 pub struct RemoteShell {
     sock: OwnedFd,
@@ -338,14 +560,8 @@ impl RemoteShell {
     }
 
     fn record(&mut self, msg: SpawnerMsg) -> ExitSummary {
-        let SpawnerMsg::Exited {
-            success,
-            exit_code,
-        } = msg;
-        let summary = ExitSummary {
-            success,
-            exit_code,
-        };
+        let SpawnerMsg::Exited { success, exit_code } = msg;
+        let summary = ExitSummary { success, exit_code };
         self.exit = Some(summary);
         summary
     }
@@ -432,7 +648,12 @@ mod tests {
         // assert the received fd is genuinely the same open file.
         let (a, b) = pair();
         let (r, w) = nix::unistd::pipe().unwrap();
-        send_message(a.as_raw_fd(), &SpawnReply::Spawned { pid: 42 }, Some(r.as_raw_fd())).unwrap();
+        send_message(
+            a.as_raw_fd(),
+            &SpawnReply::Spawned { pid: 42 },
+            Some(r.as_raw_fd()),
+        )
+        .unwrap();
         let (reply, fd): (SpawnReply, _) = recv_message(b.as_raw_fd()).unwrap().unwrap();
         assert_eq!(reply, SpawnReply::Spawned { pid: 42 });
         let received = fd.expect("fd should have been passed");
@@ -510,5 +731,29 @@ mod tests {
             send_message(a.as_raw_fd(), &req, None),
             Err(SpawnError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn worst_case_upload_chunk_stays_inside_the_seqpacket_bound() {
+        let (server, client) = pair();
+        let upload_id = vec![0x55; hf_protocol::UPLOAD_ID_BYTES];
+        let mut upload = RemoteUpload {
+            sock: Some(client),
+            upload_id: upload_id.clone(),
+            maximum_chunk_bytes: UPLOAD_CHUNK_BYTES_MAX as u32,
+            next_offset: 0,
+        };
+        upload
+            .write_chunk(&vec![u8::MAX; UPLOAD_CHUNK_BYTES_MAX])
+            .unwrap();
+        let (message, fd): (UploadDaemonMsg, Option<OwnedFd>) =
+            recv_message(server.as_raw_fd()).unwrap().unwrap();
+        assert!(fd.is_none());
+        assert!(matches!(
+            message,
+            UploadDaemonMsg::Chunk { offset: 0, data, .. }
+                if data.len() == UPLOAD_CHUNK_BYTES_MAX
+        ));
+        upload.sock.take();
     }
 }

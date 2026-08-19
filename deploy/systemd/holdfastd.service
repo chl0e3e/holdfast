@@ -32,6 +32,7 @@ ExecStart=/usr/local/bin/holdfastd \
     --wt-cert /etc/holdfast/tls/fullchain.pem \
     --wt-key /etc/holdfast/tls/privkey.pem \
     --web-root /var/lib/holdfast/web \
+    --upload-root /var/lib/holdfast/uploads \
     --ssh-auth admin /var/lib/holdfast/authorized_keys \
     --allowed-origin https://terminal.example.com \
     --grant-key /var/lib/holdfast/grant.key

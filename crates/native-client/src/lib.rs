@@ -20,7 +20,8 @@ use base64::Engine;
 use hf_protocol::framing::{encode_frame, FrameDecoder};
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use hf_protocol::{FRAME_BYTES_DEFAULT, PROTOCOL_MAJOR, PROTOCOL_MINOR};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use transport::{connect_webtransport, RecvStream, SendStream};
 // Re-exported so drivers built on [`ServerConn::into_parts`]/[`attach_shell`]
 // do not depend on a platform TLS/QUIC implementation.
@@ -28,6 +29,7 @@ pub use transport::Connection;
 
 const T: Duration = Duration::from_secs(10);
 const SSH_PRIVATE_KEY_MAX_BYTES: u64 = 64 * 1024;
+const UPLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 pub fn plain(message: Msg) -> Envelope {
     Envelope {
@@ -223,7 +225,7 @@ pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerCon
             protocol_minor: PROTOCOL_MINOR,
             client_kind: pb::ClientKind::NativeQuic as i32,
             client_build: format!("hf {}", env!("CARGO_PKG_VERSION")),
-            capabilities: vec![],
+            capabilities: vec![pb::Capability::FileTransfer as i32],
             max_frame_bytes: FRAME_BYTES_DEFAULT,
             max_datagram_bytes: 1200,
             encodings: vec![pb::Encoding::Utf8 as i32],
@@ -614,6 +616,251 @@ pub fn attach_failure_action(error: &AttachError, have_idempotency_key: bool) ->
             _ => FailureAction::ExitKeepToken,
         },
     }
+}
+
+/// Cooperative cancellation for one file upload. Clones refer to the same
+/// operation; cancellation closes its reliable channel after a best-effort
+/// `AbortUpload`, so the daemon removes the partial immediately.
+#[derive(Clone, Default)]
+pub struct UploadCancellation {
+    inner: std::sync::Arc<UploadCancellationInner>,
+}
+
+#[derive(Default)]
+struct UploadCancellationInner {
+    cancelled: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl UploadCancellation {
+    pub fn cancel(&self) {
+        self.inner
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.inner.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner
+            .cancelled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            let notified = self.inner.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadPhase {
+    Hashing,
+    Uploading,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadProgress {
+    pub phase: UploadPhase,
+    pub bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadResult {
+    pub remote_path: String,
+    pub bytes_written: u64,
+    pub sha256: [u8; hf_protocol::UPLOAD_SHA256_BYTES],
+}
+
+/// Stream one already-selected regular file to a running shell's temporary
+/// area. The file handle never leaves Rust. Memory remains bounded to one
+/// protocol chunk plus framing; hashing is a first streaming pass, followed
+/// by an upload pass from byte zero.
+pub async fn upload_file<F>(
+    connection: &Connection,
+    shell_id: &[u8],
+    local_path: &std::path::Path,
+    cancellation: UploadCancellation,
+    mut progress: F,
+) -> Result<UploadResult>
+where
+    F: FnMut(UploadProgress),
+{
+    let path_metadata = tokio::fs::symlink_metadata(local_path)
+        .await
+        .context("inspect selected upload source")?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        bail!("upload source must be a non-symlink regular file");
+    }
+    let mut file = tokio::fs::File::open(local_path)
+        .await
+        .context("open selected upload source")?;
+    let metadata = file.metadata().await.context("inspect upload source")?;
+    if !metadata.is_file() {
+        bail!("upload source must be a regular file");
+    }
+    let total_bytes = metadata.len();
+    if total_bytes > hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX {
+        bail!(
+            "upload source is {total_bytes} bytes; hard maximum is {}",
+            hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX
+        );
+    }
+    let original_name = local_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .context("upload source filename must be non-empty UTF-8")?
+        .to_string();
+
+    let mut buffer = vec![0u8; hf_protocol::UPLOAD_CHUNK_BYTES_MAX];
+    let mut hasher = Sha256::new();
+    let mut hashed = 0u64;
+    let mut last_progress = tokio::time::Instant::now() - UPLOAD_PROGRESS_INTERVAL;
+    loop {
+        let read = tokio::select! {
+            _ = cancellation.cancelled() => bail!("upload cancelled"),
+            read = file.read(&mut buffer) => read.context("read upload source")?,
+        };
+        if read == 0 {
+            break;
+        }
+        hashed = hashed
+            .checked_add(read as u64)
+            .context("upload source length overflow")?;
+        hasher.update(&buffer[..read]);
+        if last_progress.elapsed() >= UPLOAD_PROGRESS_INTERVAL {
+            progress(UploadProgress {
+                phase: UploadPhase::Hashing,
+                bytes: hashed,
+                total_bytes,
+            });
+            last_progress = tokio::time::Instant::now();
+        }
+    }
+    if hashed != total_bytes {
+        bail!("upload source changed while it was being hashed");
+    }
+    let digest: [u8; hf_protocol::UPLOAD_SHA256_BYTES] = hasher.finalize().into();
+    file.seek(std::io::SeekFrom::Start(0))
+        .await
+        .context("rewind upload source")?;
+
+    let begin = pb::BeginUpload {
+        original_name,
+        total_bytes,
+        sha256: digest.to_vec(),
+    };
+    hf_protocol::upload::validate_begin(&begin, hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX)?;
+    let mut chan = Chan::open(connection).await?;
+    let mut envelope = plain(Msg::BeginUpload(begin));
+    envelope.request_id = 1;
+    envelope.shell_id = shell_id.to_vec();
+    chan.send_env(envelope).await?;
+
+    let accepted = tokio::select! {
+        _ = cancellation.cancelled() => bail!("upload cancelled"),
+        reply = chan.recv_until(|env| match &env.message {
+            Some(Msg::UploadAccepted(accepted)) => Some(Ok(accepted.clone())),
+            Some(Msg::Error(error)) => Some(Err(anyhow!("upload rejected: {}", error.human_message))),
+            _ => None,
+        }) => reply??,
+    };
+    if accepted.upload_id.len() != hf_protocol::UPLOAD_ID_BYTES
+        || accepted.maximum_chunk_bytes == 0
+        || accepted.maximum_chunk_bytes as usize > hf_protocol::UPLOAD_CHUNK_BYTES_MAX
+    {
+        bail!("server selected invalid upload bounds");
+    }
+    buffer.resize(accepted.maximum_chunk_bytes as usize, 0);
+    let upload_id = accepted.upload_id;
+    let mut offset = 0u64;
+    last_progress = tokio::time::Instant::now() - UPLOAD_PROGRESS_INTERVAL;
+    while offset < total_bytes {
+        let read_limit = usize::try_from((total_bytes - offset).min(buffer.len() as u64))
+            .expect("read limit is bounded by the in-memory chunk");
+        let read = tokio::select! {
+            _ = cancellation.cancelled() => {
+                abort_upload(&mut chan, &upload_id).await;
+                bail!("upload cancelled");
+            }
+            read = file.read(&mut buffer[..read_limit]) => read.context("read upload source")?,
+        };
+        if read == 0 {
+            abort_upload(&mut chan, &upload_id).await;
+            bail!("upload source became shorter while sending");
+        }
+        let chunk = plain(Msg::UploadChunk(pb::UploadChunk {
+            upload_id: upload_id.clone(),
+            offset,
+            data: buffer[..read].to_vec(),
+        }));
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                abort_upload(&mut chan, &upload_id).await;
+                bail!("upload cancelled");
+            }
+            sent = chan.send_env(chunk) => sent?,
+        }
+        offset += read as u64;
+        if last_progress.elapsed() >= UPLOAD_PROGRESS_INTERVAL || offset == total_bytes {
+            progress(UploadProgress {
+                phase: UploadPhase::Uploading,
+                bytes: offset,
+                total_bytes,
+            });
+            last_progress = tokio::time::Instant::now();
+        }
+    }
+
+    tokio::select! {
+        _ = cancellation.cancelled() => {
+            abort_upload(&mut chan, &upload_id).await;
+            bail!("upload cancelled");
+        }
+        sent = chan.send_env(plain(Msg::FinishUpload(pb::FinishUpload {
+            upload_id: upload_id.clone(),
+        }))) => sent?,
+    }
+    let finished = tokio::select! {
+        _ = cancellation.cancelled() => {
+            abort_upload(&mut chan, &upload_id).await;
+            bail!("upload cancelled");
+        }
+        reply = chan.recv_until(|env| match &env.message {
+            Some(Msg::UploadFinished(finished)) => Some(Ok(finished.clone())),
+            Some(Msg::Error(error)) => Some(Err(anyhow!("upload failed: {}", error.human_message))),
+            _ => None,
+        }) => reply??,
+    };
+    if finished.upload_id != upload_id
+        || finished.bytes_written != total_bytes
+        || finished.sha256.as_slice() != digest
+    {
+        bail!("server returned inconsistent upload result");
+    }
+    Ok(UploadResult {
+        remote_path: finished.remote_path,
+        bytes_written: finished.bytes_written,
+        sha256: digest,
+    })
+}
+
+async fn abort_upload(chan: &mut Chan, upload_id: &[u8]) {
+    let _ = chan
+        .send_env(plain(Msg::AbortUpload(pb::AbortUpload {
+            upload_id: upload_id.to_vec(),
+            reason: "client cancellation".into(),
+        })))
+        .await;
 }
 
 /// Attach on an existing authenticated connection (each attachment is its own

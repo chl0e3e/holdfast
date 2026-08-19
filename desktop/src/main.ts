@@ -22,7 +22,9 @@ import {
   closeBehavior,
   detachedEventAction,
   emptyWorkspace,
+  quotePosixShellWord,
   shouldAttachWhenConnected,
+  uploadAction,
 } from "./ui-state.js";
 
 const HISTORY_PAGE_LINES = 200;
@@ -33,6 +35,7 @@ type ServerGroup = {
   displayName: string;
   username?: string;
   status: ServerStatus;
+  fileUploads: boolean;
   container: HTMLElement;
   label: HTMLElement;
   slot: HTMLElement; // where this server's tab buttons live
@@ -45,10 +48,13 @@ class App implements TabDelegate {
   status = document.getElementById("status")!;
   attachmentAction = document.getElementById("attachment-action") as HTMLButtonElement;
   terminateAction = document.getElementById("terminate") as HTMLButtonElement;
+  uploadAction = document.getElementById("upload") as HTMLButtonElement;
   emptyState = document.getElementById("empty-state")!;
   resizeTimers = new Map<Tab, ReturnType<typeof setTimeout>>();
   private resizeFrame: number | null = null;
   private panelObserver: ResizeObserver | null = null;
+  private activeUploads = new Map<string, { bytes: number; totalBytes: number }>();
+  private uploadedResult: { server: string; shell: string; path: string } | null = null;
   /** Tabs deliberately closed during this run. Bounded so authoritative
    *  server updates do not immediately recreate them as "elsewhere". */
   private closedShells = new Set<string>();
@@ -81,6 +87,9 @@ class App implements TabDelegate {
     document.getElementById("empty-primary")!.onclick = () => this.emptyPrimaryAction();
     this.attachmentAction.onclick = () => void this.toggleAttachment();
     this.terminateAction.onclick = () => void this.terminateActive();
+    this.uploadAction.onclick = () => void this.uploadActive();
+    document.getElementById("upload-copy")!.onclick = () => void this.copyUploadedPath();
+    document.getElementById("upload-insert")!.onclick = () => this.insertUploadedPath();
     document.getElementById("font-smaller")!.onclick = () => this.adjustFontSize(-1);
     document.getElementById("font-larger")!.onclick = () => this.adjustFontSize(1);
     // Cancel buttons are type=button (see index.html); close their dialogs here.
@@ -170,11 +179,29 @@ class App implements TabDelegate {
       },
       shellsUpdated: (e) => this.reconcileShells(e.server, e.shells),
       storeWarning: (e) => this.setStatus(e.message, "warn"),
+      serverCapabilities: (e) => {
+        const group = this.groups.get(e.server);
+        if (group) group.fileUploads = e.fileUploads;
+        this.syncChrome();
+      },
+      uploadProgress: (e) => {
+        const key = this.shellKey(e.server, e.shell);
+        if (!this.activeUploads.has(key)) return;
+        this.activeUploads.set(key, { bytes: e.bytes, totalBytes: e.totalBytes });
+        const tab = this.findTab(e.server, e.shell);
+        const percent = e.totalBytes === 0 ? 100 : Math.floor((e.bytes / e.totalBytes) * 100);
+        this.setStatus(
+          `${e.phase === "hashing" ? "Checking" : "Uploading"} ${tab?.name ?? "file"} — ${percent}%`,
+          "ok",
+        );
+        this.syncChrome();
+      },
     });
 
     const boot = await ipc.bootstrap();
     for (const server of boot.servers) {
       const group = this.ensureGroup(server);
+      group.fileUploads = server.fileUploads;
       // Statuses emitted before this frontend subscribed (auth-required
       // fires milliseconds after core spawn) arrive via the bootstrap
       // snapshot instead of an event.
@@ -233,6 +260,7 @@ class App implements TabDelegate {
       displayName: server.displayName,
       username: server.username,
       status: "connecting",
+      fileUploads: false,
       container,
       label,
       slot,
@@ -509,6 +537,9 @@ class App implements TabDelegate {
     tab.detaching = true;
     this.syncChrome();
     try {
+      if (this.activeUploads.has(this.shellKey(tab.server, tab.shell))) {
+        await ipc.cancelUpload(tab.server, tab.shell);
+      }
       if (behavior.detach) await ipc.detachShell(tab.server, tab.shell);
       // Running-shell close is intentionally reversible: retain its resume
       // token so restarting the client can reopen it. Exited/orphaned tabs
@@ -600,6 +631,70 @@ class App implements TabDelegate {
       await ipc.forgetShell(tab.server, tab.shell);
       this.markExited(tab, `gone (${error})`);
     }
+  }
+
+  async uploadActive(): Promise<void> {
+    const tab = this.active;
+    if (!tab) return;
+    const key = this.shellKey(tab.server, tab.shell);
+    if (this.activeUploads.has(key)) {
+      await ipc.cancelUpload(tab.server, tab.shell).catch((error) =>
+        this.setStatus(`cancel failed: ${error}`, "err"),
+      );
+      return;
+    }
+    const group = this.groups.get(tab.server);
+    const action = uploadAction(
+      tab.state,
+      group?.status === "connected",
+      group?.fileUploads ?? false,
+      false,
+    );
+    if (!action.enabled) return;
+    this.activeUploads.set(key, { bytes: 0, totalBytes: 0 });
+    this.syncChrome();
+    try {
+      const result = await ipc.pickAndUpload(tab.server, tab.shell);
+      if (!result) return; // native picker dismissed
+      this.uploadedResult = {
+        server: tab.server,
+        shell: tab.shell,
+        path: result.remotePath,
+      };
+      (document.getElementById("upload-remote-path") as HTMLInputElement).value = result.remotePath;
+      (document.getElementById("upload-finished-dialog") as HTMLDialogElement).showModal();
+      this.setStatus(`uploaded ${result.bytesWritten.toLocaleString()} bytes`, "ok");
+    } catch (error) {
+      const detail = String(error);
+      this.setStatus(detail.includes("cancelled") ? "upload cancelled" : `upload failed: ${detail}`, detail.includes("cancelled") ? "warn" : "err");
+    } finally {
+      this.activeUploads.delete(key);
+      this.syncChrome();
+      requestAnimationFrame(() => tab.term.focus());
+    }
+  }
+
+  private async copyUploadedPath(): Promise<void> {
+    if (!this.uploadedResult) return;
+    try {
+      await navigator.clipboard.writeText(this.uploadedResult.path);
+      this.setStatus("remote path copied", "ok");
+    } catch (error) {
+      this.setStatus(`copy failed: ${error}`, "err");
+    }
+  }
+
+  private insertUploadedPath(): void {
+    const uploaded = this.uploadedResult;
+    if (!uploaded) return;
+    const tab = this.findTab(uploaded.server, uploaded.shell);
+    if (!tab || tab.state !== "live") {
+      this.setStatus("attach to the original shell before inserting the path", "warn");
+      return;
+    }
+    this.sendInput(tab, quotePosixShellWord(uploaded.path));
+    (document.getElementById("upload-finished-dialog") as HTMLDialogElement).close();
+    this.select(tab);
   }
 
   markExited(tab: Tab, how: string): void {
@@ -760,6 +855,16 @@ class App implements TabDelegate {
     this.attachmentAction.disabled = !action.enabled;
     this.attachmentAction.title = action.title;
     this.terminateAction.disabled = !tab || tab.state === "exited" || busy;
+    const group = tab ? this.groups.get(tab.server) : undefined;
+    const upload = uploadAction(
+      tab?.state ?? null,
+      group?.status === "connected",
+      group?.fileUploads ?? false,
+      tab ? this.activeUploads.has(this.shellKey(tab.server, tab.shell)) : false,
+    );
+    this.uploadAction.textContent = upload.label;
+    this.uploadAction.disabled = !upload.enabled;
+    this.uploadAction.title = upload.title;
   }
 }
 

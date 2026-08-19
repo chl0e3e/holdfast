@@ -16,13 +16,17 @@
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use hf_launch::{build_launch, resolve_account_ids, LaunchError, ShellResourceLimits};
+use hf_protocol::pb::{BeginUpload, UploadChunk};
 use hf_spawner::{
-    recv_message, send_message, DaemonMsg, SpawnReply, SpawnRequest, SpawnerMsg,
+    recv_message, send_message, DaemonMsg, InitialRequest, SpawnReply, SpawnRequest, SpawnerMsg,
+    UploadDaemonMsg, UploadReply, UPLOAD_CHUNK_BYTES_MAX,
 };
+use hf_upload_store::{StoreConfig, UploadStore};
 use nix::sys::signal::{kill, Signal};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use nix::sys::wait::{waitpid, WaitStatus};
@@ -36,6 +40,8 @@ static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
 struct Config {
     allowed_accounts: Vec<String>,
+    upload_root: Option<PathBuf>,
+    upload_max_bytes: u64,
     /// uid the daemon must connect as. `None` disables the check, which is only
     /// appropriate for tests — the socket unit's ownership is the other half of
     /// this defence.
@@ -45,13 +51,14 @@ struct Config {
 fn parse_args() -> Result<Config, String> {
     let mut allowed_accounts = Vec::new();
     let mut peer_uid = None;
+    let mut upload_root = None;
+    let mut upload_max_bytes = hf_protocol::UPLOAD_FILE_BYTES_DEFAULT;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--allow-account" => allowed_accounts.push(
-                args.next()
-                    .ok_or("--allow-account needs an account name")?,
-            ),
+            "--allow-account" => {
+                allowed_accounts.push(args.next().ok_or("--allow-account needs an account name")?)
+            }
             "--peer-user" => {
                 let name = args.next().ok_or("--peer-user needs a username")?;
                 let ids = resolve_account_ids(&name)
@@ -62,10 +69,28 @@ fn parse_args() -> Result<Config, String> {
                 let raw = args.next().ok_or("--peer-uid needs a uid")?;
                 peer_uid = Some(raw.parse().map_err(|_| format!("bad uid {raw:?}"))?);
             }
+            "--upload-root" => {
+                upload_root = Some(PathBuf::from(
+                    args.next().ok_or("--upload-root needs an absolute path")?,
+                ));
+            }
+            "--upload-max-bytes" => {
+                let raw = args.next().ok_or("--upload-max-bytes needs a byte count")?;
+                upload_max_bytes = raw
+                    .parse()
+                    .map_err(|_| format!("bad upload byte limit {raw:?}"))?;
+                if upload_max_bytes > hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX {
+                    return Err(format!(
+                        "upload byte limit exceeds hard maximum {}",
+                        hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
                     "unknown argument: {other} (supported: --allow-account <name>, \
-                     --peer-user <name>, --peer-uid <uid>)"
+                     --peer-user <name>, --peer-uid <uid>, --upload-root <path>, \
+                     --upload-max-bytes <bytes>)"
                 ))
             }
         }
@@ -77,6 +102,8 @@ fn parse_args() -> Result<Config, String> {
     }
     Ok(Config {
         allowed_accounts,
+        upload_root,
+        upload_max_bytes,
         peer_uid,
     })
 }
@@ -113,21 +140,30 @@ fn check_peer(cfg: &Config) -> Result<(), Refusal> {
 }
 
 /// Launch the shell on a fresh PTY. Returns the master fd and the child pid.
-fn spawn_shell(cfg: &Config, req: &SpawnRequest) -> Result<(OwnedFd, u32), Refusal> {
-    if !cfg.allowed_accounts.iter().any(|a| *a == req.account) {
+fn resolve_allowed_account(cfg: &Config, account: &str) -> Result<hf_launch::AccountIds, Refusal> {
+    if !cfg
+        .allowed_accounts
+        .iter()
+        .any(|allowed| allowed == account)
+    {
         return Err(Refusal::Forbidden(format!(
             "account {:?} is not in this spawner's allowlist",
-            req.account
+            account
         )));
     }
     // Independent of the allowlist: a root shell would hand back everything the
     // split was meant to prevent, so it is refused even if misconfigured in.
-    let ids = resolve_account_ids(&req.account)?;
+    let ids = resolve_account_ids(account)?;
     if ids.uid == 0 {
         return Err(Refusal::Forbidden(
             "refusing to launch a shell as uid 0".into(),
         ));
     }
+    Ok(ids)
+}
+
+fn spawn_shell(cfg: &Config, req: &SpawnRequest) -> Result<(OwnedFd, u32), Refusal> {
+    let _ids = resolve_allowed_account(cfg, &req.account)?;
 
     let limits: ShellResourceLimits = req.limits.into();
     let launch = build_launch(
@@ -170,9 +206,9 @@ fn spawn_shell(cfg: &Config, req: &SpawnRequest) -> Result<(OwnedFd, u32), Refus
             // dropping the result closes the descriptor it just installed —
             // stdin/stdout/stderr would all end up closed and the shell would
             // read EOF and exit immediately.
-            nix::unistd::dup2_stdin(&slave).map_err(std::io::Error::from)?;
-            nix::unistd::dup2_stdout(&slave).map_err(std::io::Error::from)?;
-            nix::unistd::dup2_stderr(&slave).map_err(std::io::Error::from)?;
+            nix::unistd::dup2_stdin(slave).map_err(std::io::Error::from)?;
+            nix::unistd::dup2_stdout(slave).map_err(std::io::Error::from)?;
+            nix::unistd::dup2_stderr(slave).map_err(std::io::Error::from)?;
             if slave_raw > 2 {
                 let _ = nix::unistd::close(slave_raw);
             }
@@ -187,6 +223,95 @@ fn spawn_shell(cfg: &Config, req: &SpawnRequest) -> Result<(OwnedFd, u32), Refus
     // when the shell exits.
     drop(pty.slave);
     Ok((pty.master, child.id()))
+}
+
+fn receive_upload(cfg: &Config, req: hf_spawner::ReceiveUploadRequest) -> Result<(), Refusal> {
+    let ids = resolve_allowed_account(cfg, &req.account)?;
+    let root = cfg
+        .upload_root
+        .as_ref()
+        .ok_or_else(|| Refusal::Failed("file uploads are not configured on the spawner".into()))?;
+    let store = UploadStore::open(StoreConfig {
+        root: root.clone(),
+        max_file_bytes: cfg.upload_max_bytes,
+    })
+    .map_err(|error| Refusal::Failed(format!("open upload store: {error}")))?;
+    let metadata = BeginUpload {
+        original_name: req.original_name,
+        total_bytes: req.total_bytes,
+        sha256: req.sha256,
+    };
+    let maximum_chunk_bytes = req
+        .maximum_chunk_bytes
+        .min(UPLOAD_CHUNK_BYTES_MAX as u32);
+    let mut writer = store
+        .begin_with_chunk_limit(&metadata, maximum_chunk_bytes)
+        .map_err(|error| Refusal::Failed(format!("begin upload: {error}")))?;
+    let upload_id = writer.upload_id();
+    send_message(
+        CONN,
+        &UploadReply::Ready {
+            upload_id: upload_id.to_vec(),
+            maximum_chunk_bytes: writer.maximum_chunk_bytes(),
+        },
+        None,
+    )
+    .map_err(|error| Refusal::Failed(format!("send upload ready: {error}")))?;
+
+    loop {
+        let Some((message, fd)) = recv_message::<UploadDaemonMsg>(CONN)
+            .map_err(|error| Refusal::Failed(format!("read upload data: {error}")))?
+        else {
+            return Ok(()); // Writer drop removes the partial.
+        };
+        if fd.is_some() {
+            return Err(Refusal::Failed(
+                "upload data unexpectedly carried a descriptor".into(),
+            ));
+        }
+        match message {
+            UploadDaemonMsg::Chunk {
+                upload_id: chunk_id,
+                offset,
+                data,
+            } => {
+                writer
+                    .write_chunk(&UploadChunk {
+                        upload_id: chunk_id,
+                        offset,
+                        data,
+                    })
+                    .map_err(|error| Refusal::Failed(format!("write upload: {error}")))?;
+            }
+            UploadDaemonMsg::Finish {
+                upload_id: finish_id,
+            } => {
+                let committed = writer
+                    .finish_as(&finish_id, ids.uid, ids.gid)
+                    .map_err(|error| Refusal::Failed(format!("finish upload: {error}")))?;
+                send_message(
+                    CONN,
+                    &UploadReply::Finished {
+                        upload_id: committed.upload_id.to_vec(),
+                        remote_path: committed.remote_path.to_string_lossy().into_owned(),
+                        bytes_written: committed.bytes_written,
+                        sha256: committed.sha256.to_vec(),
+                    },
+                    None,
+                )
+                .map_err(|error| Refusal::Failed(format!("send upload result: {error}")))?;
+                return Ok(());
+            }
+            UploadDaemonMsg::Abort {
+                upload_id: abort_id,
+            } => {
+                if abort_id != upload_id {
+                    return Err(Refusal::Failed("abort carried the wrong upload id".into()));
+                }
+                return Ok(());
+            }
+        }
+    }
 }
 
 /// Watch the connection for a kill request, and treat the daemon going away as
@@ -225,28 +350,38 @@ fn main() {
         }
     };
 
-    let outcome = check_peer(&cfg).and_then(|()| {
-        let (req, _) = match recv_message::<SpawnRequest>(CONN) {
-            Ok(Some(msg)) => msg,
-            Ok(None) => {
-                // Nothing to refuse and no one to tell.
-                std::process::exit(0);
-            }
-            Err(e) => return Err(Refusal::Failed(format!("reading request: {e}"))),
-        };
-        spawn_shell(&cfg, &req)
-    });
+    if let Err(refusal) = check_peer(&cfg) {
+        refuse_and_exit(refusal, false);
+    }
+    let (request, fd) = match recv_message::<InitialRequest>(CONN) {
+        Ok(Some(message)) => message,
+        Ok(None) => std::process::exit(0),
+        Err(error) => refuse_and_exit(
+            Refusal::Failed(format!("reading initial request: {error}")),
+            false,
+        ),
+    };
+    if fd.is_some() {
+        refuse_and_exit(
+            Refusal::Failed("initial request unexpectedly carried a descriptor".into()),
+            matches!(request, InitialRequest::ReceiveUpload(_)),
+        );
+    }
+
+    let req = match request {
+        InitialRequest::ReceiveUpload(request) => match receive_upload(&cfg, request) {
+            Ok(()) => std::process::exit(0),
+            Err(refusal) => refuse_and_exit(refusal, true),
+        },
+        InitialRequest::SpawnShell(request) => request,
+    };
+
+    let outcome = spawn_shell(&cfg, &req);
 
     let (master, pid) = match outcome {
         Ok(v) => v,
         Err(refusal) => {
-            let (message, forbidden) = match refusal {
-                Refusal::Forbidden(m) => (m, true),
-                Refusal::Failed(m) => (m, false),
-            };
-            eprintln!("holdfast-spawner: refused: {message}");
-            let _ = send_message(CONN, &SpawnReply::Error { message, forbidden }, None);
-            std::process::exit(1);
+            refuse_and_exit(refusal, false);
         }
     };
 
@@ -254,11 +389,7 @@ fn main() {
 
     // Hand the master over, then drop our copy: the daemon owns it now, and the
     // shell must see a hangup when *the daemon* lets go, not later.
-    let send = send_message(
-        CONN,
-        &SpawnReply::Spawned { pid },
-        Some(master.as_raw_fd()),
-    );
+    let send = send_message(CONN, &SpawnReply::Spawned { pid }, Some(master.as_raw_fd()));
     drop(master);
     if let Err(e) = send {
         eprintln!("holdfast-spawner: could not hand over the PTY: {e}");
@@ -299,4 +430,18 @@ fn main() {
     };
 
     let _ = send_message(CONN, &summary, None);
+}
+
+fn refuse_and_exit(refusal: Refusal, upload: bool) -> ! {
+    let (message, forbidden) = match refusal {
+        Refusal::Forbidden(message) => (message, true),
+        Refusal::Failed(message) => (message, false),
+    };
+    eprintln!("holdfast-spawner: refused: {message}");
+    if upload {
+        let _ = send_message(CONN, &UploadReply::Error { message, forbidden }, None);
+    } else {
+        let _ = send_message(CONN, &SpawnReply::Error { message, forbidden }, None);
+    }
+    std::process::exit(1);
 }

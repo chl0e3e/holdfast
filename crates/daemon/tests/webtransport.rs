@@ -134,7 +134,7 @@ async fn wt_hello(daemon: &Daemon) -> (Endpoint<Client>, Connection, Chan, [u8; 
             protocol_minor: PROTOCOL_MINOR,
             client_kind: pb::ClientKind::NativeQuic as i32,
             client_build: "wt-test".into(),
-            capabilities: vec![],
+            capabilities: vec![pb::Capability::FileTransfer as i32],
             max_frame_bytes: FRAME_BYTES_DEFAULT,
             max_datagram_bytes: 1200,
             encodings: vec![pb::Encoding::Utf8 as i32],
@@ -286,6 +286,68 @@ async fn address_change_resume_over_webtransport() {
         .await;
     wait_output(&mut chan2, "survived-migration").await;
 
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn real_webtransport_upload_stream_commits_verified_bytes() {
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().unwrap();
+    let upload_root = temp.path().join("uploads");
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        upload_root: Some(upload_root),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let (_endpoint, connection, mut control) = wt_connect(&daemon).await;
+    let (shell_id, _) = open_shell(&mut control, 92).await;
+    let content = b"verified bytes over genuine QUIC WebTransport";
+    let mut upload = Chan::open(&connection).await;
+    let mut begin = plain(Msg::BeginUpload(pb::BeginUpload {
+        original_name: "wt.bin".into(),
+        total_bytes: content.len() as u64,
+        sha256: Sha256::digest(content).to_vec(),
+    }));
+    begin.shell_id = shell_id;
+    begin.request_id = 900;
+    upload.send_env(begin).await;
+    let accepted = upload
+        .recv_until(|envelope| match &envelope.message {
+            Some(Msg::UploadAccepted(accepted)) => Some(accepted.clone()),
+            Some(Msg::Error(error)) => panic!("upload rejected: {error:?}"),
+            _ => None,
+        })
+        .await;
+    upload
+        .send_env(plain(Msg::UploadChunk(pb::UploadChunk {
+            upload_id: accepted.upload_id.clone(),
+            offset: 0,
+            data: content.to_vec(),
+        })))
+        .await;
+    upload
+        .send_env(Envelope {
+            request_id: 900,
+            server_id: vec![],
+            shell_id: vec![],
+            message: Some(Msg::FinishUpload(pb::FinishUpload {
+                upload_id: accepted.upload_id,
+            })),
+        })
+        .await;
+    let finished = upload
+        .recv_until(|envelope| match &envelope.message {
+            Some(Msg::UploadFinished(finished)) => Some(finished.clone()),
+            Some(Msg::Error(error)) => panic!("upload failed: {error:?}"),
+            _ => None,
+        })
+        .await;
+    assert_eq!(std::fs::read(&finished.remote_path).unwrap(), content);
+    assert_eq!(finished.sha256, Sha256::digest(content).as_slice());
+    assert_eq!(daemon.metrics().uploads_completed, 1);
     daemon.abort();
 }
 

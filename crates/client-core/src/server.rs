@@ -11,15 +11,19 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use hf_native_client::{
-    attach_failure_action, attach_shell, connect_with, AuthMethod, AuthenticationRejected, Chan,
-    Connection, FailureAction, ServerConn,
+    attach_failure_action, attach_shell, connect_with, upload_file, AuthMethod,
+    AuthenticationRejected, Chan, Connection, FailureAction, ServerConn, UploadCancellation,
+    UploadPhase as NativeUploadPhase,
 };
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::shell::{spawn_pumps, PumpCtx, WriterCmd};
 use crate::store::{hex, unhex, Store};
-use crate::{now_ms, AttachInfo, CoreEvent, HistoryPage, ServerStatus, ShellRow, ShellStateEvent};
+use crate::{
+    now_ms, AttachInfo, CoreEvent, HistoryPage, ServerStatus, ShellRow, ShellStateEvent,
+    StatusMap, UploadPhase, UploadReply,
+};
 
 /// In-flight control requests are bounded; beyond this the caller gets an
 /// immediate error instead of unbounded queueing (AGENTS rule 7).
@@ -74,6 +78,15 @@ pub enum ServerCmd {
     Login {
         password: String,
     },
+    Upload {
+        shell_hex: String,
+        local_path: std::path::PathBuf,
+        slot: tokio::sync::OwnedSemaphorePermit,
+        reply: oneshot::Sender<Result<UploadReply>>,
+    },
+    CancelUpload {
+        shell_hex: String,
+    },
 }
 
 /// Marker error: the record is configured for password login (username set,
@@ -95,7 +108,9 @@ pub struct SupervisorCtx {
     pub events: mpsc::Sender<CoreEvent>,
     /// Mirror of the last emitted status, read by `Core::bootstrap` so GUIs
     /// that subscribe late still see the current state.
-    pub statuses: Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>,
+    pub statuses: StatusMap,
+    pub capabilities: Arc<std::sync::Mutex<HashMap<String, bool>>>,
+    pub active_uploads: Arc<std::sync::Mutex<HashMap<String, UploadCancellation>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +142,9 @@ impl ControlHandle {
             })
             .await
             .map_err(|_| anyhow!("control channel closed"))?;
-        reply_rx.await.map_err(|_| anyhow!("control channel closed"))?
+        reply_rx
+            .await
+            .map_err(|_| anyhow!("control channel closed"))?
     }
 
     async fn list_shells(&self) -> Result<Vec<pb::ShellInfo>> {
@@ -272,6 +289,7 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
         };
         first = false;
         ctx.emit_status(status, None).await;
+        ctx.emit_capabilities(false).await;
 
         let attempted_password = password.is_some();
         let conn = match connect_and_auth(&ctx, password.take()).await {
@@ -315,6 +333,9 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
         backoff = BACKOFF_START;
 
         let (connection, chan, grant, hello) = conn.into_parts();
+        let file_uploads = hello
+            .capabilities
+            .contains(&(pb::Capability::FileTransfer as i32));
         if let Err(e) = ctx.store.set_grant(&ctx.server_key, &grant) {
             ctx.emit_warning(format!("persist grant: {e}")).await;
         }
@@ -334,17 +355,22 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
             Err(_) => continue 'outer,
         }
         ctx.emit_status(ServerStatus::Connected, None).await;
+        ctx.emit_capabilities(file_uploads).await;
 
         let mut live: HashMap<String, mpsc::Sender<WriterCmd>> = HashMap::new();
         loop {
             tokio::select! {
                 cmd = rx.recv() => {
-                    let Some(cmd) = cmd else { return }; // Core dropped this server
-                    handle_cmd(&ctx, cmd, &connection, &control, &mut live).await;
+                    let Some(cmd) = cmd else {
+                        cancel_active_uploads(&ctx);
+                        return;
+                    }; // Core dropped this server
+                    handle_cmd(&ctx, cmd, &connection, &control, &mut live, file_uploads).await;
                 }
                 _ = dead.changed() => {
                     // Attachment pumps die with their streams; the frontend
                     // re-attaches when it sees `connected` again.
+                    cancel_active_uploads(&ctx);
                     continue 'outer;
                 }
             }
@@ -405,10 +431,14 @@ fn refuse_unauthenticated(cmd: ServerCmd) {
         ServerCmd::History { reply, .. } => {
             let _ = reply.send(Err(refusal()));
         }
+        ServerCmd::Upload { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
         ServerCmd::Input { .. }
         | ServerCmd::Resize { .. }
         | ServerCmd::Detach { .. }
-        | ServerCmd::Login { .. } => {}
+        | ServerCmd::Login { .. }
+        | ServerCmd::CancelUpload { .. } => {}
     }
 }
 
@@ -417,8 +447,7 @@ async fn resolve_pending_opens(ctx: &SupervisorCtx, control: &ControlHandle) {
         return;
     };
     for pending in record.pending_opens {
-        let Some(key) = unhex(&pending.idempotency_key)
-            .and_then(|k| <[u8; 16]>::try_from(k).ok())
+        let Some(key) = unhex(&pending.idempotency_key).and_then(|k| <[u8; 16]>::try_from(k).ok())
         else {
             let _ = ctx
                 .store
@@ -453,6 +482,7 @@ async fn handle_cmd(
     connection: &Connection,
     control: &ControlHandle,
     live: &mut HashMap<String, mpsc::Sender<WriterCmd>>,
+    file_uploads: bool,
 ) {
     match cmd {
         ServerCmd::Open {
@@ -464,7 +494,10 @@ async fn handle_cmd(
             let idempotency_key: [u8; 16] = rand::random();
             let key_hex = hex(&idempotency_key);
             // Journal the key BEFORE the request leaves (ADR 0018).
-            if let Err(e) = ctx.store.push_pending_open(&ctx.server_key, &key_hex, &name) {
+            if let Err(e) = ctx
+                .store
+                .push_pending_open(&ctx.server_key, &key_hex, &name)
+            {
                 let _ = reply.send(Err(e));
                 return;
             }
@@ -473,7 +506,13 @@ async fn handle_cmd(
                     let shell_hex = hex(&shell_id);
                     let result = ctx
                         .store
-                        .resolve_pending_open(&ctx.server_key, &key_hex, &shell_hex, &token, now_ms())
+                        .resolve_pending_open(
+                            &ctx.server_key,
+                            &key_hex,
+                            &shell_hex,
+                            &token,
+                            now_ms(),
+                        )
                         .map(|()| shell_hex);
                     let _ = reply.send(result);
                 }
@@ -490,8 +529,9 @@ async fn handle_cmd(
             output,
             reply,
         } => {
-            let result = attach_with_recovery(ctx, connection, control, &shell_hex, cols, rows, output)
-                .await;
+            let result =
+                attach_with_recovery(ctx, connection, control, &shell_hex, cols, rows, output)
+                    .await;
             match result {
                 Ok((info, writer)) => {
                     live.insert(shell_hex.clone(), writer);
@@ -530,8 +570,12 @@ async fn handle_cmd(
             let result = control.terminate(&shell_id).await;
             if result.is_ok() {
                 let _ = ctx.store.remove_shell(&ctx.server_key, &shell_hex);
-                ctx.emit_shell_state(&shell_hex, ShellStateEvent::Exited, result.as_ref().ok().copied())
-                    .await;
+                ctx.emit_shell_state(
+                    &shell_hex,
+                    ShellStateEvent::Exited,
+                    result.as_ref().ok().copied(),
+                )
+                .await;
             }
             let _ = reply.send(result);
         }
@@ -559,6 +603,81 @@ async fn handle_cmd(
                 let _ = reply.send(Err(anyhow!("attachment closed")));
             }
         }
+        ServerCmd::Upload {
+            shell_hex,
+            local_path,
+            slot,
+            reply,
+        } => {
+            if !file_uploads {
+                let _ = reply.send(Err(anyhow!("this server does not enable file uploads")));
+                return;
+            }
+            if ctx.store.shell(&ctx.server_key, &shell_hex).is_none() {
+                let _ = reply.send(Err(anyhow!("unknown shell")));
+                return;
+            }
+            let Some(shell_id) = unhex(&shell_hex) else {
+                let _ = reply.send(Err(anyhow!("malformed shell id")));
+                return;
+            };
+            let cancellation = UploadCancellation::default();
+            {
+                let mut active = ctx.active_uploads.lock().unwrap();
+                if active.contains_key(&shell_hex) {
+                    let _ = reply.send(Err(anyhow!("an upload is already active for this shell")));
+                    return;
+                }
+                active.insert(shell_hex.clone(), cancellation.clone());
+            }
+            let connection = connection.clone();
+            let events = ctx.events.clone();
+            let server = ctx.server_key.clone();
+            let active_uploads = Arc::clone(&ctx.active_uploads);
+            tokio::spawn(async move {
+                let _slot = slot;
+                let progress_server = server.clone();
+                let progress_shell = shell_hex.clone();
+                let result = upload_file(
+                    &connection,
+                    &shell_id,
+                    &local_path,
+                    cancellation,
+                    move |progress| {
+                        let phase = match progress.phase {
+                            NativeUploadPhase::Hashing => UploadPhase::Hashing,
+                            NativeUploadPhase::Uploading => UploadPhase::Uploading,
+                        };
+                        let _ = events.try_send(CoreEvent::UploadProgress {
+                            server: progress_server.clone(),
+                            shell: progress_shell.clone(),
+                            phase,
+                            bytes: progress.bytes,
+                            total_bytes: progress.total_bytes,
+                        });
+                    },
+                )
+                .await
+                .map(|finished| UploadReply {
+                    remote_path: finished.remote_path,
+                    bytes_written: finished.bytes_written,
+                    sha256: hex(&finished.sha256),
+                });
+                active_uploads.lock().unwrap().remove(&shell_hex);
+                let _ = reply.send(result);
+            });
+        }
+        ServerCmd::CancelUpload { shell_hex } => {
+            if let Some(cancellation) = ctx.active_uploads.lock().unwrap().get(&shell_hex) {
+                cancellation.cancel();
+            }
+        }
+    }
+}
+
+fn cancel_active_uploads(ctx: &SupervisorCtx) {
+    for cancellation in ctx.active_uploads.lock().unwrap().values() {
+        cancellation.cancel();
     }
 }
 
@@ -604,9 +723,12 @@ async fn attach_with_recovery(
     loop {
         match attach_shell(connection, &shell_id, &token, cols, rows).await {
             Ok(shell) => {
-                let _ = ctx
-                    .store
-                    .update_token(&ctx.server_key, shell_hex, &shell.rotated_token, now_ms());
+                let _ = ctx.store.update_token(
+                    &ctx.server_key,
+                    shell_hex,
+                    &shell.rotated_token,
+                    now_ms(),
+                );
                 let info = AttachInfo {
                     snapshot: shell.snapshot.clone(),
                     oldest_history_line_id: shell.oldest_history_line_id,
@@ -701,7 +823,30 @@ impl SupervisorCtx {
         let _ = self.events.send(CoreEvent::StoreWarning { message }).await;
     }
 
-    async fn emit_shell_state(&self, shell_hex: &str, state: ShellStateEvent, exit_code: Option<i32>) {
+    async fn emit_capabilities(&self, file_uploads: bool) {
+        let changed = self
+            .capabilities
+            .lock()
+            .unwrap()
+            .insert(self.server_key.clone(), file_uploads)
+            != Some(file_uploads);
+        if changed {
+            let _ = self
+                .events
+                .send(CoreEvent::ServerCapabilities {
+                    server: self.server_key.clone(),
+                    file_uploads,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_shell_state(
+        &self,
+        shell_hex: &str,
+        state: ShellStateEvent,
+        exit_code: Option<i32>,
+    ) {
         let _ = self
             .events
             .send(CoreEvent::ShellState {

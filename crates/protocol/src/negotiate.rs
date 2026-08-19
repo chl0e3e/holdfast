@@ -1,7 +1,10 @@
 //! Version and capability negotiation (spec §4).
 
 use crate::pb::{Capability, ClientHello, Encoding, ServerHello};
-use crate::{FRAME_BYTES_CEILING, FRAME_BYTES_FLOOR, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use crate::{
+    FILE_TRANSFER_PROTOCOL_MINOR, FRAME_BYTES_CEILING, FRAME_BYTES_FLOOR, PROTOCOL_MAJOR,
+    PROTOCOL_MINOR,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Negotiated {
@@ -48,11 +51,16 @@ pub fn negotiate_server(
         return Err(NegotiationError::FrameLimitTooSmall(hello.max_frame_bytes));
     }
 
-    // A capability is enabled only if both sides listed it (spec §4).
+    // A capability is enabled only if both sides listed it and the selected
+    // protocol minor defines it (spec §4).
+    let protocol_minor = hello.protocol_minor.min(PROTOCOL_MINOR);
     let mut capabilities: Vec<Capability> = server_capabilities
         .iter()
         .copied()
         .filter(|c| hello.capabilities.contains(&(*c as i32)))
+        .filter(|c| {
+            *c != Capability::FileTransfer || protocol_minor >= FILE_TRANSFER_PROTOCOL_MINOR
+        })
         .collect();
     if !transport_supports_datagrams {
         capabilities.retain(|c| *c != Capability::Datagrams);
@@ -61,7 +69,7 @@ pub fn negotiate_server(
     Ok(Negotiated {
         protocol_major: PROTOCOL_MAJOR,
         // Both sides behave as the lower minor version.
-        protocol_minor: hello.protocol_minor.min(PROTOCOL_MINOR),
+        protocol_minor,
         capabilities,
         max_frame_bytes: hello
             .max_frame_bytes
@@ -158,5 +166,25 @@ mod tests {
         h.max_frame_bytes = 8 * 1024 * 1024;
         let n = negotiate_server(&h, SERVER_CAPS, 8 * 1024 * 1024, 1200, true).unwrap();
         assert_eq!(n.max_frame_bytes, crate::FRAME_BYTES_CEILING);
+    }
+
+    #[test]
+    fn file_transfer_is_stripped_when_selected_minor_is_too_old() {
+        let mut h = hello();
+        h.protocol_minor = FILE_TRANSFER_PROTOCOL_MINOR - 1;
+        h.capabilities = vec![Capability::FileTransfer as i32];
+        let n = negotiate_server(&h, &[Capability::FileTransfer], 256 * 1024, 1200, true).unwrap();
+        assert_eq!(n.protocol_minor, FILE_TRANSFER_PROTOCOL_MINOR - 1);
+        assert!(n.capabilities.is_empty());
+    }
+
+    #[test]
+    fn file_transfer_is_negotiated_at_minor_two() {
+        let mut h = hello();
+        h.protocol_minor = FILE_TRANSFER_PROTOCOL_MINOR;
+        h.capabilities = vec![Capability::FileTransfer as i32];
+        let n = negotiate_server(&h, &[Capability::FileTransfer], 256 * 1024, 1200, true).unwrap();
+        assert_eq!(n.protocol_minor, FILE_TRANSFER_PROTOCOL_MINOR);
+        assert_eq!(n.capabilities, vec![Capability::FileTransfer]);
     }
 }

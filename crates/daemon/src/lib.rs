@@ -23,6 +23,7 @@ pub mod observability;
 pub mod agent_mode;
 pub mod auth;
 mod conn;
+mod uploads;
 mod webtransport;
 mod ws;
 
@@ -116,6 +117,11 @@ pub struct DaemonConfig {
     /// Explicit stable server identity. `None`: derived from
     /// `grant_signing_key` when that is set, else random per start (dev).
     pub server_id: Option<ServerId>,
+    /// Absolute temporary upload root. `None` keeps file transfer disabled and
+    /// unadvertised. See ADR 0028.
+    pub upload_root: Option<PathBuf>,
+    pub upload_max_file_bytes: u64,
+    pub upload_retention: std::time::Duration,
     pub session: SessionCoreConfig,
 }
 
@@ -134,6 +140,9 @@ impl Default for DaemonConfig {
             account_policy: None,
             grant_signing_key: None,
             server_id: None,
+            upload_root: None,
+            upload_max_file_bytes: hf_protocol::UPLOAD_FILE_BYTES_DEFAULT,
+            upload_retention: std::time::Duration::from_secs(24 * 60 * 60),
             session: SessionCoreConfig::default(),
         }
     }
@@ -168,6 +177,7 @@ pub struct AppState {
     /// connections (ADR 0008). `None` when WebTransport is disabled.
     pub webtransport_cert_hash: Option<[u8; 32]>,
     pub observability: Observability,
+    pub(crate) uploads: Option<Arc<uploads::UploadService>>,
 }
 
 impl AppState {
@@ -257,6 +267,25 @@ impl Daemon {
                 }
             }
         }
+        if config.upload_max_file_bytes > hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX {
+            anyhow::bail!(
+                "upload maximum exceeds the hard {}-byte ceiling",
+                hf_protocol::UPLOAD_FILE_BYTES_HARD_MAX
+            );
+        }
+        if let Some(root) = &config.upload_root {
+            if !root.is_absolute() {
+                anyhow::bail!("upload root must be absolute");
+            }
+            if root.to_str().is_none() {
+                anyhow::bail!("upload root must be valid UTF-8 for the wire path");
+            }
+            if config.session.privilege_drop && config.session.spawner_socket.is_none() {
+                anyhow::bail!(
+                    "multi-user uploads require --spawner-socket; refusing daemon-owned output"
+                );
+            }
+        }
 
         let server_id = match (config.server_id, &config.grant_signing_key) {
             (Some(id), _) => id,
@@ -307,6 +336,36 @@ impl Daemon {
         });
         let webtransport_cert_hash = wt_listener.as_ref().map(|l| l.cert_hash);
 
+        let uploads = match &config.upload_root {
+            None => None,
+            Some(_root) if config.session.privilege_drop => {
+                Some(Arc::new(uploads::UploadService::spawner(
+                    config
+                        .session
+                        .spawner_socket
+                        .clone()
+                        .expect("checked above"),
+                    config.upload_max_file_bytes,
+                )))
+            }
+            Some(root) => {
+                std::fs::create_dir_all(root)?;
+                let metadata = std::fs::symlink_metadata(root)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    anyhow::bail!("upload root must be a non-symlink directory");
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+                }
+                Some(Arc::new(uploads::UploadService::same_uid(
+                    root.clone(),
+                    config.upload_max_file_bytes,
+                )?))
+            }
+        };
+
         let manager = build_shell_manager(config.session.clone(), &config.account_policy);
         let state = Arc::new(AppState {
             manager,
@@ -316,6 +375,7 @@ impl Daemon {
             webtransport_info: webtransport_info.clone(),
             webtransport_cert_hash,
             observability: observability.clone(),
+            uploads: uploads.clone(),
         });
 
         if let Some(listener) = &wt_listener {
@@ -351,6 +411,25 @@ impl Daemon {
                                 exit_code: exit.exit_code,
                             },
                         );
+                    }
+                }
+            }));
+        }
+
+        if let Some(uploads) = uploads {
+            let retention = config.upload_retention;
+            handles.push(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    let uploads = Arc::clone(&uploads);
+                    let result = tokio::task::spawn_blocking(move || {
+                        uploads.reap_expired(std::time::SystemTime::now(), retention)
+                    })
+                    .await;
+                    if let Ok(Err(error)) = result {
+                        tracing::warn!("upload retention scan failed: {error}");
                     }
                 }
             }));
