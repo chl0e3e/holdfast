@@ -1,6 +1,6 @@
 {
   "name": "holdfast-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Holdfast desktop client frontend (xterm.js tabs inside Tauri 2).",
   "type": "module",
@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "node scripts/prepare-msquic.mjs && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/ui-state.test.ts && tsx src/tab-label.test.ts && tsx src/terminal-render-state.test.ts"
+    "test": "tsx src/ui-state.test.ts && tsx src/tab-label.test.ts && tsx src/terminal-render-state.test.ts && tsx src/terminal-layout.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

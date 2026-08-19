@@ -9,52 +9,12 @@
 
 mod commands;
 mod dockerwm;
-#[cfg(any(target_os = "windows", test))]
-mod window_layout;
 
 use hf_client_core::{Core, CoreEvent};
 use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub core: Core,
-}
-
-#[cfg(target_os = "windows")]
-fn fit_main_window_to_work_area(app: &tauri::App) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
-    let monitor = match window.current_monitor()? {
-        Some(monitor) => Some(monitor),
-        None => window.primary_monitor()?,
-    };
-    let Some(monitor) = monitor else {
-        return Ok(());
-    };
-
-    let inner = window.inner_size()?;
-    let outer = window.outer_size()?;
-    let work_area = monitor.work_area().size;
-    let target = window_layout::clamp_inner_to_work_area(
-        window_layout::Size {
-            width: inner.width,
-            height: inner.height,
-        },
-        window_layout::Size {
-            width: outer.width,
-            height: outer.height,
-        },
-        window_layout::Size {
-            width: work_area.width,
-            height: work_area.height,
-        },
-    );
-
-    if target.width != inner.width || target.height != inner.height {
-        window.set_size(tauri::PhysicalSize::new(target.width, target.height))?;
-        window.center()?;
-    }
-    Ok(())
 }
 
 fn main() {
@@ -65,14 +25,6 @@ fn main() {
 
     tauri::Builder::default()
         .setup(move |app| {
-            // Configured dimensions are the webview's inner size. Keep the
-            // decorated Windows window inside the usable monitor area so its
-            // last terminal row cannot land underneath the taskbar.
-            #[cfg(target_os = "windows")]
-            if let Err(error) = fit_main_window_to_work_area(app) {
-                eprintln!("could not fit the main window to the monitor work area: {error}");
-            }
-
             let store_path = hf_client_core::store::default_path()?;
             let (core, mut events) = tauri::async_runtime::block_on(Core::spawn(store_path))?;
             app.manage(AppState { core });
