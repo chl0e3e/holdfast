@@ -15,6 +15,7 @@ export type ServerView = {
   url: string;
   displayName: string;
   username?: string;
+  usesSshKey: boolean;
   shells: ShellView[];
   /** Status at bootstrap time — set when the core emitted one before the
    *  frontend subscribed (e.g. auth-required right after launch). */
@@ -89,7 +90,7 @@ export const ipc = {
 
   removeServer: (server: string) => invoke<void>("remove_server", { server }),
 
-  /** One-shot password login (ADR 0016); result arrives as a server-status event. */
+  /** One interactive auth attempt: password, or empty for an SSH-key retry. */
   login: (server: string, password: string) => invoke<void>("login", { server, password }),
 
   openShell: (server: string, name: string, cols: number, rows: number) =>

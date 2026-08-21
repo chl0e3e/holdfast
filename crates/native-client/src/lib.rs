@@ -181,6 +181,23 @@ pub struct AuthenticationRejected {
     pub message: String,
 }
 
+/// An SSH-key attempt reached the interactive authentication path but could
+/// not complete. Desktop supervisors must not retry this automatically: a
+/// FIDO key may need another touch, and repeated rejected signatures otherwise
+/// trip the daemon's source-address rate limiter.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct SshAuthenticationFailed {
+    pub message: String,
+}
+
+fn ssh_auth_failed(error: impl std::fmt::Display) -> anyhow::Error {
+    SshAuthenticationFailed {
+        message: error.to_string(),
+    }
+    .into()
+}
+
 /// Connect, negotiate and authenticate (dev grant) against a daemon.
 pub async fn connect(http_base: &str) -> Result<ServerConn> {
     connect_with(http_base, AuthMethod::Dev).await
@@ -327,18 +344,21 @@ async fn authenticate(
             username,
             private_key_path,
         } => {
-            let key = read_private_key(&private_key_path)?;
+            let key = read_private_key(&private_key_path).map_err(ssh_auth_failed)?;
             // A security key's "private key" file is only a credential handle;
             // the secret never leaves the authenticator, so ssh-keygen has to
             // do the signing (and can also prompt for a passphrase itself).
             let security_key = is_security_key(&key.algorithm());
             if key.is_encrypted() && !security_key {
-                bail!("passphrase-protected keys are not yet supported; use an unencrypted key");
+                return Err(ssh_auth_failed(
+                    "passphrase-protected keys are not yet supported; use an unencrypted key",
+                ));
             }
             let public_line = key
                 .public_key()
                 .to_openssh()
-                .context("serialize public key")?;
+                .context("serialize public key")
+                .map_err(ssh_auth_failed)?;
 
             // Step 1–3: offer the key, receive a challenge.
             let challenge_result = send_auth(
@@ -350,19 +370,23 @@ async fn authenticate(
             )
             .await?;
             if challenge_result.challenge.is_empty() {
-                bail!("authentication failed (key not authorized)");
+                return Err(ssh_auth_failed(
+                    "authentication failed (key not authorized)",
+                ));
             }
 
             // Step 4–5: sign the channel-bound challenge and prove possession.
             let message =
                 hf_auth::ssh::channel_bound_message(channel_binding, &challenge_result.challenge);
             let pem = if security_key {
-                sign_with_ssh_keygen(&private_key_path, &message)?
+                sign_with_ssh_keygen(&private_key_path, &message).map_err(ssh_auth_failed)?
             } else {
                 key.sign(hf_auth::SSH_NAMESPACE, ssh_key::HashAlg::Sha512, &message)
-                    .context("sign challenge")?
+                    .context("sign challenge")
+                    .map_err(ssh_auth_failed)?
                     .to_pem(ssh_key::LineEnding::LF)
-                    .context("encode signature")?
+                    .context("encode signature")
+                    .map_err(ssh_auth_failed)?
             };
             let result = send_auth(
                 control,
@@ -372,7 +396,7 @@ async fn authenticate(
                 }),
             )
             .await?;
-            ensure_ok(&result)?;
+            ensure_ok(&result).map_err(ssh_auth_failed)?;
             Ok(result.challenge) // the issued grant
         }
         AuthMethod::Password { username, password } => {

@@ -88,7 +88,10 @@ jobs:
         working-directory: desktop
       # Build the portable executable directly. Holdfast does not ship or use
       # the slower NSIS packaging stage.
-      - run: cargo build --release --locked
+      # Plain Cargo does not enable Tauri's production asset protocol for us.
+      # Without this feature the release executable loads devUrl
+      # (localhost:1420) and shows ERR_CONNECTION_REFUSED.
+      - run: cargo build --release --locked --features tauri/custom-protocol
         working-directory: desktop/src-tauri
       - run: |
           $deps = & $env:DUMPBIN_EXE /dependents desktop/src-tauri/target/release/hf-desktop.exe | Out-String

@@ -34,6 +34,7 @@ type ServerGroup = {
   key: string;
   displayName: string;
   username?: string;
+  usesSshKey: boolean;
   status: ServerStatus;
   fileUploads: boolean;
   container: HTMLElement;
@@ -239,7 +240,9 @@ class App implements TabDelegate {
     this.syncChrome();
   }
 
-  ensureGroup(server: Pick<ServerView, "key" | "displayName" | "username">): ServerGroup {
+  ensureGroup(
+    server: Pick<ServerView, "key" | "displayName" | "username" | "usesSshKey">,
+  ): ServerGroup {
     let group = this.groups.get(server.key);
     if (group) return group;
     const container = document.createElement("div");
@@ -270,6 +273,7 @@ class App implements TabDelegate {
       key: server.key,
       displayName: server.displayName,
       username: server.username,
+      usesSshKey: server.usesSshKey,
       status: "connecting",
       fileUploads: false,
       container,
@@ -736,6 +740,7 @@ class App implements TabDelegate {
             key: server,
             displayName: name.value.trim() || trimmedUrl,
             username: user.value.trim() || undefined,
+            usesSshKey: Boolean(key.value.trim()),
           });
           this.refreshStatusLine();
         } catch (error) {
@@ -746,10 +751,9 @@ class App implements TabDelegate {
     dialog.showModal();
   }
 
-  /** Password prompt for a server in `auth-required` (ADR 0016). The
-   *  password goes straight to the Rust core for one connect attempt and is
-   *  never stored; a wrong password produces another `auth-required` event
-   *  whose detail reopens this dialog with the failure message. */
+  /** Interactive prompt for a server in `auth-required`. Passwords are sent
+   *  for one attempt and never stored. SSH-key failures require an explicit
+   *  Retry so a missed YubiKey touch cannot become an automatic retry storm. */
   promptLogin(server: string, detail?: string): void {
     const group = this.groups.get(server);
     if (!group) return;
@@ -763,20 +767,27 @@ class App implements TabDelegate {
       return;
     }
     this.loginFor = server;
+    const usesSshKey = group.usesSshKey;
     document.getElementById("login-target")!.textContent =
-      group.username
+      usesSshKey
+        ? `Retry ${group.displayName} as ${group.username ?? "the configured user"}, then touch your security key when prompted.`
+        : group.username
         ? `Log in to ${group.displayName} as ${group.username}.`
         : `${group.displayName} needs a password to connect.`;
     error.hidden = !detail;
     error.textContent = detail ?? "";
     const form = document.getElementById("login-form") as HTMLFormElement;
     const password = document.getElementById("login-password") as HTMLInputElement;
+    const passwordLabel = document.getElementById("login-password-label")!;
+    const submit = document.getElementById("login-submit") as HTMLButtonElement;
+    passwordLabel.hidden = usesSshKey;
+    submit.textContent = usesSshKey ? "Retry" : "Log in";
     password.value = "";
     form.onsubmit = (event) => {
       if ((event.submitter as HTMLButtonElement | null)?.value !== "default") return;
-      const value = password.value;
+      const value = usesSshKey ? "" : password.value;
       password.value = "";
-      if (value) {
+      if (usesSshKey || value) {
         void ipc.login(server, value).catch((e) => this.setStatus(`login failed: ${e}`, "err"));
       }
     };
@@ -792,7 +803,7 @@ class App implements TabDelegate {
       }
     };
     dialog.showModal();
-    password.focus();
+    (usesSshKey ? submit : password).focus();
   }
 
   setStatus(text: string, kind: "ok" | "warn" | "err"): void {

@@ -1,4 +1,14 @@
 fn main() {
+    // `cargo build --release` alone leaves Tauri in development mode and
+    // bakes `devUrl` (localhost:1420) into the executable. Fail the build
+    // instead of publishing another client that can only show
+    // ERR_CONNECTION_REFUSED. `cargo tauri build` enables this feature itself;
+    // direct Cargo builds must pass `--features tauri/custom-protocol`.
+    if std::env::var("PROFILE").as_deref() == Ok("release") && tauri_build::is_dev() {
+        panic!(
+            "release builds require --features tauri/custom-protocol so frontendDist is embedded"
+        );
+    }
     tauri_build::build();
 
     // The Windows loader resolves msquic.dll before main(), so the runtime

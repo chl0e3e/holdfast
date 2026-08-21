@@ -39,7 +39,10 @@ npm run build
 Full app (needs a webview toolchain):
 
 - **Windows**: WebView2 is preinstalled on Win10/11.
-  `cd desktop && npm install && npm run build && cd src-tauri && cargo build --release --locked`.
+  `cd desktop && npm install && npm run build && cd src-tauri && cargo build
+  --release --locked --features tauri/custom-protocol`. The feature is
+  required when invoking Cargo directly; without it Tauri loads the development
+  URL (`localhost:1420`) instead of embedding `frontendDist`.
   The portable `hf-desktop.exe` and its pinned `msquic.dll` runtime land in
   `src-tauri/target/release/`; Holdfast does not build an NSIS installer.
 - **Linux dev box**: `apt install libwebkit2gtk-4.1-dev librsvg2-dev
@@ -187,4 +190,27 @@ The transport-neutral correct/wrong-password and grant restart paths run with:
 
 ```bash
 cargo test -p hf-client-core password_login_and_grant_only_restart --locked
+```
+
+### Windows security-key retry regression
+
+With an expired/removed stored grant and a configured `*-sk` key, deliberately
+miss or cancel the first YubiKey touch. Holdfast must show one SSH-key failure
+and a **Retry** action; it must not open more prompts or make more daemon
+authentication attempts until Retry is pressed. Press Retry, touch once, and
+confirm the server connects without entering source-IP lockout. The headless
+supervisor gate is:
+
+```bash
+cargo test -p hf-client-core --test core ssh_key_failure_waits_for_explicit_retry --locked
+```
+
+Windows OpenSSH provides the FIDO implementation used by Holdfast. If its
+console reports `invalid format`, record the executables/version before
+changing the client configuration:
+
+```powershell
+where.exe ssh-keygen
+where.exe ssh
+ssh -V
 ```

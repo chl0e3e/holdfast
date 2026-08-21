@@ -89,9 +89,9 @@ pub enum ServerStatus {
     Connecting,
     Connected,
     Reconnecting,
-    /// Password-auth server with no valid grant: the GUI must call
-    /// [`Core::login`]. `detail` carries the failure message after a
-    /// rejected attempt.
+    /// Interactive authentication is waiting for the GUI to call
+    /// [`Core::login`]: either supply a password, or explicitly retry an SSH
+    /// key after a rejected signature. `detail` carries the failure message.
     AuthRequired,
 }
 
@@ -148,6 +148,9 @@ pub struct ServerView {
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Distinguishes a key retry prompt from a password prompt when the
+    /// server reports `AuthRequired`.
+    pub uses_ssh_key: bool,
     pub shells: Vec<ShellView>,
     /// Present connection status. Status events emitted before the GUI
     /// subscribes (e.g. `auth-required` milliseconds after spawn) are
@@ -269,6 +272,7 @@ impl Core {
                 .into_iter()
                 .map(|(key, record)| {
                     let file_uploads = capabilities.get(&key).copied().unwrap_or(false);
+                    let uses_ssh_key = record.ssh_key_path.is_some();
                     let (status, status_detail) = match statuses.get(&key) {
                         Some((s, d)) => (Some(*s), d.clone()),
                         None => (None, None),
@@ -278,6 +282,7 @@ impl Core {
                         url: record.url,
                         display_name: record.display_name,
                         username: record.username,
+                        uses_ssh_key,
                         shells: record
                             .shells
                             .into_iter()
@@ -489,11 +494,11 @@ impl Core {
         .await
     }
 
-    /// Supply the password for a password-auth server (username configured,
-    /// no SSH key — ADR 0016). Used for exactly one connect attempt and never
-    /// persisted; afterwards the refreshed 12 h grant carries reconnects. The
-    /// outcome arrives as a `ServerStatus` event (`Connected`, or
-    /// `AuthRequired` again with a detail message on rejection).
+    /// Continue one interactive authentication attempt. `password` supplies a
+    /// password-auth server (ADR 0016); an empty value explicitly retries the
+    /// configured SSH key after a rejected signature. Passwords are never
+    /// persisted. The outcome arrives as `Connected`, or `AuthRequired` again
+    /// with a failure detail.
     pub async fn login(&self, server_key: &str, password: String) -> Result<()> {
         self.send(server_key, ServerCmd::Login { password }).await
     }
@@ -570,6 +575,7 @@ mod view_tests {
                 url: "https://host".into(),
                 display_name: "host".into(),
                 username: Some("alice".into()),
+                uses_ssh_key: false,
                 shells: vec![],
                 status: Some(ServerStatus::AuthRequired),
                 status_detail: Some("authentication failed".into()),
@@ -582,6 +588,7 @@ mod view_tests {
         assert_eq!(server["statusDetail"], "authentication failed");
         assert_eq!(server["displayName"], "host");
         assert_eq!(server["username"], "alice");
+        assert_eq!(server["usesSshKey"], false);
 
         // Absent status must be omitted, not null: the GUI tests truthiness.
         let view = BootstrapView {
@@ -590,6 +597,7 @@ mod view_tests {
                 url: "https://host".into(),
                 display_name: "host".into(),
                 username: None,
+                uses_ssh_key: false,
                 shells: vec![],
                 status: None,
                 status_detail: None,

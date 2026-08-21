@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use hf_native_client::{
     attach_failure_action, attach_shell, connect_with, upload_file, AuthMethod,
-    AuthenticationRejected, Chan, Connection, FailureAction, ServerConn, UploadCancellation,
-    UploadPhase as NativeUploadPhase,
+    AuthenticationRejected, Chan, Connection, FailureAction, ServerConn, SshAuthenticationFailed,
+    UploadCancellation, UploadPhase as NativeUploadPhase,
 };
 use hf_protocol::pb::{self, envelope::Message as Msg, Envelope};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -21,8 +21,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::shell::{spawn_pumps, PumpCtx, WriterCmd};
 use crate::store::{hex, unhex, Store};
 use crate::{
-    now_ms, AttachInfo, CoreEvent, HistoryPage, ServerStatus, ShellRow, ShellStateEvent,
-    StatusMap, UploadPhase, UploadReply,
+    now_ms, AttachInfo, CoreEvent, HistoryPage, ServerStatus, ShellRow, ShellStateEvent, StatusMap,
+    UploadPhase, UploadReply,
 };
 
 /// In-flight control requests are bounded; beyond this the caller gets an
@@ -71,10 +71,10 @@ pub enum ServerCmd {
         max_lines: u32,
         reply: oneshot::Sender<Result<HistoryPage>>,
     },
-    /// Password for a password-auth server (ADR 0016). Held in memory for a
-    /// single connect attempt, then dropped — never persisted. The outcome
-    /// arrives as a `ServerStatus` event (`Connected` or `AuthRequired` again
-    /// with a detail message).
+    /// Continue interactive authentication: a non-empty password for ADR 0016,
+    /// or an empty value to retry the configured SSH key. Held for one connect
+    /// attempt and never persisted; the outcome arrives as `Connected` or
+    /// `AuthRequired` again with a detail message.
     Login {
         password: String,
     },
@@ -295,6 +295,25 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
         let conn = match connect_and_auth(&ctx, password.take()).await {
             Ok(conn) => conn,
             Err(e) => {
+                // SSH-key auth is interactive too. Windows ssh-keygen may
+                // reject a FIDO signature after a missed touch; retrying in
+                // the network backoff loop creates more prompts and eventually
+                // rate-limits the user's source IP. Pause after one judged
+                // key-auth failure and let the GUI request the next attempt.
+                if e.downcast_ref::<SshAuthenticationFailed>().is_some() {
+                    ctx.emit_status(
+                        ServerStatus::AuthRequired,
+                        Some(format!("SSH key authentication failed: {e}")),
+                    )
+                    .await;
+                    loop {
+                        match rx.recv().await {
+                            None => return,
+                            Some(ServerCmd::Login { .. }) => continue 'outer,
+                            Some(cmd) => refuse_unauthenticated(cmd),
+                        }
+                    }
+                }
                 // Password auth is interactive: without a (correct) password
                 // reconnecting cannot succeed, so instead of the backoff loop
                 // we surface `AuthRequired` and wait for the GUI's Login.

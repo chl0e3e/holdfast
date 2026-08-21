@@ -54,8 +54,9 @@ pub async fn remove_server(state: State<'_, AppState>, server: String) -> CmdRes
     state.core.remove_server(&server).await.map_err(err)
 }
 
-/// Password for a password-auth server (ADR 0016). Forwarded for one connect
-/// attempt, never persisted; the outcome arrives as a `server-status` event.
+/// Continue one interactive auth attempt: a password, or an empty value for an
+/// explicit SSH-key retry. Passwords are never persisted; the outcome arrives
+/// as a `server-status` event.
 #[tauri::command]
 pub async fn login(state: State<'_, AppState>, server: String, password: String) -> CmdResult<()> {
     state.core.login(&server, password).await.map_err(err)

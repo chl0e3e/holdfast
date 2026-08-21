@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use hf_daemon::{AuthConfig, Daemon, DaemonConfig};
-use hf_native_client::{connect_with, AuthMethod};
+use hf_native_client::{connect_with, AuthMethod, SshAuthenticationFailed};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
@@ -74,7 +74,14 @@ async fn native_client_authenticates_with_ssh_key_and_reuses_grant() {
         },
     )
     .await;
-    assert!(bad.is_err(), "unknown user must fail");
+    let bad = match bad {
+        Ok(_) => panic!("unknown user must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        bad.downcast_ref::<SshAuthenticationFailed>().is_some(),
+        "an interactive driver must be able to pause instead of retrying: {bad:#}"
+    );
 
     daemon.abort();
     std::fs::remove_dir_all(&tmp).ok();

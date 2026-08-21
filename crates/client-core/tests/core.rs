@@ -488,6 +488,54 @@ async fn password_login_and_grant_only_restart() {
     daemon.abort();
 }
 
+/// A judged SSH-key failure is interactive, not a transport outage. The
+/// supervisor must wait for an explicit retry instead of repeatedly invoking
+/// a FIDO key and eventually tripping holdfastd's source-IP rate limiter.
+#[tokio::test]
+async fn ssh_key_failure_waits_for_explicit_retry() {
+    use hf_client_core::ServerStatus;
+
+    let dir = temp_dir();
+    let store_path = dir.join("desktop.json");
+    let invalid_key = dir.join("invalid-key");
+    std::fs::write(&invalid_key, b"not an OpenSSH private key\n").unwrap();
+    let (daemon, url) = start_daemon().await;
+
+    let (core, mut events) = Core::spawn(store_path).await.unwrap();
+    let server = core
+        .add_server(ServerConfig {
+            url,
+            display_name: "key".into(),
+            username: Some("alice".into()),
+            ssh_key_path: Some(invalid_key),
+        })
+        .await
+        .unwrap();
+
+    let detail = wait_status(&mut events, &server, ServerStatus::AuthRequired)
+        .await
+        .expect("key failure detail");
+    assert!(
+        detail.contains("parse private key"),
+        "unexpected detail: {detail}"
+    );
+
+    // Pre-fix, the one-second reconnect backoff emits another attempt here.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1_500), events.recv())
+            .await
+            .is_err(),
+        "SSH auth retried without a user request"
+    );
+
+    // The same command used by the GUI's Retry button releases exactly one
+    // new attempt, which returns to AuthRequired instead of looping.
+    core.login(&server, String::new()).await.unwrap();
+    wait_status(&mut events, &server, ServerStatus::AuthRequired).await;
+
+    daemon.abort();
+}
+
 /// The auth-required status fires milliseconds after spawn — before a real
 /// GUI has subscribed to events. Bootstrap must carry the current status so
 /// a late subscriber still shows the login prompt (the desktop's launch bug:
