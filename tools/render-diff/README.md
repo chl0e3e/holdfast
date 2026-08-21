@@ -24,7 +24,7 @@ xterm.js still agree on the codepoints that moved.
 
 ## Offline corpus
 
-221 single-purpose cases covering Unicode width/composition, CSI/SGR, cursor
+229 single-purpose cases covering Unicode width/composition, CSI/SGR, cursor
 and scrolling, alternate screen, input-encoding modes, charsets, OSC/DCS
 strings, raw mIRC formatting, and composite stress shapes. See `corpus.mjs`.
 
@@ -46,11 +46,12 @@ Set `ONLY=<regex>` to run a subset. Each case is checked four ways:
 
 ## Current results
 
-`pass 210  fail 11  bounded 7` over 228 cases at 80×24 (plus the 100×30 and
-60×20 roaming checks), re-measured 2026-08-11 after ADR 0026 regenerated the
-width tables and the model learned OSC 8. Note that the failures are **not**
-all resize checks, as an earlier note claimed: `tab-stops` differs at the
-attach size too.
+`pass 212  fail 11  bounded 6` over 229 cases at 80×24 (plus the 100×30 and
+60×20 roaming checks), re-measured 2026-08-21 after adding the exact
+`U+1885 U+0604 U+2050` WeeChat nickname regression and applying ADR 0029's
+bidi-isolate presentation filter. Note that the failures are **not** all
+resize checks, as an earlier note claimed: `tab-stops` differs at the attach
+size too.
 
 Fixed off the back of this harness, each with a regression test in
 `crates/terminal-model/tests/render_parity.rs`:
@@ -66,6 +67,12 @@ Fixed off the back of this harness, each with a regression test in
   shift on every bad byte;
 - combining marks were capped at three per cell, truncating subdivision-flag
   tag sequences and stacked diacritics;
+- a zero-width mark at the start of a cursor-positioned WeeChat field became
+  an orphan in xterm.js, burning a hidden cell and replaying a visibly
+  different grapheme after reattach;
+- U+2066–U+2069 bidi isolates were split across xterm.js cells and therefore
+  across independent browser paint calls; both clients now discard them at
+  the presentation boundary (ADR 0029), including across UTF-8 chunk splits;
 - legacy (`31`) and indexed (`38;5;1`) palette colours were collapsed into one
   representation, though xterm.js renders them differently under bold.
 

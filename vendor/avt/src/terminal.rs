@@ -1711,6 +1711,7 @@ fn dump_buffer(buffer: &Buffer, links: &[Hyperlink], funs: &mut Vec<Function>) {
     let mut link_budget = MAX_LINK_DUMP_BYTES;
 
     for (i, line) in buffer.view().take(cutoff).enumerate() {
+        let mut col = 0;
         for cells in line.chunks(|c1, c2| c1.pen() != c2.pen()) {
             let cell_pen = *cells[0].pen();
 
@@ -1729,7 +1730,7 @@ fn dump_buffer(buffer: &Buffer, links: &[Hyperlink], funs: &mut Vec<Function>) {
                 ..cell_pen
             };
 
-            dump_cells(&cells, funs);
+            dump_cells(&cells, &mut col, line.len(), funs);
         }
 
         if i < last && !line.wrapped {
@@ -1875,23 +1876,43 @@ fn push_attr_diff(ops: &mut SgrOps, from: bool, to: bool, set: SgrOp, reset: Sgr
     }
 }
 
-fn dump_cells(cells: &[Cell], funs: &mut Vec<Function>) {
+fn dump_cells(cells: &[Cell], col: &mut usize, line_cols: usize, funs: &mut Vec<Function>) {
     let mut i = 0;
 
     while i < cells.len() {
         let ch = cells[i].char();
+        let cell_width = cells[i].width() as usize;
 
         // A cell with zero-width extras replays as its base char followed by
         // the extras (each re-attaches via the zero-width print path). It
         // must never be REP'd or folded into a run: REP repeats only the
         // last printed character.
         if cells[i].has_zero_width() {
-            funs.push(Function::Print(ch));
+            // A zero-width mark can be the first codepoint in a cursor-
+            // positioned field (a live WeeChat nickname exposed this with
+            // U+1885). The model attaches it to the existing blank cell on
+            // the left. Replaying that as a literal space plus the mark gives
+            // xterm.js a different grapheme string (" <mark>" instead of
+            // "<mark>"). For a default blank, advance over the untouched
+            // cell and let the mark join it from the right, exactly as live
+            // rendering does. Styled blanks still need printing so their
+            // background and attributes survive the snapshot.
+            if ch == ' '
+                && !cells[i].has_explicit_base()
+                && cells[i].pen().is_default()
+                && cell_width == 1
+                && *col + cell_width < line_cols
+            {
+                funs.push(Function::Cuf(1));
+            } else {
+                funs.push(Function::Print(ch));
+            }
 
             for &zw in cells[i].zero_width() {
                 funs.push(Function::Print(zw));
             }
 
+            *col += cell_width;
             i += 1;
             continue;
         }
@@ -1914,6 +1935,10 @@ fn dump_cells(cells: &[Cell], funs: &mut Vec<Function>) {
             }
         }
 
+        *col += cells[i..i + run_len]
+            .iter()
+            .map(|cell| cell.width() as usize)
+            .sum::<usize>();
         i += run_len;
     }
 }

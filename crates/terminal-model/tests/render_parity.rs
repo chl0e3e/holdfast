@@ -108,6 +108,34 @@ fn emoji_tag_sequence_flag_is_not_truncated() {
 }
 
 #[test]
+fn field_leading_zero_width_mark_replays_without_inventing_a_space_base() {
+    let mut m = model(80, 24);
+    // Exact shape from a live WeeChat nickname on 2026-08-21. U+1885 is
+    // zero-width and arrives immediately after CUP + SGR, so xterm has no
+    // textual predecessor even though column 11 has a physical blank on its
+    // left. The snapshot must advance over that untouched blank and attach
+    // the mark from the right; printing a new space creates a different
+    // grapheme and produces the white boxed-looking glyph from the report.
+    m.feed("\x1b[4;12H\x1b[38;5;208mᢅ؄⁐\x1b[0m message\r\n".as_bytes());
+    let snap = snapshot_of(&m);
+    assert!(
+        snap.contains("\x1b[1Cᢅ"),
+        "untouched blank was not replayed by cursor advance: {snap:?}"
+    );
+    assert!(
+        !snap.contains(" ᢅ"),
+        "snapshot invented a literal space base before U+1885: {snap:?}"
+    );
+
+    // A space the application really printed is different: it is the mark's
+    // explicit base and must stay in the grapheme. This guards the bidi-
+    // isolate title case that exposed an over-broad first version of the fix.
+    let mut explicit = model(20, 4);
+    explicit.feed("A \u{2068}B".as_bytes());
+    assert!(snapshot_of(&explicit).contains(" \u{2068}"));
+}
+
+#[test]
 fn narrowing_keeps_every_character() {
     for len in [61usize, 80, 160, 200, 250, 300] {
         let mut m = model(80, 24);

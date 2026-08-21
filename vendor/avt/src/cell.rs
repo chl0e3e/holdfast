@@ -17,7 +17,16 @@ pub(crate) const MAX_ZERO_WIDTH: usize = 8;
 const NO_ZERO_WIDTH: [char; MAX_ZERO_WIDTH] = ['\0'; MAX_ZERO_WIDTH];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Cell(char, Occupancy, Pen, [char; MAX_ZERO_WIDTH]);
+pub struct Cell(
+    char,
+    Occupancy,
+    Pen,
+    [char; MAX_ZERO_WIDTH],
+    // Distinguishes an untouched grid blank from an explicitly printed
+    // space. xterm.js gives those different grapheme strings when a
+    // zero-width mark is attached, even though their geometry is identical.
+    bool,
+);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Occupancy {
@@ -38,11 +47,11 @@ impl Occupancy {
 
 impl Cell {
     pub(crate) fn new(ch: char, occupancy: Occupancy, pen: Pen) -> Self {
-        Cell(ch, occupancy, pen, NO_ZERO_WIDTH)
+        Cell(ch, occupancy, pen, NO_ZERO_WIDTH, true)
     }
 
     pub(crate) fn blank(pen: Pen) -> Self {
-        Cell(' ', Occupancy::Single, pen, NO_ZERO_WIDTH)
+        Cell(' ', Occupancy::Single, pen, NO_ZERO_WIDTH, false)
     }
 
     pub fn is_default(&self) -> bool {
@@ -70,6 +79,7 @@ impl Cell {
         self.1 = occupancy;
         self.2 = pen;
         self.3 = NO_ZERO_WIDTH;
+        self.4 = true;
     }
 
     /// Append a zero-width character (combining mark, ZWJ, variation
@@ -88,6 +98,10 @@ impl Cell {
 
     pub(crate) fn has_zero_width(&self) -> bool {
         self.3[0] != '\0'
+    }
+
+    pub(crate) fn has_explicit_base(&self) -> bool {
+        self.4
     }
 }
 

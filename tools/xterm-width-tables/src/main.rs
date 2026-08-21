@@ -262,12 +262,16 @@ export class ServerWidthProvider implements IUnicodeVersionProvider {
 
   public charProperties(codepoint: number, preceding: number): number {
     let width: number = this.wcwidth(codepoint);
-    let shouldJoin = width === 0 && preceding !== 0;
+    // xterm clears `preceding` on CSI/SGR even though cursor positioning can
+    // leave a physical cell immediately to the left. Its print path checks
+    // the actual cursor column before joining, so keep zero-width characters
+    // joinable even when this textual state is empty. Without this, a
+    // field-leading combining mark creates a hidden width-0 buffer cell,
+    // advances the cursor by one and shears live output from the snapshot.
+    const shouldJoin = width === 0;
     if (shouldJoin) {
       const oldWidth = extractWidth(preceding);
-      if (oldWidth === 0) {
-        shouldJoin = false;
-      } else if (oldWidth > width) {
+      if (oldWidth > width) {
         width = oldWidth;
       }
     }

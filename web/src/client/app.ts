@@ -42,6 +42,7 @@ import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 import { snapshotReplayPreamble } from "./terminal-replay.js";
+import { stripBidiIsolates, TerminalOutputFilter } from "./terminal-output.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 2;
@@ -89,6 +90,8 @@ class Tab {
   title = "";
   /// Recovers picker-inserted text (emoji) that xterm.js declines.
   inserted = new InsertedTextForwarder();
+  /// Level-1 terminal bidi policy: discard isolates at the paint boundary.
+  private readonly outputFilter = new TerminalOutputFilter();
 
   snapshot: Uint8Array = new Uint8Array();
   historyLines: string[] = [];
@@ -236,7 +239,7 @@ class Tab {
   }
 
   appendLive(data: Uint8Array): void {
-    if (this.presented) this.term.write(data);
+    if (this.presented) this.writeOutput(data);
     this.liveChunks.push(data);
     this.liveBytes += data.length;
     while (this.liveBytes > LIVE_BUFFER_CAP && this.liveChunks.length > 1) {
@@ -250,20 +253,26 @@ class Tab {
   render(): void {
     this.presented = true;
     this.term.reset();
+    this.outputFilter.reset();
     if (this.historyLines.length > 0) {
       const note = this.historyExhausted || this.oldestFetched <= this.oldestAvailable
         ? "── start of retained history ──"
         : "── scroll up for older history ──";
       this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
-      this.term.write(this.historyLines.join("\r\n") + "\r\n");
+      this.term.write(stripBidiIsolates(this.historyLines.join("\r\n") + "\r\n"));
     }
     this.term.write(snapshotReplayPreamble(this.term.rows));
-    this.term.write(this.snapshot);
+    this.writeOutput(this.snapshot);
     if (this.liveOverflowed) {
       this.term.write("\r\n\x1b[2m── some earlier live output not re-rendered ──\x1b[0m\r\n");
     }
-    for (const chunk of this.liveChunks) this.term.write(chunk);
+    for (const chunk of this.liveChunks) this.writeOutput(chunk);
     this.term.scrollToBottom();
+  }
+
+  private writeOutput(data: Uint8Array): void {
+    const filtered = this.outputFilter.filter(data);
+    if (filtered.length > 0) this.term.write(filtered);
   }
 
   dispose(): void {

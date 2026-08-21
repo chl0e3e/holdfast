@@ -20,6 +20,7 @@
 // @xterm/headless ships CommonJS, so it has no named ESM exports.
 import headless from "@xterm/headless";
 import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "../../web/src/client/server-width.js";
+import { stripBidiIsolates, TerminalOutputFilter } from "../../web/src/client/terminal-output.js";
 import { readFileSync } from "node:fs";
 
 const { Terminal } = headless;
@@ -61,7 +62,8 @@ function makeTerminal(cols = COLS, rows = ROWS): Terminal {
 }
 
 function write(term: Terminal, data: Uint8Array): Promise<void> {
-  return new Promise((resolve) => term.write(data, resolve));
+  const filtered = new TerminalOutputFilter().filter(data);
+  return new Promise((resolve) => term.write(filtered, resolve));
 }
 
 /// The visible screen only: the snapshot restores the screen, not scrollback.
@@ -78,7 +80,7 @@ function grid(term: Terminal, cols = COLS, rows_ = ROWS): Grid {
         continue;
       }
       // Compare SCREEN COLUMNS, not buffer cells. A zero-width character with
-      // no base (a bidi isolate or combining mark at the very start of a line)
+      // no base (for example, a combining mark at the very start of a line)
       // gets its own buffer cell in xterm.js and none in the model, which
       // shifts every later cell INDEX without moving anything on screen.
       // Fold it into the previous column so only real displacement counts.
@@ -183,12 +185,22 @@ async function main() {
   }
   const only = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 
-  const corpus = new Map<string, { category: string; bytes: Uint8Array; bounded?: string }>();
+  const corpus = new Map<string, {
+    category: string;
+    bytes: Uint8Array;
+    bounded?: string;
+    skipModelText?: boolean;
+  }>();
   for (const line of readFileSync(corpusPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
     const [name, category, flags, hex] = line.split("\t");
     const parsed = flags ? JSON.parse(flags) : {};
-    corpus.set(name!, { category: category!, bytes: unhex(hex!), bounded: parsed.bounded });
+    corpus.set(name!, {
+      category: category!,
+      bytes: unhex(hex!),
+      bounded: parsed.bounded,
+      skipModelText: parsed.skipModelText === true,
+    });
   }
   const model = new Map<string, {
     snapshot: Uint8Array; visible: string; chunked: Uint8Array;
@@ -257,8 +269,9 @@ async function main() {
     // The model's own text view should match what the client shows. The live
     // probe cannot see it, and leaves the column empty to skip this check.
     const liveText = live.rows.map(rowText).join("\n").replace(/\n+$/, "");
-    const modelText = m.visible.split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/\n+$/, "");
-    if (m.visible.length > 0 && liveText !== modelText) {
+    const modelText = stripBidiIsolates(m.visible)
+      .split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/\n+$/, "");
+    if (!entry.skipModelText && m.visible.length > 0 && liveText !== modelText) {
       const liveLines = liveText.split("\n");
       const modelLines = modelText.split("\n");
       const detail: string[] = [];

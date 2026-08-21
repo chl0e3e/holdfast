@@ -78,8 +78,8 @@ The spike's `msquic-h3` fork and earlier probe generations are not imported.
 package, DLL, and PDB SHA-256 values. Its x64 import library incorrectly names
 `msquic.sys` even though the package ships the user-mode `msquic.dll`; the
 script deterministically regenerates the two-export import library from a
-small `.def` using MSVC `lib.exe`. The installer includes `msquic.dll` beside
-the desktop executable. An `.sys`-named DLL alias is never shipped.
+small `.def` using MSVC `lib.exe`. The release output includes `msquic.dll`
+beside the desktop executable. An `.sys`-named DLL alias is never shipped.
 
 ## Verification
 
@@ -100,14 +100,13 @@ cd desktop/src-tauri
 cargo check --locked
 ```
 
-The CI installer job additionally runs `dumpbin /dependents` against
+The CI Windows executable job additionally runs `dumpbin /dependents` against
 `hf-desktop.exe` and requires `msquic.dll` while rejecting `msquic.sys`.
 
 The live wire proof remains the disposable spike's `stage3` executable against
 a configured holdfastd; it checks the Schannel leaf hash, HTTP/3 settings,
 WebTransport CONNECT, and a real Holdfast ClientHello/ServerHello exchange.
-The production Windows build and installer were reproduced in Dockur/Windows
-with:
+The production Windows executable was reproduced in Dockur/Windows with:
 
 ```powershell
 cd desktop
@@ -116,10 +115,9 @@ npm test
 npm run build
 cd src-tauri
 cargo build --release --locked
-cd ..
-cargo tauri build
-dumpbin /dependents src-tauri/target/release/hf-desktop.exe
+dumpbin /dependents target/release/hf-desktop.exe
 ```
 
-The resulting PE imported `msquic.dll` and the unpacked NSIS installer
-contained `hf-desktop.exe` plus the pinned 558,640-byte `msquic.dll`.
+The resulting PE imported `msquic.dll`; release output contains
+`hf-desktop.exe` plus the pinned 558,640-byte `msquic.dll`. NSIS packaging is
+disabled because Holdfast is deployed as this portable pair.

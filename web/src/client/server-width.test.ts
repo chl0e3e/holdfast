@@ -45,6 +45,15 @@ assert.equal((base >> 1) & 0x3, 1, "base is narrow");
 const mark = p.charProperties(0x0301, base);
 assert.equal(mark & 1, 1, "mark joins preceding cell");
 assert.equal((mark >> 1) & 0x3, 1, "joined cell stays one column");
+// WeeChat positions coloured fields with CSI/SGR, which resets xterm.js's
+// preceding-character state without moving the cursor back to column zero.
+// A leading zero-width mark must still join the physical cell on the left.
+// Otherwise xterm.js creates a hidden width-0 buffer cell, advances by one,
+// and shifts the rest of the field away from the server snapshot. U+1885 is
+// the exact leading mark observed in the `ᢅ؄⁐` IRC nickname.
+const fieldLeadingMark = p.charProperties(0x1885, 0);
+assert.equal(fieldLeadingMark & 1, 1, "field-leading zero-width mark joins left cell");
+assert.equal((fieldLeadingMark >> 1) & 0x3, 0, "field-leading mark consumes no column");
 const wideBase = p.charProperties(0x1fae0, 0);
 assert.equal((wideBase >> 1) & 0x3, 2, "melting face is two columns");
 const vs16 = p.charProperties(0xfe0f, wideBase);

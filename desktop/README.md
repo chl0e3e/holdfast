@@ -39,8 +39,9 @@ npm run build
 Full app (needs a webview toolchain):
 
 - **Windows**: WebView2 is preinstalled on Win10/11.
-  `cargo install tauri-cli --version '^2' && cd desktop && npm install && cargo tauri build`
-  (NSIS installer lands in `src-tauri/target/release/bundle/nsis/`).
+  `cd desktop && npm install && npm run build && cd src-tauri && cargo build --release --locked`.
+  The portable `hf-desktop.exe` and its pinned `msquic.dll` runtime land in
+  `src-tauri/target/release/`; Holdfast does not build an NSIS installer.
 - **Linux dev box**: `apt install libwebkit2gtk-4.1-dev librsvg2-dev
   build-essential`, then `cd desktop && npm install && cargo tauri dev`
   against a loopback daemon (`cargo run -p hf-daemon`), URL

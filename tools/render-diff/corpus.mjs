@@ -54,6 +54,18 @@ function add(category, name, flags, ...parts) {
 add("unicode", "ascii-baseline", {}, "hello world\r\n");
 add("unicode", "combining-acute-x60", {}, "é".repeat(60), "END\r\n");
 add("unicode", "combining-acute-single", {}, "[é]\r\n");
+// Live WeeChat regression, 2026-08-21: U+1885 is a zero-width Mongolian mark
+// at the start of a coloured nickname. CUP + SGR reset xterm.js's textual
+// join state but leave a real physical cell to the left. Treating the mark as
+// an orphan burns a hidden buffer cell and shifts U+0604/U+2050 one column
+// away from the server-authoritative snapshot.
+add("unicode", "weechat-field-leading-zero-width", {
+  // The model records the untouched physical blank as the combining mark's
+  // base, while xterm's text accessor omits that base. Their rendered grids
+  // must still match; only this non-visual text projection is inapplicable.
+  skipModelText: true,
+},
+  `${CSI}4;12H${CSI}38;5;208mᢅ؄⁐${CSI}0m message\r\n`);
 add("unicode", "zalgo-stack-8", {}, "à́̂̃̄̅̆̇b\r\n");
 add("unicode", "zalgo-stack-64", { bounded: "64 marks exceeds MAX_ZERO_WIDTH (8)" }, "a" + "́".repeat(64) + "b\r\n");
 add("unicode", "cjk-wide", {}, "你好世界\r\n");
@@ -86,17 +98,16 @@ add("unicode", "zero-width-joiner-bare", {}, "[a‍b]\r\n");
 add("unicode", "word-joiner", {}, "[a⁠b]\r\n");
 add("unicode", "bom-mid-stream", { bounded: "zero-width U+FEFF kept by the model's text extraction, dropped by xterm.js; no grid difference" }, "[a﻿b]\r\n");
 // Bidi isolates as emitted by IRC title bots (a real "[YouTube] ⁨Title⁩" line
-// from a live weechat log). Zero-width in glibc, unicode-width and xterm.js
-// alike, but they sit mid-line exactly where weechat then wraps.
+// from a live weechat log). ADR 0029 discards these at the client presentation
+// boundary because xterm.js splits the pair across per-cell paint calls. Keep
+// the exact raw bytes here so live, snapshot and resize filtering stay pinned.
 add("unicode", "bidi-isolate-youtube-line", {},
   "[YouTube] \u2068Donny Ben\u00e9t - Konichiwa (Official Music Video)\u2069 | 4m 41s"
   + " | Channel: \u2068Donny Ben\u00e9t\u2069 | 2,115,527 views | 48,669 likes"
   + " | 2017-08-31 - 22:00:01 UTC\r\n");
 add("unicode", "bidi-isolate-after-wrap", {}, "x".repeat(80), "\u2068abc\u2069\r\n");
 add("unicode", "bidi-isolate-run", {}, "a\u2068\u2069".repeat(40), "END\r\n");
-add("unicode", "bidi-isolate-at-col0",
-  { bounded: "orphan zero-width character: xterm.js gives it a width-0 cell, the model has no base to attach it to — identical on screen, differs only in extracted text" },
-  "\u2068abc\u2069\r\n");
+add("unicode", "bidi-isolate-at-col0", {}, "\u2068abc\u2069\r\n");
 
 // ADR 0026 — the 304 codepoints where glibc's wcwidth (what the application
 // lays out with) disagreed with the unicode-width crate (what we used to draw

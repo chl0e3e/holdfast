@@ -3,12 +3,7 @@ name: ci
 on:
   push:
   pull_request:
-  workflow_dispatch: # manual: also builds the desktop exe (installer opt-in)
-    inputs:
-      installer:
-        description: "Also bundle the NSIS installer (slower; for releases)"
-        type: boolean
-        default: false
+  workflow_dispatch: # manual: also builds the standalone Windows executable
   schedule:
     - cron: "0 6 * * 1" # weekly, catches newly disclosed advisories
 jobs:
@@ -60,8 +55,7 @@ jobs:
       - run: cargo check -p hf-client-core --locked
 
   # Desktop app (standalone workspace, ADR 0019): frontend typecheck+build,
-  # then compile the Tauri crate. Bundling the NSIS installer is manual
-  # (workflow_dispatch) to keep push CI fast.
+  # then compile the Tauri crate.
   desktop:
     runs-on: windows-latest
     steps:
@@ -79,7 +73,7 @@ jobs:
       - run: cargo check --locked
         working-directory: desktop/src-tauri
 
-  desktop-installer:
+  desktop-executable:
     if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
@@ -90,21 +84,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
         working-directory: desktop
-      - run: cargo install tauri-cli --version ^2 --locked
-      # NSIS bundling is opt-in (dispatch input) so iteration builds stay fast.
-      - if: ${{ !inputs.installer }}
-        run: cargo tauri build --no-bundle
+      - run: npm run build
         working-directory: desktop
-      - if: ${{ inputs.installer }}
-        run: cargo tauri build
-        working-directory: desktop
+      # Build the portable executable directly. Holdfast does not ship or use
+      # the slower NSIS packaging stage.
+      - run: cargo build --release --locked
+        working-directory: desktop/src-tauri
       - run: |
           $deps = & $env:DUMPBIN_EXE /dependents desktop/src-tauri/target/release/hf-desktop.exe | Out-String
           if ($deps -notmatch "msquic\.dll") { throw "desktop exe does not import msquic.dll" }
           if ($deps -match "msquic\.sys") { throw "desktop exe still imports the broken msquic.sys name" }
       - uses: actions/upload-artifact@v4
         with:
-          name: holdfast-desktop-nsis
+          name: holdfast-desktop-windows
           path: |
             desktop/src-tauri/target/release/hf-desktop.exe
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/msquic.dll

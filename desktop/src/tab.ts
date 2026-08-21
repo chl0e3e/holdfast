@@ -10,6 +10,7 @@ import { InsertedTextForwarder } from "./inserted-text.js";
 import { findLinks, rowText, type LinkPopover } from "./links.js";
 import { TabLabel } from "./tab-label.js";
 import { repaintVisibleTerminal } from "./terminal-presentation.js";
+import { TerminalOutputFilter } from "./terminal-output.js";
 import type { TabState } from "./ui-state.js";
 import {
   composeBoundedReplay,
@@ -64,6 +65,8 @@ export class Tab {
   title = "";
   /// Recovers picker-inserted text (emoji) that xterm.js declines.
   inserted = new InsertedTextForwarder();
+  /// Level-1 terminal bidi policy: discard isolates at the paint boundary.
+  private readonly outputFilter = new TerminalOutputFilter();
   private readonly delegate: TabDelegate;
 
   snapshot: Uint8Array = new Uint8Array();
@@ -362,6 +365,7 @@ export class Tab {
     this.renderPending = false;
     this.pendingOffsetFromBottom = null;
     this.recoveryRequested = false;
+    this.outputFilter.reset();
     return this.attachmentGeneration;
   }
 
@@ -444,7 +448,8 @@ export class Tab {
     this.renderPending = false;
     this.replayInFlight = true;
     this.term.reset();
-    this.term.write(replay, () => {
+    this.outputFilter.reset();
+    this.term.write(this.outputFilter.filter(replay), () => {
       this.replayInFlight = false;
       if (this.closing) return;
       if (generation !== this.attachmentGeneration) {
@@ -500,7 +505,13 @@ export class Tab {
     if (!data) return;
     this.writeQueueBytes -= data.length;
     this.writeInFlight = true;
-    this.term.write(data, () => {
+    const filtered = this.outputFilter.filter(data);
+    if (filtered.length === 0) {
+      this.writeInFlight = false;
+      queueMicrotask(() => this.pumpWrites());
+      return;
+    }
+    this.term.write(filtered, () => {
       this.writeInFlight = false;
       if (this.renderPending) this.startRenderIfIdle();
       else this.pumpWrites();
