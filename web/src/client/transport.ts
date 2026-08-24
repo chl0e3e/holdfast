@@ -18,6 +18,8 @@ export interface HfTransport {
   /** Allocate a fresh client-initiated channel (control channel 0 exists implicitly). */
   openChannel(): number;
   send(channel: number, envelope: Envelope): void;
+  /** Send one final frame and discard the channel's unread reliable backlog. */
+  closeChannel(channel: number, finalEnvelope?: Envelope): void;
   close(): void;
 }
 
@@ -75,7 +77,9 @@ class FrameParser {
 
 type WtChannel = {
   writer: WritableStreamDefaultWriter<Uint8Array> | null;
+  reader: ReadableStreamDefaultReader<Uint8Array> | null;
   queue: Uint8Array[];
+  closing: boolean;
 };
 
 export class WtTransport implements HfTransport {
@@ -118,17 +122,23 @@ export class WtTransport implements HfTransport {
   }
 
   private startChannel(channel: number): void {
-    const entry: WtChannel = { writer: null, queue: [] };
+    const entry: WtChannel = { writer: null, reader: null, queue: [], closing: false };
     this.channels.set(channel, entry);
     void (async () => {
       try {
         const stream = await this.session.createBidirectionalStream();
         const writer = stream.writable.getWriter();
+        const reader = stream.readable.getReader();
         entry.writer = writer;
+        entry.reader = reader;
         for (const queued of entry.queue.splice(0)) await writer.write(queued);
+        if (entry.closing) {
+          await Promise.allSettled([writer.close(), reader.cancel()]);
+          this.channels.delete(channel);
+          return;
+        }
 
         const parser = new FrameParser();
-        const reader = stream.readable.getReader();
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -144,12 +154,28 @@ export class WtTransport implements HfTransport {
   send(channel: number, env: Envelope): void {
     const entry = this.channels.get(channel);
     if (!entry) throw new Error(`unknown channel ${channel}`);
+    if (entry.closing) throw new Error(`closing channel ${channel}`);
     const frame = encodeFrame(env);
     if (entry.writer) {
       void entry.writer.write(frame);
     } else {
       entry.queue.push(frame); // stream still opening
     }
+  }
+
+  closeChannel(channel: number, finalEnvelope?: Envelope): void {
+    const entry = this.channels.get(channel);
+    if (!entry || entry.closing) return;
+    if (finalEnvelope) entry.queue.push(encodeFrame(finalEnvelope));
+    entry.closing = true;
+    this.channels.delete(channel);
+    if (entry.writer) {
+      for (const queued of entry.queue.splice(0)) void entry.writer.write(queued);
+      void entry.writer.close();
+    }
+    // STOP_SENDING tells the server that already-reliable but now-obsolete
+    // screen bytes need not reach JavaScript/xterm during snapshot recovery.
+    if (entry.reader) void entry.reader.cancel();
   }
 
   close(): void {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { snapshotReplayPreamble } from "./terminal-replay.js";
+import { composeBoundedReplay, snapshotReplayPreamble } from "./terminal-replay.js";
 
 const preamble = snapshotReplayPreamble(3);
 assert.equal(preamble, "\r\n\r\n\r\n\x1b[H");
@@ -9,5 +9,11 @@ assert.ok(
 );
 assert.throws(() => snapshotReplayPreamble(0), RangeError);
 assert.throws(() => snapshotReplayPreamble(4_097), RangeError);
+
+assert.deepEqual(
+  composeBoundedReplay([Uint8Array.of(1, 2), Uint8Array.of(3)], 3),
+  Uint8Array.of(1, 2, 3),
+);
+assert.equal(composeBoundedReplay([new Uint8Array(2), new Uint8Array(2)], 3), null);
 
 console.log("terminal replay tests passed");

@@ -1,7 +1,10 @@
 export const HISTORY_RENDER_LINE_CAP = 5_000;
 export const HISTORY_RENDER_BYTE_CAP = 2 * 1024 * 1024;
-export const TERMINAL_WRITE_QUEUE_CAP = 2 * 1024 * 1024;
-export const TERMINAL_WRITE_QUEUE_CHUNK_CAP = 4_096;
+// Keep the main-thread xterm parser responsive under redraw-heavy applications
+// such as WeeChat. The retained authoritative replay has its own larger bound;
+// this is only the disposable live presentation queue.
+export const TERMINAL_WRITE_QUEUE_CAP = 256 * 1024;
+export const TERMINAL_WRITE_QUEUE_CHUNK_CAP = 256;
 export const TERMINAL_REPLAY_CAP = 6 * 1024 * 1024;
 export const TERMINAL_REPLAY_ROW_CAP = 4_096;
 

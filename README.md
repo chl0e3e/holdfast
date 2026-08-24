@@ -377,6 +377,17 @@ hf-client-core --example zwburst -- <url> <user> <key>` — PASS requires the
 Detached signal plus a clean reattach snapshot (verified against a live
 daemon; a pre-fix daemon fails with a silent close).
 
+Large redraw bursts could still starve keyboard handling inside xterm.js
+(2026-08-24, web + desktop): both clients now admit only one asynchronous
+xterm write at a time and cap queued live presentation at 256 KiB / 256
+chunks. Crossing either bound discards the obsolete render backlog, detaches
+that temporary attachment, and reattaches for the daemon's authoritative
+screen snapshot; shell state and bounded scrollback are unaffected. The web
+regression models a multi-megabyte ASCII-art burst in 8 KiB PTY chunks and
+requires one recovery signal with no reattach storm. Reproduce with
+`cd web && npm test && npm run typecheck && npm run build` and
+`cd desktop && npm test && npm run typecheck`.
+
 Snapshot replay starts from terminal home (2026-08-19, desktop + web): clients
 insert one blank viewport before an attach snapshot so fetched history moves
 into xterm's scrollback. The server snapshot is an avt redraw sequence built

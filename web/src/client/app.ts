@@ -15,7 +15,6 @@ import { findLinks, LinkPopover, loadDockerwmBase, rowText } from "./links.js";
 import {
   AttachShellSchema,
   AuthenticateSchema,
-  Capability,
   ClientHelloSchema,
   ClientKind,
   DetachShellSchema,
@@ -41,8 +40,9 @@ import {
 import { pasteNeedsConfirmation, sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
 import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
-import { snapshotReplayPreamble } from "./terminal-replay.js";
-import { stripBidiIsolates, TerminalOutputFilter } from "./terminal-output.js";
+import { composeBoundedReplay, snapshotReplayPreamble } from "./terminal-replay.js";
+import { TerminalOutputFilter } from "./terminal-output.js";
+import { TerminalWritePump } from "./terminal-write-pump.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 2;
@@ -51,6 +51,8 @@ const GRANT_KEY = "holdfast.grant.v1";
 const HISTORY_PAGE_LINES = 200;
 const HISTORY_PAGE_BYTES = 128 * 1024;
 const LIVE_BUFFER_CAP = 2 * 1024 * 1024; // re-render buffer bound (spec §8 spirit)
+const LIVE_CHUNK_CAP = 4_096;
+const encoder = new TextEncoder();
 
 /// `idem` is the idempotency key the shell was opened with. It is the ONLY
 /// way back to a still-running shell whose resume token has expired: the
@@ -92,6 +94,9 @@ class Tab {
   inserted = new InsertedTextForwarder();
   /// Level-1 terminal bidi policy: discard isolates at the paint boundary.
   private readonly outputFilter = new TerminalOutputFilter();
+  /// One bounded write enters xterm at a time; overload recovers by snapshot.
+  private readonly writePump: TerminalWritePump;
+  private readonly app: App;
 
   snapshot: Uint8Array = new Uint8Array();
   historyLines: string[] = [];
@@ -107,6 +112,7 @@ class Tab {
   presented = false;
 
   constructor(shellId: Uint8Array, name: string, app: App) {
+    this.app = app;
     this.shellId = shellId;
     this.name = name;
 
@@ -140,6 +146,14 @@ class Tab {
     this.term.loadAddon(new ServerWidthAddon());
     this.term.unicode.activeVersion = SERVER_WIDTH_VERSION;
     this.term.open(this.panel);
+    this.writePump = new TerminalWritePump(
+      (data, complete) => {
+        const filtered = this.outputFilter.filter(data);
+        if (filtered.length === 0) queueMicrotask(complete);
+        else this.term.write(filtered, complete);
+      },
+      () => this.requestRecovery(),
+    );
     // Ctrl+scroll resizes the terminal font (the gesture most terminals use).
     this.panel.addEventListener("wheel", (event) => {
       if (!event.ctrlKey) return;
@@ -239,40 +253,63 @@ class Tab {
   }
 
   appendLive(data: Uint8Array): void {
-    if (this.presented) this.writeOutput(data);
+    if (data.length > LIVE_BUFFER_CAP) {
+      this.liveOverflowed = true;
+      this.requestRecovery();
+      return;
+    }
     this.liveChunks.push(data);
     this.liveBytes += data.length;
-    while (this.liveBytes > LIVE_BUFFER_CAP && this.liveChunks.length > 1) {
+    while (
+      (this.liveBytes > LIVE_BUFFER_CAP || this.liveChunks.length > LIVE_CHUNK_CAP) &&
+      this.liveChunks.length > 1
+    ) {
       this.liveBytes -= this.liveChunks.shift()!.length;
       this.liveOverflowed = true;
     }
+    if (this.liveOverflowed) {
+      this.requestRecovery();
+      return;
+    }
+    if (this.presented) this.writePump.enqueue(data);
   }
 
   /// Full re-render: fetched history, spacer to push it into scrollback,
   /// server snapshot, then everything received live since attach.
   render(): void {
+    if (this.liveOverflowed) {
+      this.requestRecovery();
+      return;
+    }
+    const parts: Uint8Array[] = [];
     this.presented = true;
-    this.term.reset();
-    this.outputFilter.reset();
     if (this.historyLines.length > 0) {
       const note = this.historyExhausted || this.oldestFetched <= this.oldestAvailable
         ? "── start of retained history ──"
         : "── scroll up for older history ──";
-      this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
-      this.term.write(stripBidiIsolates(this.historyLines.join("\r\n") + "\r\n"));
+      parts.push(encoder.encode(`\x1b[2m${note}\x1b[0m\r\n`));
+      parts.push(encoder.encode(this.historyLines.join("\r\n") + "\r\n"));
     }
-    this.term.write(snapshotReplayPreamble(this.term.rows));
-    this.writeOutput(this.snapshot);
-    if (this.liveOverflowed) {
-      this.term.write("\r\n\x1b[2m── some earlier live output not re-rendered ──\x1b[0m\r\n");
+    parts.push(encoder.encode(snapshotReplayPreamble(this.term.rows)));
+    parts.push(this.snapshot);
+    parts.push(...this.liveChunks);
+    const replay = composeBoundedReplay(parts);
+    if (!replay) {
+      this.requestRecovery();
+      return;
     }
-    for (const chunk of this.liveChunks) this.writeOutput(chunk);
-    this.term.scrollToBottom();
+    this.writePump.replace(
+      replay,
+      () => {
+        this.term.reset();
+        this.outputFilter.reset();
+      },
+      () => this.term.scrollToBottom(),
+    );
   }
 
-  private writeOutput(data: Uint8Array): void {
-    const filtered = this.outputFilter.filter(data);
-    if (filtered.length > 0) this.term.write(filtered);
+  private requestRecovery(): void {
+    this.app.recoverRenderOverload(this);
   }
 
   dispose(): void {
@@ -409,7 +446,7 @@ class App {
           protocolMinor: PROTOCOL_MINOR,
           clientKind: ClientKind.BROWSER_WEBTRANSPORT,
           clientBuild: "holdfast-web phase-2",
-          capabilities: [Capability.DATAGRAMS],
+          capabilities: [],
           maxFrameBytes: 256 * 1024,
           maxDatagramBytes: 0,
           encodings: [Encoding.UTF8],
@@ -771,6 +808,23 @@ class App {
     const entry = loadStored().find((s) => s.id === b64.enc(tab.shellId));
     if (!entry) return;
     await this.attachShell(tab.shellId, b64.dec(entry.token), tab.name);
+  }
+
+  /**
+   * xterm fell behind a live redraw burst. Stop the obsolete attachment before
+   * its reliable backlog consumes more browser work, then reuse the normal
+   * attach path to obtain the daemon's current authoritative screen.
+   */
+  recoverRenderOverload(tab: Tab): void {
+    const transport = this.transport;
+    if (!transport || tab.state !== "live") return;
+    const oldChannel = tab.channel;
+    this.channelToTab.delete(oldChannel);
+    tab.setState("reconnecting");
+    transport.closeChannel(oldChannel, envelope({
+      message: { case: "detachShell", value: create(DetachShellSchema, {}) },
+    }));
+    void this.reattachDropped(tab);
   }
 
   async fetchOlderHistory(tab: Tab, initial = false): Promise<void> {

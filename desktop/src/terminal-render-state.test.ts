@@ -3,8 +3,13 @@ import {
   composeBoundedReplay,
   prependBoundedHistory,
   snapshotReplayPreamble,
+  TERMINAL_WRITE_QUEUE_CAP,
+  TERMINAL_WRITE_QUEUE_CHUNK_CAP,
   viewportFromBottom,
 } from "./terminal-render-state.js";
+
+assert.equal(TERMINAL_WRITE_QUEUE_CAP, 256 * 1024);
+assert.equal(TERMINAL_WRITE_QUEUE_CHUNK_CAP, 256);
 
 const kept = prependBoundedHistory(["new"], 5, ["oldest", "older"], 3, 18);
 assert.deepEqual(kept.lines, ["older", "new"]);

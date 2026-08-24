@@ -490,8 +490,10 @@ export class Tab {
       this.writeQueue = [];
       this.writeQueueBytes = 0;
       this.presented = false;
-      if (this.liveOverflowed) this.requestRecovery();
-      else this.render(false);
+      // Replaying the same retained burst just gives xterm another copy of the
+      // work it could not drain. Ask the daemon for its newest authoritative
+      // screen instead; scrollback remains retained by the shell.
+      this.requestRecovery();
       return;
     }
     this.writeQueue.push(data);
