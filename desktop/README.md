@@ -137,6 +137,18 @@ With a shell attached, reproduce a large ordered burst:
 seq 1 200000
 ```
 
+For the redraw-heavy IRC-art case, download the same Big Matrix fixture used in
+the 2026-08-27 regression and pace it at roughly 8 Mbit/s:
+
+```bash
+curl -fLo /tmp/bigmatix.txt https://git.supernets.org/ircart/ircart/raw/branch/master/ircart/big/bigmatix.txt
+pv -qL 1000000 /tmp/bigmatix.txt
+```
+
+On Windows/WebView2 the output must advance in bursts, not pause after each
+line-sized chunk for a whole-screen redraw. Keyboard input in another tab must
+remain responsive throughout.
+
 PASS requires the tab either to render the ordered output or transparently
 reattach to a clean authoritative snapshot; it must not show partial/stale
 rows from another shell. While the burst is running, type a short command and
@@ -187,7 +199,7 @@ are covered by:
 cd desktop
 npm test && npm run typecheck && npm run build
 cd src-tauri
-cargo check --locked
+cargo test --locked
 ```
 
 ### Windows password-login regression

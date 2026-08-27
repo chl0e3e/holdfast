@@ -1,5 +1,5 @@
 // Typed bridge to the Rust side (ADR 0019). Terminal output arrives on a
-// per-attachment Channel as acknowledged base64 packets (first message =
+// per-attachment Channel as bounded-window base64 packets (first message =
 // screen snapshot, then live PTY bytes); input goes up as a plain byte array. WebView2
 // delivers raw invoke bodies as JSON and drops raw channel payloads, so the
 // byte paths must stay JSON-safe. Everything else is ordinary JSON commands
@@ -76,7 +76,12 @@ export type AttachReply = {
   oldestHistoryLineId: number;
   newestHistoryLineId: number;
 };
-type OutputPacket = { attachmentId: number; sequence: number; data: string };
+type OutputPacket = {
+  attachmentId: number;
+  sequence: number;
+  requiresAck: boolean;
+  data: string;
+};
 export type HistoryPage = {
   lines: string[];
   firstLineId: number;
@@ -103,20 +108,24 @@ export const ipc = {
     shell: string,
     cols: number,
     rows: number,
-    onOutput: (bytes: Uint8Array) => void,
+    onOutput: (bytes: Uint8Array) => Promise<void>,
     onOutputBridgeFailure: (error: unknown) => void,
   ) => attachAfterFirstPayload(
     (deliver) => {
       const output = new Channel<OutputPacket>();
       output.onmessage = (packet) => {
-        deliver(Uint8Array.from(atob(packet.data), (c) => c.charCodeAt(0)));
-        // Exactly one packet per attachment may be outstanding. This credit
-        // keeps Tauri's internal eval/fetch queue from becoming an unbounded
-        // second output buffer when WebView2 is busy.
-        void invoke<void>("ack_terminal_output", {
-          attachmentId: packet.attachmentId,
-          sequence: packet.sequence,
-        }).catch(onOutputBridgeFailure);
+        // Rust marks the end of each bounded packet window. Return its credit
+        // only after xterm has parsed that edge, not merely after this callback
+        // enqueues it in JavaScript.
+        void deliver(Uint8Array.from(atob(packet.data), (c) => c.charCodeAt(0)))
+          .then(() => {
+            if (!packet.requiresAck) return;
+            return invoke<void>("ack_terminal_output", {
+              attachmentId: packet.attachmentId,
+              sequence: packet.sequence,
+            });
+          })
+          .catch(onOutputBridgeFailure);
       };
       return invoke<AttachReply>("attach_shell", { server, shell, cols, rows, output });
     },

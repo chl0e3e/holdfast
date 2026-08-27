@@ -7,8 +7,8 @@
  * when it arrives a moment later.
  */
 export async function attachAfterFirstPayload<T>(
-  start: (deliver: (payload: Uint8Array) => void) => Promise<T>,
-  consume: (payload: Uint8Array) => void,
+  start: (deliver: (payload: Uint8Array) => Promise<void>) => Promise<T>,
+  consume: (payload: Uint8Array) => void | Promise<void>,
 ): Promise<T> {
   let firstDelivered = false;
   let resolveFirst!: () => void;
@@ -16,12 +16,13 @@ export async function attachAfterFirstPayload<T>(
     resolveFirst = resolve;
   });
 
-  const reply = start((payload) => {
-    consume(payload);
+  const reply = start(async (payload) => {
+    const consumed = consume(payload);
     if (!firstDelivered) {
       firstDelivered = true;
       resolveFirst();
     }
+    await consumed;
   });
 
   const [value] = await Promise.all([reply, firstPayload]);

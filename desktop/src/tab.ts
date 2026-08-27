@@ -29,6 +29,7 @@ const LIVE_CHUNK_CAP = 4_096;
 const encoder = new TextEncoder();
 
 type LiveChunk = { sequence: number; data: Uint8Array };
+type QueuedWrite = { data: Uint8Array; consumed: () => void };
 
 /** What a Tab needs from the app (avoids a circular import). */
 export interface TabDelegate {
@@ -87,7 +88,7 @@ export class Tab {
   liveBytes = 0;
   liveOverflowed = false;
   private liveSequence = 0;
-  private writeQueue: Uint8Array[] = [];
+  private writeQueue: QueuedWrite[] = [];
   private writeQueueBytes = 0;
   private writeInFlight = false;
   private replayInFlight = false;
@@ -317,22 +318,25 @@ export class Tab {
   }
 
   /** First channel message is the snapshot; everything after is live. */
-  onChannelMessage(bytes: Uint8Array, generation = this.attachmentGeneration): void {
-    if (this.closing || generation !== this.attachmentGeneration) return;
+  onChannelMessage(
+    bytes: Uint8Array,
+    generation = this.attachmentGeneration,
+  ): Promise<void> {
+    if (this.closing || generation !== this.attachmentGeneration) return Promise.resolve();
     if (this.awaitingSnapshot) {
       this.awaitingSnapshot = false;
       this.snapshot = bytes;
-      return;
+      return Promise.resolve();
     }
-    this.appendLive(bytes);
+    return this.appendLive(bytes);
   }
 
-  appendLive(data: Uint8Array): void {
-    if (this.closing) return;
+  appendLive(data: Uint8Array): Promise<void> {
+    if (this.closing) return Promise.resolve();
     if (data.length > LIVE_BUFFER_CAP) {
       this.liveOverflowed = true;
       if (this.presented) this.requestRecovery();
-      return;
+      return Promise.resolve();
     }
     const chunk = { sequence: ++this.liveSequence, data };
     this.liveChunks.push(chunk);
@@ -345,8 +349,9 @@ export class Tab {
       this.liveOverflowed = true;
     }
     if (this.presented && !this.replayInFlight && !this.renderPending) {
-      this.enqueueWrite(data);
+      return this.enqueueWrite(data);
     }
+    return Promise.resolve();
   }
 
   appendNotice(text: string): void {
@@ -400,8 +405,7 @@ export class Tab {
     this.liveBytes = 0;
     this.liveOverflowed = false;
     this.liveSequence = 0;
-    this.writeQueue = [];
-    this.writeQueueBytes = 0;
+    this.clearWriteQueue();
     this.renderPending = false;
     this.pendingOffsetFromBottom = null;
     this.recoveryRequested = false;
@@ -433,8 +437,7 @@ export class Tab {
     this.presented = false;
     this.renderPending = true;
     // These bytes are all represented by liveChunks in the coming replay.
-    this.writeQueue = [];
-    this.writeQueueBytes = 0;
+    this.clearWriteQueue();
     this.startRenderIfIdle();
   }
 
@@ -526,39 +529,49 @@ export class Tab {
     });
   }
 
-  private enqueueWrite(data: Uint8Array): void {
-    if (
-      data.length > TERMINAL_WRITE_QUEUE_CAP - this.writeQueueBytes ||
-      this.writeQueue.length >= TERMINAL_WRITE_QUEUE_CHUNK_CAP
-    ) {
-      this.writeQueue = [];
-      this.writeQueueBytes = 0;
-      this.presented = false;
-      // Replaying the same retained burst just gives xterm another copy of the
-      // work it could not drain. Ask the daemon for its newest authoritative
-      // screen instead; scrollback remains retained by the shell.
-      this.requestRecovery();
-      return;
-    }
-    this.writeQueue.push(data);
-    this.writeQueueBytes += data.length;
-    this.pumpWrites();
+  private enqueueWrite(data: Uint8Array): Promise<void> {
+    return new Promise((consumed) => {
+      if (
+        data.length > TERMINAL_WRITE_QUEUE_CAP - this.writeQueueBytes ||
+        this.writeQueue.length >= TERMINAL_WRITE_QUEUE_CHUNK_CAP
+      ) {
+        this.clearWriteQueue();
+        this.presented = false;
+        consumed();
+        // Replaying the same retained burst just gives xterm another copy of the
+        // work it could not drain. Ask the daemon for its newest authoritative
+        // screen instead; scrollback remains retained by the shell.
+        this.requestRecovery();
+        return;
+      }
+      this.writeQueue.push({ data, consumed });
+      this.writeQueueBytes += data.length;
+      this.pumpWrites();
+    });
+  }
+
+  private clearWriteQueue(): void {
+    for (const queued of this.writeQueue) queued.consumed();
+    this.writeQueue = [];
+    this.writeQueueBytes = 0;
   }
 
   private pumpWrites(): void {
     if (this.writeInFlight || this.replayInFlight || this.renderPending || this.closing) return;
-    const data = this.writeQueue.shift();
-    if (!data) return;
-    this.writeQueueBytes -= data.length;
+    const queued = this.writeQueue.shift();
+    if (!queued) return;
+    this.writeQueueBytes -= queued.data.length;
     this.writeInFlight = true;
-    const filtered = this.outputFilter.filter(data);
+    const filtered = this.outputFilter.filter(queued.data);
     if (filtered.length === 0) {
       this.writeInFlight = false;
+      queued.consumed();
       queueMicrotask(() => this.pumpWrites());
       return;
     }
     this.term.write(filtered, () => {
       this.writeInFlight = false;
+      queued.consumed();
       if (this.renderPending) this.startRenderIfIdle();
       else this.pumpWrites();
     });
@@ -572,6 +585,7 @@ export class Tab {
 
   dispose(): void {
     this.closing = true;
+    this.clearWriteQueue();
     this.inputQueue.pause();
     this.inputQueue.clear();
     this.term.dispose();

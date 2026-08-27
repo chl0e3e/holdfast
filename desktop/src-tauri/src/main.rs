@@ -3,7 +3,7 @@
 //! All protocol/persistence logic lives in `hf_client_core::Core`; this
 //! binary only bridges it to the webview: commands in `commands.rs`,
 //! `CoreEvent`s forwarded as Tauri events, terminal bytes down per-shell
-//! acknowledged, JSON-safe IPC channels.
+//! bounded-window, JSON-safe IPC channels.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

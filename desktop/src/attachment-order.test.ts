@@ -17,14 +17,16 @@ function deferred<T>(): Deferred<T> {
 // release the gate only after the consumer has seen it.
 {
   const reply = deferred<string>();
-  let deliver!: (payload: Uint8Array) => void;
+  let deliver!: (payload: Uint8Array) => Promise<void>;
   const events: string[] = [];
   const complete = attachAfterFirstPayload(
     (receive) => {
       deliver = receive;
       return reply.promise;
     },
-    (payload) => events.push(`snapshot:${payload.length}`),
+    (payload) => {
+      events.push(`snapshot:${payload.length}`);
+    },
   ).then((value) => {
     events.push(`complete:${value}`);
     return value;
@@ -38,11 +40,35 @@ function deferred<T>(): Deferred<T> {
   assert.deepEqual(events, ["snapshot:0", "complete:attached"]);
 }
 
+// Packet-window credit can wait for the consumer (xterm's write callback for
+// live output), while first-payload readiness still depends only on delivery.
+{
+  const consumed = deferred<void>();
+  let deliver!: (payload: Uint8Array) => Promise<void>;
+  const complete = attachAfterFirstPayload(
+    (receive) => {
+      deliver = receive;
+      return Promise.resolve("attached");
+    },
+    () => consumed.promise,
+  );
+
+  const credit = deliver(Uint8Array.of(1));
+  assert.equal(await complete, "attached");
+  let credited = false;
+  void credit.then(() => { credited = true; });
+  await Promise.resolve();
+  assert.equal(credited, false, "credit must wait for terminal consumption");
+  consumed.resolve();
+  await credit;
+  assert.equal(credited, true);
+}
+
 // The usual channel-first ordering remains supported: completion still waits
 // for the command metadata reply.
 {
   const reply = deferred<number>();
-  let deliver!: (payload: Uint8Array) => void;
+  let deliver!: (payload: Uint8Array) => Promise<void>;
   let completed = false;
   const complete = attachAfterFirstPayload(
     (receive) => {
