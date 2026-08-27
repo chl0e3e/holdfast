@@ -1533,7 +1533,12 @@ fn hex16(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn error_envelope(request_id: u64, code: pb::ErrorCode, text: &str, retryable: bool) -> Envelope {
+pub(crate) fn error_envelope(
+    request_id: u64,
+    code: pb::ErrorCode,
+    text: &str,
+    retryable: bool,
+) -> Envelope {
     respond(
         request_id,
         Msg::Error(pb::Error {

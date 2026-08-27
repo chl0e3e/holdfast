@@ -15,11 +15,11 @@
 //! the `serverCertificateHashes` ceiling). Production loads an explicitly
 //! bounded PEM chain/key and relies on browser WebPKI (ADR 0005).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use h3::ext::Protocol;
@@ -498,38 +498,147 @@ enum WriterMsg {
     Frame(u64, Envelope),
 }
 
+/// Each QUIC stream owns an independent bounded writer queue. A blocked shell
+/// must not delay control replies, new attachments, or another shell.
+const WT_CHANNEL_QUEUE_MESSAGES: usize = 128;
+const WT_CHANNEL_QUEUE_BYTES: usize = 1024 * 1024;
+
+struct WtChannelQueue {
+    state: Mutex<WtChannelQueueState>,
+    notify: tokio::sync::Notify,
+    message_cap: usize,
+    byte_cap: usize,
+    overload_frame: Vec<u8>,
+}
+
+#[derive(Default)]
+struct WtChannelQueueState {
+    frames: VecDeque<Vec<u8>>,
+    bytes: usize,
+    closing: bool,
+}
+
+impl WtChannelQueue {
+    fn new(overload_frame: Vec<u8>) -> Self {
+        Self::with_limits(
+            overload_frame,
+            WT_CHANNEL_QUEUE_MESSAGES,
+            WT_CHANNEL_QUEUE_BYTES,
+        )
+    }
+
+    fn with_limits(overload_frame: Vec<u8>, message_cap: usize, byte_cap: usize) -> Self {
+        Self {
+            state: Mutex::new(WtChannelQueueState::default()),
+            notify: tokio::sync::Notify::new(),
+            message_cap,
+            byte_cap,
+            overload_frame,
+        }
+    }
+
+    fn push(&self, frame: Vec<u8>) {
+        let mut state = self.state.lock().unwrap();
+        if state.closing {
+            return;
+        }
+        if state.frames.len() >= self.message_cap
+            || frame.len() > self.byte_cap.saturating_sub(state.bytes)
+        {
+            // Obsolete terminal redraws are disposable. Replace them with the
+            // protocol's explicit retryable slow-consumer signal, then FIN.
+            state.frames.clear();
+            state.bytes = self.overload_frame.len();
+            state.frames.push_back(self.overload_frame.clone());
+            state.closing = true;
+        } else {
+            state.bytes += frame.len();
+            state.frames.push_back(frame);
+        }
+        drop(state);
+        self.notify.notify_one();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().closing = true;
+        self.notify.notify_one();
+    }
+
+    async fn next(&self) -> Option<Vec<u8>> {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let mut state = self.state.lock().unwrap();
+                if let Some(frame) = state.frames.pop_front() {
+                    state.bytes -= frame.len();
+                    return Some(frame);
+                }
+                if state.closing {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
+async fn run_wt_channel_writer(mut stream: WtSendStream, queue: Arc<WtChannelQueue>) {
+    while let Some(frame) = queue.next().await {
+        if stream.write_all(&frame).await.is_err() {
+            return;
+        }
+    }
+    let _ = stream.shutdown().await;
+}
+
 async fn handle_wt_session(
     session: WtSession,
     quic: quinn::Connection,
     state: Arc<AppState>,
     web_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    // Writer: owns all send-halves, serializes frames per channel.
+    // Router: each send-half moves into its own writer task. Queueing a frame
+    // is synchronous and bounded, so flow control on one QUIC stream can never
+    // head-of-line block another stream.
     let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel::<WriterMsg>(OUTGOING_QUEUE);
     let writer = tokio::spawn(async move {
-        let mut streams: HashMap<u64, WtSendStream> = HashMap::new();
+        let overload_frame = hf_protocol::framing::encode_frame(
+            &crate::conn::error_envelope(
+                0,
+                hf_protocol::pb::ErrorCode::ErrTooSlow,
+                "attachment output exceeded its bounded transport queue",
+                true,
+            ),
+            hf_protocol::FRAME_BYTES_DEFAULT,
+        )
+        .expect("fixed slow-consumer error frame must encode");
+        let mut queues: HashMap<u64, Arc<WtChannelQueue>> = HashMap::new();
         while let Some(msg) = writer_rx.recv().await {
             match msg {
                 WriterMsg::Register(channel, stream) => {
-                    streams.insert(channel, stream);
+                    // Drop completed writers before adding another stream so
+                    // this map stays bounded by concurrent protocol channels.
+                    queues.retain(|_, queue| Arc::strong_count(queue) > 1);
+                    let queue = Arc::new(WtChannelQueue::new(overload_frame.clone()));
+                    queues.insert(channel, Arc::clone(&queue));
+                    tokio::spawn(run_wt_channel_writer(stream, queue));
                 }
                 WriterMsg::Frame(channel, envelope) => {
-                    let Some(stream) = streams.get_mut(&channel) else {
+                    let Some(queue) = queues.get(&channel) else {
                         continue;
                     };
                     match hf_protocol::framing::encode_frame(
                         &envelope,
                         hf_protocol::FRAME_BYTES_DEFAULT,
                     ) {
-                        Ok(bytes) => {
-                            if stream.write_all(&bytes).await.is_err() {
-                                streams.remove(&channel);
-                            }
-                        }
+                        Ok(bytes) => queue.push(bytes),
                         Err(e) => tracing::warn!("dropping unencodable frame: {e}"),
                     }
                 }
             }
+        }
+        for queue in queues.values() {
+            queue.close();
         }
     });
 
@@ -538,7 +647,7 @@ async fn handle_wt_session(
     // Register is enqueued before the reader dispatches anything.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<(u64, Envelope)>(OUTGOING_QUEUE);
     let adapter_writer_tx = writer_tx.clone();
-    tokio::spawn(async move {
+    let adapter = tokio::spawn(async move {
         while let Some((channel, envelope)) = out_rx.recv().await {
             if adapter_writer_tx
                 .send(WriterMsg::Frame(channel, envelope))
@@ -643,7 +752,10 @@ async fn handle_wt_session(
     }
 
     conn.lock().await.detach_all();
-    writer.abort();
+    adapter.abort();
+    let _ = adapter.await;
+    drop(writer_tx);
+    let _ = writer.await;
     Ok(())
 }
 
@@ -676,6 +788,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     #[test]
     fn base64_matches_reference() {
@@ -684,6 +797,23 @@ mod tests {
         assert_eq!(super::base64_encode(b"fo"), "Zm8=");
         assert_eq!(super::base64_encode(b"foo"), "Zm9v");
         assert_eq!(super::base64_encode(&[0xfb, 0xff, 0x00]), "+/8A");
+    }
+
+    #[tokio::test]
+    async fn channel_writer_overload_replaces_only_that_channels_backlog() {
+        let overloaded = Arc::new(super::WtChannelQueue::with_limits(vec![9], 2, 4));
+        let independent = Arc::new(super::WtChannelQueue::with_limits(vec![8], 2, 4));
+
+        overloaded.push(vec![1, 1]);
+        overloaded.push(vec![2, 2]);
+        overloaded.push(vec![3]);
+        independent.push(vec![7]);
+
+        assert_eq!(overloaded.next().await, Some(vec![9]));
+        assert_eq!(overloaded.next().await, None);
+        assert_eq!(independent.next().await, Some(vec![7]));
+        independent.close();
+        assert_eq!(independent.next().await, None);
     }
 
     /// The web link's counterpart to `hf_protocol`'s `agent_liveness_tests`.

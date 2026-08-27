@@ -2,9 +2,9 @@
 //! `hf_client_core::Core`.
 //!
 //! Terminal bytes travel in JSON-safe encodings: output flows down a
-//! per-attachment `tauri::ipc::Channel` as base64 strings (first message =
-//! the screen snapshot, then live PTY bytes), input as a plain byte-array
-//! argument. WebView2 delivers raw invoke bodies as JSON and drops raw
+//! per-attachment `tauri::ipc::Channel` as acknowledged base64 packets (first
+//! message = the screen snapshot, then live PTY bytes), input as a plain
+//! byte-array argument. WebView2 delivers raw invoke bodies as JSON and drops raw
 //! channel payloads (observed 2026-08-03: every keystroke rejected with
 //! "requires a raw body", snapshots never rendered), so the raw hot path
 //! cannot be used on Windows.
@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 
 use crate::AppState;
 
@@ -84,10 +85,19 @@ pub struct AttachReply {
     pub newest_history_line_id: u64,
 }
 
-/// Bound on the core→webview output queue per attachment. When the webview
-/// stalls, this fills, the reader pump awaits, and QUIC flow control pushes
-/// the problem to the server's slow-consumer policy (spec §8).
-const OUTPUT_QUEUE: usize = 256;
+/// Bound on the core→IPC staging queue per attachment. The bridge additionally
+/// permits exactly one unacknowledged webview packet, so draining this queue
+/// cannot move the backlog into Tauri's internal callback storage.
+const OUTPUT_QUEUE: usize = 32;
+const OUTPUT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputPacket {
+    pub attachment_id: u64,
+    pub sequence: u64,
+    pub data: String,
+}
 
 #[tauri::command]
 pub async fn attach_shell(
@@ -96,14 +106,21 @@ pub async fn attach_shell(
     shell: String,
     cols: u16,
     rows: u16,
-    output: Channel<String>,
+    output: Channel<OutputPacket>,
 ) -> CmdResult<AttachReply> {
+    let (attachment_id, mut acknowledgements) = state.output_acks.register()?;
     let (sink_tx, mut sink_rx) = mpsc::channel::<Vec<u8>>(OUTPUT_QUEUE);
-    let info: AttachInfo = state
+    let info: AttachInfo = match state
         .core
         .attach_shell(&server, &shell, cols, rows, sink_tx)
         .await
-        .map_err(err)?;
+    {
+        Ok(info) => info,
+        Err(error) => {
+            state.output_acks.remove(attachment_id);
+            return Err(err(error));
+        }
+    };
 
     // The snapshot is simply the first payload down the channel, so the
     // frontend consumes one uniform byte stream in order.
@@ -111,20 +128,51 @@ pub async fn attach_shell(
         oldest_history_line_id: info.oldest_history_line_id,
         newest_history_line_id: info.newest_history_line_id,
     };
+    let acknowledger = state.output_acks.clone();
     let b64 = base64::engine::general_purpose::STANDARD;
     tauri::async_runtime::spawn(async move {
+        let mut sequence = 0u64;
+        let send = |bytes: &[u8], sequence| {
+            output.send(OutputPacket {
+                attachment_id,
+                sequence,
+                data: b64.encode(bytes),
+            })
+        };
         // Always sent, even when empty: the frontend relies on "first
         // channel message = snapshot" to delimit redraw from live output.
-        if output.send(b64.encode(&info.snapshot)).is_err() {
-            return;
-        }
-        while let Some(bytes) = sink_rx.recv().await {
-            if output.send(b64.encode(&bytes)).is_err() {
-                break; // webview side gone (tab closed)
+        if send(&info.snapshot, sequence).is_ok() {
+            loop {
+                match timeout(OUTPUT_ACK_TIMEOUT, acknowledgements.recv()).await {
+                    Ok(Some(ack)) if ack == sequence => {}
+                    _ => break,
+                }
+                let Some(bytes) = sink_rx.recv().await else {
+                    break;
+                };
+                sequence = sequence.saturating_add(1);
+                if send(&bytes, sequence).is_err() {
+                    break;
+                }
             }
         }
+        acknowledger.remove(attachment_id);
+        // Ending this task drops `sink_rx`, so the attachment reader stops
+        // draining QUIC. Do not call the shell-wide detach command here: this
+        // task may belong to an attachment that a newer one has replaced.
+        // When a stalled webview resumes, its rejected stale ACK tells the
+        // frontend to detach/re-attach the current generation safely.
     });
     Ok(reply)
+}
+
+#[tauri::command]
+pub async fn ack_terminal_output(
+    state: State<'_, AppState>,
+    attachment_id: u64,
+    sequence: u64,
+) -> CmdResult<()> {
+    state.output_acks.acknowledge(attachment_id, sequence)
 }
 
 /// Keystroke path. `data` rides in the JSON args (see module docs for why

@@ -6,18 +6,9 @@
 // destination. Only http/https is recognized. This is deliberately not the
 // web-links addon.
 //
-// CORRECTION (2026-08-11): this comment used to claim "OSC 8 stays inert",
-// and that was never true of the running client. xterm.js's core registers
-// its own OscLinkProvider unconditionally, and neither client sets a
-// `linkHandler`, so an OSC 8 link in output is already clickable through
-// xterm's built-in `confirm("Do you want to navigate to …")` + window.open —
-// bypassing the popover that exists precisely so the user always sees the
-// real destination. xterm's dialog does show the true URL, so a relabelled
-// destination is still disclosed, but by xterm's mitigation and not this
-// module's. Routing OSC 8 through LinkPopover via `linkHandler` is an open
-// decision, not something the model's new OSC 8 support changed: the model
-// tracking links (ADR 0026 sibling work) only makes a REATTACHED screen match
-// what the live screen already did.
+// xterm.js core registers its own OSC 8 provider unconditionally. Both clients
+// set Terminal.linkHandler so that provider uses this same validated popover
+// instead of xterm's default confirm/window.open path.
 //
 // The popover exists because weechat's mouse mode swallows clicks: xterm.js
 // forwards mouse reporting to the application, so click-to-open cannot work
@@ -36,6 +27,16 @@ const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 /// Sanity bounds: a row of hostile output must not produce unbounded work.
 const MAX_LINKS_PER_ROW = 32;
 const MIN_URL_LEN = "http://x.y".length;
+
+/** Accept only links whose parsed scheme is exactly HTTP or HTTPS. */
+export function isSafeHttpLink(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /// Find http/https URLs in one row of terminal text. Trailing prose
 /// punctuation is stripped; a closing bracket is kept only when its opener
@@ -139,6 +140,7 @@ export class LinkPopover {
   constructor(dockerwmBase: string) {
     this.el = document.createElement("div");
     this.el.id = "link-popover";
+    this.el.classList.add("xterm-hover");
     this.el.hidden = true;
 
     this.urlEl = document.createElement("span");

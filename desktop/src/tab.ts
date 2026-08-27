@@ -7,9 +7,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
 import { sanitizeTitle } from "./terminal-safety.js";
 import { InsertedTextForwarder } from "./inserted-text.js";
-import { findLinks, rowText, type LinkPopover } from "./links.js";
+import { findLinks, isSafeHttpLink, rowText, type LinkPopover } from "./links.js";
 import { TabLabel } from "./tab-label.js";
 import { repaintVisibleTerminal } from "./terminal-presentation.js";
+import { TerminalInputQueue } from "./terminal-input-queue.js";
 import { TerminalOutputFilter } from "./terminal-output.js";
 import type { TabState } from "./ui-state.js";
 import {
@@ -38,6 +39,8 @@ export interface TabDelegate {
   adjustFontSize(delta: number): void;
   select(tab: Tab): void;
   sendInput(tab: Tab, data: string): void;
+  transmitInput(tab: Tab, data: Uint8Array): Promise<void>;
+  inputFailed(tab: Tab, error: unknown): void;
   sendResize(tab: Tab, cols: number, rows: number): void;
   fetchOlderHistory(tab: Tab): Promise<void>;
   handlePaste(tab: Tab, event: ClipboardEvent): void;
@@ -68,6 +71,7 @@ export class Tab {
   /// Level-1 terminal bidi policy: discard isolates at the paint boundary.
   private readonly outputFilter = new TerminalOutputFilter();
   private readonly delegate: TabDelegate;
+  private readonly inputQueue: TerminalInputQueue;
 
   snapshot: Uint8Array = new Uint8Array();
   awaitingSnapshot = true;
@@ -113,6 +117,10 @@ export class Tab {
     this.server = server;
     this.shell = shell;
     this.name = name;
+    this.inputQueue = new TerminalInputQueue(
+      (data) => app.transmitInput(this, data),
+      (error) => app.inputFailed(this, error),
+    );
 
     this.panel = document.createElement("div");
     this.panel.className = "panel";
@@ -144,14 +152,26 @@ export class Tab {
     this.button.onclick = () => app.select(this);
     this.button.ondblclick = () => app.renameTab(this);
 
-    // Safe defaults (threat model T9): no clipboard/web-links/image addons,
-    // so OSC 52 writes and OSC 8 auto-hyperlinks are inert. The window title
+    // Safe defaults (threat model T9): no clipboard/web-links/image addons.
+    // OSC 52 writes stay inert; xterm's core OSC 8 provider is explicitly
+    // routed through Holdfast's URL-disclosing popover below. The window title
     // is sanitized and only ever shown as the tab's own textContent.
     this.term = new Terminal({
       scrollback: 10_000,
       fontSize: app.fontSize,
       convertEol: false,
       allowProposedApi: true, // Terminal.unicode is a "proposed" API
+      // xterm core always owns OSC 8 ranges. Route them through Holdfast's
+      // validated popover instead of xterm's confirm/window.open fallback.
+      linkHandler: {
+        activate: (event, url) => {
+          if (isSafeHttpLink(url)) app.linkPopover.show(event, url);
+        },
+        hover: (event, url) => {
+          if (isSafeHttpLink(url)) app.linkPopover.show(event, url);
+        },
+        leave: () => app.linkPopover.scheduleHide(),
+      },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
@@ -333,6 +353,26 @@ export class Tab {
     this.appendLive(encoder.encode(text));
   }
 
+  enqueueInput(text: string): boolean {
+    return this.inputQueue.enqueue(encoder.encode(text));
+  }
+
+  pauseInput(): void {
+    this.inputQueue.pause();
+  }
+
+  pauseInputAndWait(): Promise<void> {
+    return this.inputQueue.pauseAndWait();
+  }
+
+  resumeInput(): void {
+    this.inputQueue.resume();
+  }
+
+  clearInput(): void {
+    this.inputQueue.clear();
+  }
+
   prependHistory(lines: readonly string[]): boolean {
     const bounded = prependBoundedHistory(this.historyLines, this.historyBytes, lines);
     this.historyLines = bounded.lines;
@@ -377,6 +417,10 @@ export class Tab {
   render(preserveScroll = false): void {
     if (this.closing) return;
     if (this.liveOverflowed) {
+      // Cumulative replay eviction does not mean xterm is behind. Preserve a
+      // current live presentation and skip this optional history redraw; only
+      // an incomplete initial/in-flight replay needs a fresh attachment.
+      if (this.presented && !this.replayInFlight && !this.renderPending) return;
       this.requestRecovery();
       return;
     }
@@ -528,6 +572,8 @@ export class Tab {
 
   dispose(): void {
     this.closing = true;
+    this.inputQueue.pause();
+    this.inputQueue.clear();
     this.term.dispose();
     this.panel.remove();
     this.tabElement.remove();

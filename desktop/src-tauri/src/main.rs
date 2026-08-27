@@ -2,8 +2,8 @@
 //!
 //! All protocol/persistence logic lives in `hf_client_core::Core`; this
 //! binary only bridges it to the webview: commands in `commands.rs`,
-//! `CoreEvent`s forwarded as Tauri events, terminal bytes down per-shell raw
-//! IPC channels.
+//! `CoreEvent`s forwarded as Tauri events, terminal bytes down per-shell
+//! acknowledged, JSON-safe IPC channels.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -11,10 +11,56 @@ mod commands;
 mod dockerwm;
 
 use hf_client_core::{Core, CoreEvent};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
+use tokio::sync::mpsc;
+
+const MAX_ACTIVE_OUTPUT_ACKS: usize = 256;
+
+pub struct OutputAcks {
+    next_id: AtomicU64,
+    entries: Mutex<HashMap<u64, mpsc::Sender<u64>>>,
+}
+
+impl OutputAcks {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn register(&self) -> Result<(u64, mpsc::Receiver<u64>), String> {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= MAX_ACTIVE_OUTPUT_ACKS {
+            return Err("too many active terminal output channels".into());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel(1);
+        entries.insert(id, tx);
+        Ok((id, rx))
+    }
+
+    fn acknowledge(&self, id: u64, sequence: u64) -> Result<(), String> {
+        let entries = self.entries.lock().unwrap();
+        let sender = entries
+            .get(&id)
+            .ok_or_else(|| "stale terminal output acknowledgement".to_string())?;
+        sender
+            .try_send(sequence)
+            .map_err(|_| "unexpected terminal output acknowledgement".to_string())
+    }
+
+    fn remove(&self, id: u64) {
+        self.entries.lock().unwrap().remove(&id);
+    }
+}
 
 pub struct AppState {
     pub core: Core,
+    pub output_acks: Arc<OutputAcks>,
 }
 
 fn main() {
@@ -27,7 +73,10 @@ fn main() {
         .setup(move |app| {
             let store_path = hf_client_core::store::default_path()?;
             let (core, mut events) = tauri::async_runtime::block_on(Core::spawn(store_path))?;
-            app.manage(AppState { core });
+            app.manage(AppState {
+                core,
+                output_acks: Arc::new(OutputAcks::new()),
+            });
 
             // Low-rate lifecycle events → named Tauri events the frontend
             // subscribes to. Terminal bytes never travel this path.
@@ -54,6 +103,7 @@ fn main() {
             commands::login,
             commands::open_shell,
             commands::attach_shell,
+            commands::ack_terminal_output,
             commands::shell_input,
             commands::resize_shell,
             commands::detach_shell,

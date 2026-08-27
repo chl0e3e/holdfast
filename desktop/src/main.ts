@@ -154,7 +154,10 @@ class App implements TabDelegate {
           }
         } else {
           for (const tab of this.tabs) {
-            if (tab.server === e.server && tab.state === "live") tab.setState("reconnecting");
+            if (tab.server === e.server && tab.state === "live") {
+              tab.pauseInput();
+              tab.setState("reconnecting");
+            }
           }
         }
         this.refreshStatusLine();
@@ -176,11 +179,14 @@ class App implements TabDelegate {
             // guarded against overlap and a failed attempt falls back to the
             // next `connected` retry loop.
             if (detachedEventAction(tab.state, false) === "reattach") {
+              tab.pauseInput();
               tab.setState("reconnecting");
               void this.attach(tab);
             }
             break;
           case "orphaned":
+            tab.pauseInput();
+            tab.clearInput();
             tab.setState("orphaned");
             tab.appendNotice("\r\n\x1b[31m[token unrecoverable — Terminate to kill, or close the tab]\x1b[0m\r\n");
             break;
@@ -424,11 +430,18 @@ class App implements TabDelegate {
         tab.term.cols,
         tab.term.rows,
         (bytes) => tab.onChannelMessage(bytes, generation),
+        (error) => {
+          if (tab.closing || generation !== tab.attachmentGeneration) return;
+          const detail = error instanceof Error ? error.message : String(error);
+          this.setStatus(`terminal output bridge stalled: ${detail}`, "warn");
+          this.recoverTerminal(tab);
+        },
       );
       if (tab.closing) return;
       tab.oldestAvailable = reply.oldestHistoryLineId;
       tab.historyExhausted = reply.newestHistoryLineId === 0;
       tab.setState("live");
+      tab.resumeInput();
       // Render the snapshot NOW: until this reset+redraw runs, live output
       // would composite over whatever stale frame the terminal held — the
       // burst-reattach shear. History arrives in the background.
@@ -493,8 +506,24 @@ class App implements TabDelegate {
   }
 
   sendInput(tab: Tab, data: string): void {
+    if (
+      tab.closing || tab.state === "detached" || tab.state === "exited" ||
+      tab.state === "orphaned"
+    ) return;
+    if (!tab.enqueueInput(data)) {
+      this.setStatus("terminal input buffer full — input was rejected", "err");
+    }
+  }
+
+  transmitInput(tab: Tab, data: Uint8Array): Promise<void> {
+    return ipc.shellInput(tab.server, tab.shell, data);
+  }
+
+  inputFailed(tab: Tab, error: unknown): void {
     if (tab.closing || tab.state !== "live") return;
-    void ipc.shellInput(tab.server, tab.shell, new TextEncoder().encode(data));
+    const detail = error instanceof Error ? error.message : String(error);
+    this.setStatus(`terminal input paused: ${detail}`, "warn");
+    this.recoverTerminal(tab);
   }
 
   sendResize(tab: Tab, cols: number, rows: number): void {
@@ -550,12 +579,14 @@ class App implements TabDelegate {
 
     tab.closing = true;
     tab.detaching = true;
+    await tab.pauseInputAndWait();
     this.syncChrome();
     try {
       if (this.activeUploads.has(this.shellKey(tab.server, tab.shell))) {
         await ipc.cancelUpload(tab.server, tab.shell);
       }
       if (behavior.detach) await ipc.detachShell(tab.server, tab.shell);
+      tab.clearInput();
       // Running-shell close is intentionally reversible: retain its resume
       // token so restarting the client can reopen it. Exited/orphaned tabs
       // have nothing useful to resume and are forgotten permanently.
@@ -563,6 +594,7 @@ class App implements TabDelegate {
     } catch (error) {
       tab.closing = false;
       tab.detaching = false;
+      if (tab.state === "live") tab.resumeInput();
       this.setStatus(`close failed: ${error}`, "err");
       this.syncChrome();
       return;
@@ -599,6 +631,7 @@ class App implements TabDelegate {
       return;
     }
     tab.detaching = true;
+    await tab.pauseInputAndWait();
     tab.setState("reconnecting");
     try {
       // A fresh attachment supplies an authoritative snapshot and drops any
@@ -621,12 +654,15 @@ class App implements TabDelegate {
     }
     if (tab.state !== "live") return;
     tab.detaching = true;
+    await tab.pauseInputAndWait();
     this.syncChrome();
     try {
       await ipc.detachShell(tab.server, tab.shell);
+      tab.clearInput();
       tab.setState("detached");
       tab.appendNotice("\r\n\x1b[2m[detached — shell keeps running; choose Attach when ready]\x1b[0m\r\n");
     } catch (error) {
+      tab.resumeInput();
       this.setStatus(`detach failed: ${error}`, "err");
     } finally {
       tab.detaching = false;
@@ -713,6 +749,8 @@ class App implements TabDelegate {
   }
 
   markExited(tab: Tab, how: string): void {
+    tab.pauseInput();
+    tab.clearInput();
     tab.setState("exited");
     tab.appendNotice(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
   }

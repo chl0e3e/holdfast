@@ -139,11 +139,25 @@ seq 1 200000
 
 PASS requires the tab either to render the ordered output or transparently
 reattach to a clean authoritative snapshot; it must not show partial/stale
-rows from another shell. Then produce at least 1,000 quieter lines, scroll to
-the top, and keep scrolling upward. Each history page must preserve the viewed
-rows instead of snapping to the bottom. Finally maximize and restore the
-window: the xterm viewport must reach the right edge of its black panel and
-the document itself must have no horizontal or vertical scrollbar.
+rows from another shell. While the burst is running, type a short command and
+press Enter: its bytes must remain ordered, must not be silently discarded
+during an automatic reattach, and the UI must stay responsive. Then produce at
+least 1,000 quieter lines, scroll to the top, and keep scrolling upward. Each
+history page must preserve the viewed rows instead of snapping to the bottom.
+Finally maximize and restore the window: the xterm viewport must reach the
+right edge of its black panel and the document itself must have no horizontal
+or vertical scrollbar.
+
+Verify that xterm's built-in OSC 8 links use the Holdfast popover too:
+
+```bash
+printf '\033]8;;https://example.com/holdfast\033\\OSC8-link\033]8;;\033\\\n'
+```
+
+Hover and activate `OSC8-link`, then hover a literal `https://example.com`
+printed by the shell. Both must show the same full-destination **Open /
+dockerwm** popover; neither may show xterm's confirmation dialog or navigate
+directly.
 
 On Windows with the taskbar visible, verify that the final terminal row and its
 cursor are fully drawn at 100%, 125% and 150% display scaling. Repeat after
@@ -166,11 +180,14 @@ The attach-order regression test deliberately resolves the Tauri command before
 delivering its first Channel payload. This is the Windows-observed ordering: the
 UI must wait for that snapshot before it marks the attachment ready and renders.
 
-The bounded replay/history policy and close-state decisions are covered by:
+The bounded replay/history, ordered input, link-scheme and close-state policies
+are covered by:
 
 ```bash
 cd desktop
-npm test
+npm test && npm run typecheck && npm run build
+cd src-tauri
+cargo check --locked
 ```
 
 ### Windows password-login regression

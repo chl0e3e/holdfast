@@ -11,7 +11,7 @@ import { create } from "@bufbuild/protobuf";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ServerWidthAddon, SERVER_WIDTH_VERSION } from "./server-width.js";
-import { findLinks, LinkPopover, loadDockerwmBase, rowText } from "./links.js";
+import { findLinks, isSafeHttpLink, LinkPopover, loadDockerwmBase, rowText } from "./links.js";
 import {
   AttachShellSchema,
   AuthenticateSchema,
@@ -43,6 +43,7 @@ import { clampFontSize, loadFontSize, saveFontSize } from "./font-size.js";
 import { composeBoundedReplay, snapshotReplayPreamble } from "./terminal-replay.js";
 import { TerminalOutputFilter } from "./terminal-output.js";
 import { TerminalWritePump } from "./terminal-write-pump.js";
+import { TerminalInputQueue } from "./terminal-input-queue.js";
 
 const PROTOCOL_MAJOR = 0;
 const PROTOCOL_MINOR = 2;
@@ -96,6 +97,7 @@ class Tab {
   private readonly outputFilter = new TerminalOutputFilter();
   /// One bounded write enters xterm at a time; overload recovers by snapshot.
   private readonly writePump: TerminalWritePump;
+  private readonly inputQueue = new TerminalInputQueue();
   private readonly app: App;
 
   snapshot: Uint8Array = new Uint8Array();
@@ -127,15 +129,23 @@ class Tab {
     );
     this.button.onclick = () => app.select(this);
 
-    // Safe defaults (threat model T9): we do NOT load the clipboard, web-links
-    // or image addons, so OSC 52 clipboard writes and OSC 8 auto-hyperlinks
-    // are inert. The window title (OSC 0/2) is sanitized before it reaches the
-    // tab label; it is never written to document.title.
+    // Safe defaults (threat model T9): no clipboard, web-links or image addon.
+    // xterm core still owns OSC 8, so route it through Holdfast's validated
+    // popover rather than xterm's confirm/window.open fallback.
     this.term = new Terminal({
       scrollback: 10_000,
       fontSize: app.fontSize,
       convertEol: false,
       allowProposedApi: true, // Terminal.unicode is a "proposed" API
+      linkHandler: {
+        activate: (event, url) => {
+          if (isSafeHttpLink(url)) app.linkPopover.show(event, url);
+        },
+        hover: (event, url) => {
+          if (isSafeHttpLink(url)) app.linkPopover.show(event, url);
+        },
+        leave: () => app.linkPopover.scheduleHide(),
+      },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
@@ -255,7 +265,8 @@ class Tab {
   appendLive(data: Uint8Array): void {
     if (data.length > LIVE_BUFFER_CAP) {
       this.liveOverflowed = true;
-      this.requestRecovery();
+      if (this.presented) this.writePump.enqueue(data);
+      else this.requestRecovery();
       return;
     }
     this.liveChunks.push(data);
@@ -267,17 +278,34 @@ class Tab {
       this.liveBytes -= this.liveChunks.shift()!.length;
       this.liveOverflowed = true;
     }
-    if (this.liveOverflowed) {
-      this.requestRecovery();
-      return;
-    }
     if (this.presented) this.writePump.enqueue(data);
+  }
+
+  enqueueInput(data: Uint8Array): boolean {
+    return this.inputQueue.enqueue(data);
+  }
+
+  pauseInput(): void {
+    this.inputQueue.pause();
+  }
+
+  resumeInput(send: (data: Uint8Array) => void): void {
+    this.inputQueue.resume(send);
+  }
+
+  clearInput(): void {
+    this.inputQueue.clear();
   }
 
   /// Full re-render: fetched history, spacer to push it into scrollback,
   /// server snapshot, then everything received live since attach.
   render(): void {
     if (this.liveOverflowed) {
+      // The replay cache is cumulative, while xterm's presentation queue is
+      // transient. If xterm has already kept the live screen current, simply
+      // skip this optional history redraw; replaying an incomplete cache or
+      // rotating a healthy attachment would both be worse.
+      if (this.presented) return;
       this.requestRecovery();
       return;
     }
@@ -313,6 +341,8 @@ class Tab {
   }
 
   dispose(): void {
+    this.inputQueue.pause();
+    this.inputQueue.clear();
     this.term.dispose();
     this.panel.remove();
     this.button.remove();
@@ -416,7 +446,10 @@ class App {
     this.pending.clear();
     this.channelToTab.clear();
     for (const tab of this.tabs) {
-      if (tab.state !== "exited") tab.setState("reconnecting");
+      if (tab.state !== "exited") {
+        tab.pauseInput();
+        tab.setState("reconnecting");
+      }
     }
     this.setStatus(`disconnected — retrying in ${this.backoffMs / 1000}s`, "err");
     setTimeout(() => void this.connect(), this.backoffMs);
@@ -668,6 +701,7 @@ class App {
       this.tabs.push(tab);
       if (!this.active) this.select(tab);
     }
+    tab.pauseInput();
     tab.fit.fit();
 
     // Retire the previous attachment's channel before opening the new one.
@@ -706,6 +740,7 @@ class App {
       if (err.code === ErrorCode.ERR_NOT_FOUND) {
         // The shell is genuinely gone; dropping the entry is correct.
         this.forget(shellId);
+        tab.clearInput();
         tab.setState("exited");
         tab.term.write(`\r\n\x1b[31m[cannot reattach: ${err.humanMessage}]\x1b[0m\r\n`);
         return;
@@ -718,6 +753,7 @@ class App {
         // only way back. Recover through the idempotency key instead, which
         // is what the daemon's open_shell is for.
         if (await this.recoverExpired(tab, shellId, name)) return;
+        tab.clearInput();
         tab.setState("exited");
         tab.term.write(
           `\r\n\x1b[31m[cannot reattach: ${err.humanMessage}]\x1b[0m\r\n` +
@@ -745,6 +781,7 @@ class App {
     tab.oldestAvailable = attached.oldestHistoryLineId;
     tab.historyExhausted = attached.newestHistoryLineId === 0n;
     tab.setState("live");
+    tab.resumeInput((data) => this.sendInputBytes(tab, data));
 
     // Render the snapshot NOW: until this reset+redraw runs, live output
     // composites over whatever stale frame the terminal held, which is
@@ -820,6 +857,7 @@ class App {
     if (!transport || tab.state !== "live") return;
     const oldChannel = tab.channel;
     this.channelToTab.delete(oldChannel);
+    tab.pauseInput();
     tab.setState("reconnecting");
     transport.closeChannel(oldChannel, envelope({
       message: { case: "detachShell", value: create(DetachShellSchema, {}) },
@@ -860,11 +898,22 @@ class App {
   }
 
   sendInput(tab: Tab, data: string): void {
-    if (tab.state !== "live" || !this.transport) return;
+    if (tab.state === "detached" || tab.state === "exited") return;
+    if (!tab.enqueueInput(encoder.encode(data))) {
+      this.setStatus("terminal input buffer full — input was rejected", "err");
+      return;
+    }
+    if (tab.state === "live") {
+      tab.resumeInput((bytes) => this.sendInputBytes(tab, bytes));
+    }
+  }
+
+  private sendInputBytes(tab: Tab, data: Uint8Array): void {
+    if (tab.state !== "live" || !this.transport) throw new Error("attachment is not live");
     this.transport.send(tab.channel, envelope({
       message: {
         case: "terminalInput",
-        value: create(TerminalInputSchema, { data: new TextEncoder().encode(data) }),
+        value: create(TerminalInputSchema, { data }),
       },
     }));
   }
@@ -907,6 +956,8 @@ class App {
       message: { case: "detachShell", value: create(DetachShellSchema, {}) },
     }));
     this.channelToTab.delete(tab.channel);
+    tab.pauseInput();
+    tab.clearInput();
     tab.setState("detached");
     tab.term.write("\r\n\x1b[2m[detached — shell keeps running; reload to reattach]\x1b[0m\r\n");
   }
@@ -924,6 +975,8 @@ class App {
   }
 
   markExited(tab: Tab, how: string): void {
+    tab.pauseInput();
+    tab.clearInput();
     tab.setState("exited");
     tab.term.write(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
     this.forget(tab.shellId);
@@ -961,6 +1014,7 @@ class App {
           env.message.value.code === ErrorCode.ERR_TOO_SLOW
         ) {
           this.channelToTab.delete(tab.channel);
+          tab.pauseInput();
           tab.setState("reconnecting");
           void this.reattachDropped(tab);
         }

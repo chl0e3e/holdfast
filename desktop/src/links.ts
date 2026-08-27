@@ -8,8 +8,9 @@
 // Terminal output is attacker-controlled, so nothing here auto-opens: links
 // are only *decorated*, and navigation happens when the user clicks a button
 // in the popover, which always shows the full destination. Only http/https
-// is recognized. This is deliberately not the web-links addon (OSC 8 stays
-// inert — an escape sequence must not be able to relabel a destination).
+// is recognized. This is deliberately not the web-links addon. xterm's built-
+// in OSC 8 provider is routed through this same popover by Terminal.linkHandler,
+// so it cannot invoke xterm's default confirm/window.open path.
 //
 // The popover exists because weechat's mouse mode swallows clicks: xterm.js
 // forwards mouse reporting to the application, so click-to-open cannot work
@@ -28,6 +29,16 @@ const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 /// Sanity bounds: a row of hostile output must not produce unbounded work.
 const MAX_LINKS_PER_ROW = 32;
 const MIN_URL_LEN = "http://x.y".length;
+
+/** Accept only links whose parsed scheme is exactly HTTP or HTTPS. */
+export function isSafeHttpLink(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /// Find http/https URLs in one row of terminal text. Trailing prose
 /// punctuation is stripped; a closing bracket is kept only when its opener
@@ -135,6 +146,7 @@ export class LinkPopover {
   ) {
     this.el = document.createElement("div");
     this.el.id = "link-popover";
+    this.el.classList.add("xterm-hover");
     this.el.hidden = true;
 
     this.urlEl = document.createElement("span");

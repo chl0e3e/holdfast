@@ -1,6 +1,6 @@
 // Typed bridge to the Rust side (ADR 0019). Terminal output arrives on a
-// per-attachment Channel as base64 strings (first message = screen snapshot,
-// then live PTY bytes); input goes up as a plain byte array. WebView2
+// per-attachment Channel as acknowledged base64 packets (first message =
+// screen snapshot, then live PTY bytes); input goes up as a plain byte array. WebView2
 // delivers raw invoke bodies as JSON and drops raw channel payloads, so the
 // byte paths must stay JSON-safe. Everything else is ordinary JSON commands
 // and events.
@@ -76,6 +76,7 @@ export type AttachReply = {
   oldestHistoryLineId: number;
   newestHistoryLineId: number;
 };
+type OutputPacket = { attachmentId: number; sequence: number; data: string };
 export type HistoryPage = {
   lines: string[];
   firstLineId: number;
@@ -103,11 +104,20 @@ export const ipc = {
     cols: number,
     rows: number,
     onOutput: (bytes: Uint8Array) => void,
+    onOutputBridgeFailure: (error: unknown) => void,
   ) => attachAfterFirstPayload(
     (deliver) => {
-      const output = new Channel<string>();
-      output.onmessage = (b64) =>
-        deliver(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+      const output = new Channel<OutputPacket>();
+      output.onmessage = (packet) => {
+        deliver(Uint8Array.from(atob(packet.data), (c) => c.charCodeAt(0)));
+        // Exactly one packet per attachment may be outstanding. This credit
+        // keeps Tauri's internal eval/fetch queue from becoming an unbounded
+        // second output buffer when WebView2 is busy.
+        void invoke<void>("ack_terminal_output", {
+          attachmentId: packet.attachmentId,
+          sequence: packet.sequence,
+        }).catch(onOutputBridgeFailure);
+      };
       return invoke<AttachReply>("attach_shell", { server, shell, cols, rows, output });
     },
     onOutput,

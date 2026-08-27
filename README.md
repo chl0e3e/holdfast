@@ -388,6 +388,23 @@ requires one recovery signal with no reattach storm. Reproduce with
 `cd web && npm test && npm run typecheck && npm run build` and
 `cd desktop && npm test && npm run typecheck`.
 
+The remaining burst path was outside xterm (2026-08-27, daemon + desktop +
+web): Tauri's synchronous Channel send could drain the Rust queue into an
+unbounded webview callback backlog, independent desktop input invokes could
+complete out of order, and one blocked WebTransport send stream stalled every
+other shell and the control stream behind it. Desktop output now crosses the
+Tauri bridge one acknowledged packet at a time, desktop input uses a bounded
+64 KiB / 1,024-chunk ordered queue that pauses across attachment replacement,
+and each daemon QUIC stream has its own bounded writer queue. Web replay-buffer
+eviction no longer forces a reattach while xterm is keeping up; its separate
+256 KiB presentation queue remains the overload authority. Finally, xterm's
+built-in OSC 8 provider is explicitly routed through the same destination-
+disclosing **Open / dockerwm** popover as literal URLs. Reproduce the automated
+coverage with `cargo test -p hf-daemon --lib --locked`, `cargo test -p
+hf-client-core --locked`, `cd web && npm test && npm run typecheck && npm run
+build`, `cd desktop && npm test && npm run typecheck && npm run build`, and
+`cd desktop/src-tauri && cargo check --locked`.
+
 Snapshot replay starts from terminal home (2026-08-19, desktop + web): clients
 insert one blank viewport before an attach snapshot so fetched history moves
 into xterm's scrollback. The server snapshot is an avt redraw sequence built

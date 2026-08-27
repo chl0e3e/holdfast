@@ -4,6 +4,7 @@ import {
   DOCKERWM_DEFAULT,
   dockerwmOpenUrl,
   findLinks,
+  isSafeHttpLink,
   loadDockerwmBase,
   rowText,
   type CellReader,
@@ -18,6 +19,10 @@ assert.deepEqual(
   "basic https link with offsets",
 );
 assert.equal(findLinks("http://a.b and https://c.d/e?f=1&g=2")!.length, 2, "two links");
+assert.equal(isSafeHttpLink("https://example.com/path"), true);
+assert.equal(isSafeHttpLink("http://127.0.0.1:8080/"), true);
+assert.equal(isSafeHttpLink("javascript:alert(1)"), false);
+assert.equal(isSafeHttpLink("file:///etc/passwd"), false);
 assert.equal(
   findLinks("go to https://example.com/page, then stop")[0]!.url,
   "https://example.com/page",
