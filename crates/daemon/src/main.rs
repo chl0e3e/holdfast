@@ -38,6 +38,16 @@ async fn main() -> anyhow::Result<()> {
     let mut config = DaemonConfig::default();
     let mut password_users = std::collections::BTreeSet::new();
     let mut pam_service: Option<String> = None;
+    #[cfg(unix)]
+    let mut direct_webtransport_explicit = false;
+    #[cfg(unix)]
+    let mut h3_frontdoor_socket: Option<std::path::PathBuf> = None;
+    #[cfg(unix)]
+    let mut h3_frontdoor_uid: Option<u32> = None;
+    #[cfg(unix)]
+    let mut h3_frontdoor_hostname: Option<String> = None;
+    #[cfg(unix)]
+    let mut h3_frontdoor_port: Option<u16> = None;
     #[cfg(feature = "agent-mode")]
     let mut agent = AgentCli::default();
     let mut args = std::env::args().skip(1);
@@ -89,6 +99,10 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "--wt-bind" => {
+                #[cfg(unix)]
+                {
+                    direct_webtransport_explicit = true;
+                }
                 config.webtransport_bind = Some(
                     args.next()
                         .ok_or_else(|| anyhow::anyhow!("--wt-bind needs a UDP address"))?
@@ -96,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "--wt-cert" => {
+                #[cfg(unix)]
+                {
+                    direct_webtransport_explicit = true;
+                }
                 config.webtransport_certificate = Some(
                     args.next()
                         .ok_or_else(|| anyhow::anyhow!("--wt-cert needs a PEM path"))?
@@ -103,6 +121,10 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "--wt-key" => {
+                #[cfg(unix)]
+                {
+                    direct_webtransport_explicit = true;
+                }
                 config.webtransport_private_key = Some(
                     args.next()
                         .ok_or_else(|| anyhow::anyhow!("--wt-key needs a PEM path"))?
@@ -110,6 +132,39 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "--no-webtransport" => config.webtransport_bind = None,
+            #[cfg(unix)]
+            "--h3-frontdoor-socket" => {
+                h3_frontdoor_socket = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--h3-frontdoor-socket needs a path"))?
+                        .into(),
+                );
+            }
+            #[cfg(unix)]
+            "--h3-frontdoor-uid" => {
+                h3_frontdoor_uid = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--h3-frontdoor-uid needs a UID"))?
+                        .parse()?,
+                );
+            }
+            #[cfg(unix)]
+            "--h3-frontdoor-hostname" => {
+                h3_frontdoor_hostname = Some(
+                    args.next()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("--h3-frontdoor-hostname needs a DNS hostname")
+                        })?,
+                );
+            }
+            #[cfg(unix)]
+            "--h3-frontdoor-port" => {
+                h3_frontdoor_port = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--h3-frontdoor-port needs a UDP port"))?
+                        .parse()?,
+                );
+            }
             "--grant-key" => {
                 // Persistent 32-byte grant-signing seed (hex file). Grants —
                 // and therefore stored client logins — survive daemon
@@ -302,8 +357,41 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             other => anyhow::bail!(
-                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --shell-idle-ttl <seconds>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --grant-key <path>, --server-id <srv_hex>, --spawner-socket <path>)"
+                "unknown argument: {other} (supported: --bind, --web-root, --ssh-auth <user> <keys>, --password-auth <user>, --pam-service <name>, --account <user> <accts>, --allowed-origin <origin>, --drop-privileges, --shell-max-processes <n>, --shell-max-open-files <n>, --shell-max-core-bytes <bytes>, --shell-idle-ttl <seconds>, --wt-bind, --wt-cert, --wt-key, --no-webtransport, --h3-frontdoor-socket <path>, --h3-frontdoor-uid <uid>, --h3-frontdoor-hostname <dns-name>, --h3-frontdoor-port <udp-port>, --grant-key <path>, --server-id <srv_hex>, --spawner-socket <path>)"
             ),
+        }
+    }
+    #[cfg(unix)]
+    {
+        let h3_frontdoor_requested = h3_frontdoor_socket.is_some()
+            || h3_frontdoor_uid.is_some()
+            || h3_frontdoor_hostname.is_some()
+            || h3_frontdoor_port.is_some();
+        if h3_frontdoor_requested {
+            if direct_webtransport_explicit
+                || config.webtransport_certificate.is_some()
+                || config.webtransport_private_key.is_some()
+            {
+                anyhow::bail!(
+                    "shared H3 front-door options cannot be combined with --wt-bind/--wt-cert/--wt-key"
+                );
+            }
+            config.webtransport_bind = None;
+            config.h3_frontdoor = Some(hf_daemon::FrontdoorBridgeConfig {
+                socket_path: h3_frontdoor_socket.ok_or_else(|| {
+                    anyhow::anyhow!("shared H3 mode requires --h3-frontdoor-socket")
+                })?,
+                frontdoor_uid: h3_frontdoor_uid
+                    .ok_or_else(|| anyhow::anyhow!("shared H3 mode requires --h3-frontdoor-uid"))?,
+                hostname: h3_frontdoor_hostname.ok_or_else(|| {
+                    anyhow::anyhow!("shared H3 mode requires --h3-frontdoor-hostname")
+                })?,
+                public_port: h3_frontdoor_port.ok_or_else(|| {
+                    anyhow::anyhow!("shared H3 mode requires --h3-frontdoor-port")
+                })?,
+                maximum_sessions: 256,
+                maximum_streams_per_session: 64,
+            });
         }
     }
     if config.webtransport_bind == DaemonConfig::default().webtransport_bind {
@@ -408,6 +496,15 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(wt) = daemon.webtransport_addr {
         println!("HTTP/3 endpoint (page + WebTransport): https://{wt} (UDP/QUIC)");
+    }
+    #[cfg(unix)]
+    if let Some(frontdoor) = &config.h3_frontdoor {
+        println!(
+            "HTTP/3 backend for https://{}:{} on {}",
+            frontdoor.hostname,
+            frontdoor.public_port,
+            frontdoor.socket_path.display()
+        );
     }
 
     tokio::signal::ctrl_c().await?;

@@ -1,0 +1,43 @@
+[Unit]
+Description=Holdfast terminal daemon behind the shared dockerwm HTTP/3 front door
+After=network.target
+Before=dockerwm-h3-frontdoord.service
+Wants=dockerwm-h3-frontdoord.service
+
+[Service]
+Type=simple
+User=holdfast
+Group=holdfast
+SupplementaryGroups=dockerwm-viewer-ipc
+ExecStart=/usr/local/bin/holdfastd \
+  --bind 127.0.0.1:8080 \
+  --no-webtransport \
+  --web-root /usr/share/holdfast/web \
+  --ssh-auth admin /var/lib/holdfast/authorized_keys \
+  --allowed-origin https://terminal.example.com \
+  --grant-key /var/lib/holdfast/grant.key \
+  --upload-root /var/lib/holdfast/uploads \
+  --h3-frontdoor-socket /run/holdfast-h3/h3-bridge.sock \
+  --h3-frontdoor-uid 973 \
+  --h3-frontdoor-hostname terminal.example.com \
+  --h3-frontdoor-port 443
+Restart=on-failure
+RestartSec=2s
+StateDirectory=holdfast
+UMask=0007
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+TasksMax=2048
+
+[Install]
+WantedBy=multi-user.target

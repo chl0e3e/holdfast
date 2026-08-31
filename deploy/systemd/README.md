@@ -16,6 +16,12 @@ of 512 processes per Unix uid, 1,024 open files per process, and zero-byte core
 dumps. Tune the daemon flags and unit values together for the host's workload;
 never remove both layers.
 
+`holdfastd-shared-h3.service` is a third transport deployment for the same
+single-user shell model. It owns no UDP listener or TLS private key: the
+separately packaged dockerwm front door routes exact-SNI WebTransport streams
+over the ADR 0030 UID-checked Unix bridge. See `../shared-h3/README.md`; this
+does not replace either standalone unit and does not introduce a fallback.
+
 ## WebTransport certificate
 
 Both reference units expect a publicly trusted chain at

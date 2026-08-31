@@ -32,9 +32,14 @@ use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::task::JoinSet;
 use zeroize::Zeroize;
 
 use crate::conn::{Conn, OUTGOING_QUEUE};
+#[cfg(unix)]
+use crate::frontdoor_bridge::BridgeSession;
 use crate::{AppState, WebTransportCertificateMode};
 
 /// Explicit ceiling on concurrent bidirectional streams per connection.
@@ -493,8 +498,48 @@ fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
+enum SessionSend {
+    WebTransport(Box<WtSendStream>),
+    #[cfg(unix)]
+    Bridge(OwnedWriteHalf),
+}
+
+impl SessionSend {
+    async fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::WebTransport(stream) => stream.write_all(bytes).await,
+            #[cfg(unix)]
+            Self::Bridge(stream) => stream.write_all(bytes).await,
+        }
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::WebTransport(stream) => stream.shutdown().await,
+            #[cfg(unix)]
+            Self::Bridge(stream) => stream.shutdown().await,
+        }
+    }
+}
+
+enum SessionReceive {
+    WebTransport(h3_webtransport::stream::RecvStream<h3_quinn::RecvStream, Bytes>),
+    #[cfg(unix)]
+    Bridge(OwnedReadHalf),
+}
+
+impl SessionReceive {
+    async fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::WebTransport(stream) => stream.read(bytes).await,
+            #[cfg(unix)]
+            Self::Bridge(stream) => stream.read(bytes).await,
+        }
+    }
+}
+
 enum WriterMsg {
-    Register(u64, WtSendStream),
+    Register(u64, SessionSend),
     Frame(u64, Envelope),
 }
 
@@ -582,7 +627,7 @@ impl WtChannelQueue {
     }
 }
 
-async fn run_wt_channel_writer(mut stream: WtSendStream, queue: Arc<WtChannelQueue>) {
+async fn run_channel_writer(mut stream: SessionSend, queue: Arc<WtChannelQueue>) {
     while let Some(frame) = queue.next().await {
         if stream.write_all(&frame).await.is_err() {
             return;
@@ -591,15 +636,10 @@ async fn run_wt_channel_writer(mut stream: WtSendStream, queue: Arc<WtChannelQue
     let _ = stream.shutdown().await;
 }
 
-async fn handle_wt_session(
-    session: WtSession,
-    quic: quinn::Connection,
-    state: Arc<AppState>,
-    web_root: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    // Router: each send-half moves into its own writer task. Queueing a frame
-    // is synchronous and bounded, so flow control on one QUIC stream can never
-    // head-of-line block another stream.
+fn spawn_writer_router() -> (
+    tokio::sync::mpsc::Sender<WriterMsg>,
+    tokio::task::JoinHandle<()>,
+) {
     let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel::<WriterMsg>(OUTGOING_QUEUE);
     let writer = tokio::spawn(async move {
         let overload_frame = hf_protocol::framing::encode_frame(
@@ -621,7 +661,7 @@ async fn handle_wt_session(
                     queues.retain(|_, queue| Arc::strong_count(queue) > 1);
                     let queue = Arc::new(WtChannelQueue::new(overload_frame.clone()));
                     queues.insert(channel, Arc::clone(&queue));
-                    tokio::spawn(run_wt_channel_writer(stream, queue));
+                    tokio::spawn(run_channel_writer(stream, queue));
                 }
                 WriterMsg::Frame(channel, envelope) => {
                     let Some(queue) = queues.get(&channel) else {
@@ -641,24 +681,125 @@ async fn handle_wt_session(
             queue.close();
         }
     });
+    (writer_tx, writer)
+}
 
-    // Adapter: Conn's transport-neutral (channel, envelope) → WriterMsg.
-    // Registration always precedes the channel's first outgoing frame because
-    // Register is enqueued before the reader dispatches anything.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<(u64, Envelope)>(OUTGOING_QUEUE);
-    let adapter_writer_tx = writer_tx.clone();
-    let adapter = tokio::spawn(async move {
-        while let Some((channel, envelope)) = out_rx.recv().await {
-            if adapter_writer_tx
-                .send(WriterMsg::Frame(channel, envelope))
-                .await
-                .is_err()
-            {
-                break;
+struct ProtocolSessionRuntime {
+    writer_tx: tokio::sync::mpsc::Sender<WriterMsg>,
+    writer: tokio::task::JoinHandle<()>,
+    adapter: tokio::task::JoinHandle<()>,
+    conn: Arc<tokio::sync::Mutex<Conn>>,
+    readers: JoinSet<()>,
+    close_tx: tokio::sync::watch::Sender<bool>,
+    next_channel: u64,
+}
+
+impl ProtocolSessionRuntime {
+    fn new(state: Arc<AppState>, peer_ip: std::net::IpAddr, channel_binding: Vec<u8>) -> Self {
+        let (writer_tx, writer) = spawn_writer_router();
+        // Adapter: Conn's transport-neutral (channel, envelope) → WriterMsg.
+        // Registration always precedes the first dispatch on a channel.
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<(u64, Envelope)>(OUTGOING_QUEUE);
+        let adapter_writer_tx = writer_tx.clone();
+        let adapter = tokio::spawn(async move {
+            while let Some((channel, envelope)) = out_rx.recv().await {
+                if adapter_writer_tx
+                    .send(WriterMsg::Frame(channel, envelope))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
+        });
+        let conn = Arc::new(tokio::sync::Mutex::new(Conn::new(
+            state,
+            peer_ip,
+            out_tx,
+            true,
+            channel_binding,
+        )));
+        let (close_tx, _) = tokio::sync::watch::channel(false);
+        Self {
+            writer_tx,
+            writer,
+            adapter,
+            conn,
+            readers: JoinSet::new(),
+            close_tx,
+            next_channel: 0,
         }
-    });
+    }
 
+    fn close_receiver(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.close_tx.subscribe()
+    }
+
+    async fn register(&mut self, send: SessionSend, mut recv: SessionReceive) -> Result<(), ()> {
+        let channel = self.next_channel;
+        self.next_channel = self.next_channel.checked_add(1).ok_or(())?;
+        self.writer_tx
+            .send(WriterMsg::Register(channel, send))
+            .await
+            .map_err(|_| ())?;
+        let conn = Arc::clone(&self.conn);
+        let close = self.close_tx.clone();
+        self.readers.spawn(async move {
+            let mut decoder = FrameDecoder::new(hf_protocol::FRAME_BYTES_DEFAULT);
+            let mut buffer = vec![0_u8; 16 * 1024];
+            'read: loop {
+                let count = match recv.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => count,
+                };
+                if decoder.extend(&buffer[..count]).is_err() {
+                    let _ = close.send(true);
+                    break;
+                }
+                loop {
+                    match decoder.next_frame() {
+                        Ok(Some(envelope)) => {
+                            if !conn.lock().await.dispatch(channel, envelope).await {
+                                let _ = close.send(true);
+                                break 'read;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!("protocol error on stream: {error}");
+                            let _ = close.send(true);
+                            break 'read;
+                        }
+                    }
+                }
+            }
+            // The control stream owns the authenticated connection. Other
+            // streams are temporary attachments/uploads and detach alone.
+            if channel == 0 {
+                let _ = close.send(true);
+            } else {
+                conn.lock().await.channel_closed(channel);
+            }
+        });
+        Ok(())
+    }
+
+    async fn finish(mut self) {
+        self.readers.shutdown().await;
+        self.conn.lock().await.detach_all();
+        self.adapter.abort();
+        let _ = self.adapter.await;
+        drop(self.writer_tx);
+        let _ = self.writer.await;
+    }
+}
+
+async fn handle_wt_session(
+    session: WtSession,
+    quic: quinn::Connection,
+    state: Arc<AppState>,
+    web_root: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let peer_ip = quic.remote_address().ip();
     // SSH-auth channel binding for this transport: our certificate hash, which
     // the client independently pinned (ADR 0008).
@@ -666,68 +807,31 @@ async fn handle_wt_session(
         .webtransport_cert_hash
         .map(|h| h.to_vec())
         .unwrap_or_default();
-    let conn = Arc::new(tokio::sync::Mutex::new(Conn::new(
-        Arc::clone(&state),
-        peer_ip,
-        out_tx,
-        true,
-        channel_binding,
-    )));
-    let mut next_channel: u64 = 0;
+    let mut runtime = ProtocolSessionRuntime::new(Arc::clone(&state), peer_ip, channel_binding);
+    let mut close = runtime.close_receiver();
 
     loop {
-        match session.accept_bi().await {
+        let accepted = tokio::select! {
+            changed = close.changed() => {
+                let _ = changed;
+                quic.close(0_u32.into(), b"protocol session closed");
+                break;
+            }
+            accepted = session.accept_bi() => accepted,
+        };
+        match accepted {
             Ok(Some(AcceptedBi::BidiStream(_session_id, stream))) => {
-                let (send, mut recv) = stream.split();
-                let channel = next_channel;
-                next_channel += 1;
-                if writer_tx
-                    .send(WriterMsg::Register(channel, send))
+                let (send, recv) = stream.split();
+                if runtime
+                    .register(
+                        SessionSend::WebTransport(Box::new(send)),
+                        SessionReceive::WebTransport(recv),
+                    )
                     .await
                     .is_err()
                 {
                     break;
                 }
-
-                let conn = Arc::clone(&conn);
-                let quic = quic.clone();
-                tokio::spawn(async move {
-                    let mut decoder = FrameDecoder::new(hf_protocol::FRAME_BYTES_DEFAULT);
-                    let mut buf = vec![0u8; 16 * 1024];
-                    'read: loop {
-                        let n = match recv.read(&mut buf).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => n,
-                        };
-                        if decoder.extend(&buf[..n]).is_err() {
-                            quic.close(0u32.into(), b"frame too large");
-                            break;
-                        }
-                        loop {
-                            match decoder.next_frame() {
-                                Ok(Some(envelope)) => {
-                                    if !conn.lock().await.dispatch(channel, envelope).await {
-                                        quic.close(0u32.into(), b"closed");
-                                        break 'read;
-                                    }
-                                }
-                                Ok(None) => break,
-                                Err(e) => {
-                                    tracing::warn!("protocol error on stream: {e}");
-                                    quic.close(0u32.into(), b"protocol error");
-                                    break 'read;
-                                }
-                            }
-                        }
-                    }
-                    // Stream finished: control stream ends the session; an
-                    // attachment stream just detaches (spec §11).
-                    if channel == 0 {
-                        quic.close(0u32.into(), b"control stream closed");
-                    } else {
-                        conn.lock().await.channel_closed(channel);
-                    }
-                });
             }
             // A further HTTP/3 request multiplexed onto this session's
             // connection (allowed by the spec, unusual from browsers): serve
@@ -751,11 +855,45 @@ async fn handle_wt_session(
         }
     }
 
-    conn.lock().await.detach_all();
-    adapter.abort();
-    let _ = adapter.await;
-    drop(writer_tx);
-    let _ = writer.await;
+    runtime.finish().await;
+    Ok(())
+}
+
+/// Run the unchanged Holdfast connection protocol over a routed raw-stream
+/// session from the shared HTTP/3 front door (ADR 0030).
+#[cfg(unix)]
+pub(crate) async fn handle_bridge_session(
+    session: BridgeSession,
+    state: Arc<AppState>,
+) -> anyhow::Result<()> {
+    let mut runtime = ProtocolSessionRuntime::new(
+        state,
+        session.remote_address().ip(),
+        session.channel_binding().to_vec(),
+    );
+    let mut close = runtime.close_receiver();
+    loop {
+        let accepted = tokio::select! {
+            changed = close.changed() => {
+                let _ = changed;
+                break;
+            }
+            accepted = session.accept_bi() => accepted,
+        };
+        let stream = match accepted {
+            Ok(stream) => stream,
+            Err(_) => break,
+        };
+        let (recv, send) = stream.into_split();
+        if runtime
+            .register(SessionSend::Bridge(send), SessionReceive::Bridge(recv))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    runtime.finish().await;
     Ok(())
 }
 

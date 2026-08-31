@@ -25,6 +25,12 @@ cargo run -p hf-daemon -- \
 The configured key must be mode 0600 or stricter. Renewed files take effect
 after restarting the daemon.
 
+To share one UDP/443 listener with dockerwm while retaining exact SNI
+certificates and ADR 0008 channel binding, use the opt-in bounded Unix backend
+described in [`deploy/shared-h3`](../../deploy/shared-h3/README.md). Standalone
+direct HTTP/3 remains the default; the two listener modes are deliberately
+mutually exclusive.
+
 ## Temporary file uploads
 
 Uploads are off by default. Enable them on a standalone daemon with an

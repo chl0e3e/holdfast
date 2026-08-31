@@ -23,9 +23,14 @@ pub mod observability;
 pub mod agent_mode;
 pub mod auth;
 mod conn;
+#[cfg(unix)]
+mod frontdoor_bridge;
 mod uploads;
 mod webtransport;
 mod ws;
+
+#[cfg(unix)]
+pub use frontdoor_bridge::FrontdoorBridgeConfig;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -84,6 +89,11 @@ pub struct DaemonConfig {
     pub webtransport_certificate: Option<PathBuf>,
     /// PEM private key paired with `webtransport_certificate`.
     pub webtransport_private_key: Option<PathBuf>,
+    /// Optional least-authority backend for a separately supervised shared
+    /// HTTP/3/SNI front door (ADR 0030). Mutually exclusive with the direct
+    /// WebTransport listener.
+    #[cfg(unix)]
+    pub h3_frontdoor: Option<FrontdoorBridgeConfig>,
     /// Directory of built browser-client assets to serve at `/`.
     pub web_root: Option<PathBuf>,
     pub auth: AuthConfig,
@@ -132,6 +142,8 @@ impl Default for DaemonConfig {
             webtransport_bind: Some("127.0.0.1:0".parse().unwrap()),
             webtransport_certificate: None,
             webtransport_private_key: None,
+            #[cfg(unix)]
+            h3_frontdoor: None,
             web_root: None,
             auth: AuthConfig::DevInsecure,
             password_auth: None,
@@ -240,7 +252,25 @@ impl Daemon {
         } else if config.webtransport_certificate.is_some() {
             anyhow::bail!("WebTransport certificate configured while WebTransport is disabled");
         }
+        #[cfg(unix)]
+        if let Some(frontdoor) = &config.h3_frontdoor {
+            frontdoor.validate()?;
+            if config.webtransport_bind.is_some()
+                || config.webtransport_certificate.is_some()
+                || config.webtransport_private_key.is_some()
+            {
+                anyhow::bail!(
+                    "shared H3 front-door mode is mutually exclusive with direct WebTransport TLS"
+                );
+            }
+        }
         if matches!(config.auth, AuthConfig::DevInsecure) {
+            #[cfg(unix)]
+            if config.h3_frontdoor.is_some() {
+                anyhow::bail!(
+                    "refusing dev-auth behind a shared H3 front door (threat model T7/T4)"
+                );
+            }
             let mut binds = vec![config.bind];
             binds.extend(config.webtransport_bind);
             for bind in binds {
@@ -327,13 +357,28 @@ impl Daemon {
                 )
             })
             .transpose()?;
-        let webtransport_info = wt_listener.as_ref().map(|l| {
+        let mut webtransport_info = wt_listener.as_ref().map(|l| {
             (
                 l.local_addr.port(),
                 l.cert_hash_base64.clone(),
                 l.certificate_mode,
             )
         });
+        #[cfg(unix)]
+        let frontdoor = config
+            .h3_frontdoor
+            .clone()
+            .map(frontdoor_bridge::FrontdoorBridge::bind)
+            .transpose()?
+            .map(Arc::new);
+        #[cfg(unix)]
+        if let Some(frontdoor) = &frontdoor {
+            webtransport_info = Some((
+                frontdoor.public_port,
+                String::new(),
+                WebTransportCertificateMode::WebPki,
+            ));
+        }
         let webtransport_cert_hash = wt_listener.as_ref().map(|l| l.cert_hash);
 
         let uploads = match &config.upload_root {
@@ -380,6 +425,10 @@ impl Daemon {
 
         if let Some(listener) = &wt_listener {
             handles.push(listener.spawn_accept_loop(Arc::clone(&state)));
+        }
+        #[cfg(unix)]
+        if let Some(frontdoor) = frontdoor {
+            handles.push(frontdoor.spawn_accept_loop(Arc::clone(&state)));
         }
 
         // Idle-shell expiry reaper (ADR 0021): operator opt-in — reclaims
@@ -496,7 +545,7 @@ impl Daemon {
         Ok(Daemon {
             local_addr,
             webtransport_addr: wt_listener.as_ref().map(|l| l.local_addr),
-            webtransport_certificate_mode: wt_listener.as_ref().map(|l| l.certificate_mode),
+            webtransport_certificate_mode: webtransport_info.map(|(_, _, mode)| mode),
             webtransport_cert_hash_base64: wt_listener.map(|l| l.cert_hash_base64),
             server_id,
             observability,

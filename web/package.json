@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "proto:generate": "buf generate ../protocol",
     "spike:encoding": "tsx src/spike/encoding-spike.ts",
-    "build": "npm run proto:generate && esbuild src/client/app.ts --bundle --outdir=dist --format=esm --sourcemap && cp public/index.html dist/ && cp node_modules/@xterm/xterm/css/xterm.css dist/",
+    "build": "npm run proto:generate && esbuild src/client/app.ts --bundle --outdir=dist --format=esm --sourcemap && cp public/index.html public/holdfast.css dist/ && cp node_modules/@xterm/xterm/css/xterm.css dist/",
     "test": "tsx src/spike/terminal-safety.test.ts && tsx src/client/transport.test.ts && tsx src/client/inserted-text.test.ts && tsx src/client/font-size.test.ts && tsx src/client/server-width.test.ts && tsx src/client/links.test.ts && tsx src/client/terminal-input-queue.test.ts && tsx src/client/terminal-replay.test.ts && tsx src/client/terminal-write-pump.test.ts && tsx src/client/terminal-output.test.ts"
   },
   "dependencies": {
