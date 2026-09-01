@@ -113,14 +113,15 @@ export function rowText(line: CellReader): { text: string; cols: number[] } {
   return { text, cols };
 }
 
-/// dockerwm's cookie-authenticated open page (provisions a disposable
-/// containerized browser and redirects to its viewer).
+/// dockerwm's anonymous public viewer deep link. The viewer provisions a
+/// disposable browser and applies the URL through its policy-checked
+/// navigation path after WebTransport connects.
 export function dockerwmOpenUrl(base: string, url: string): string {
-  return `${base.replace(/\/+$/, "")}/newswall/open?url=${encodeURIComponent(url)}`;
+  return `${base.replace(/\/+$/, "")}/?url=${encodeURIComponent(url)}`;
 }
 
 const DOCKERWM_KEY = "holdfast.dockerwm.url";
-export const DOCKERWM_DEFAULT = "https://docker.asylum.st";
+export const DOCKERWM_DEFAULT = "https://docker.direct.asylum.st";
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 

@@ -12,6 +12,11 @@ offers an explicit **dockerwm** action. That action always opened
 `/newswall/open` on a configured DockerWM web service, even when DockerWM
 Desktop was already running locally.
 
+DockerWM v2 subsequently replaced that legacy authenticated launcher with a
+bounded anonymous viewer deep link, `/?url=PERCENT_ENCODED_HTTP_OR_HTTPS_URL`,
+on its dedicated HTTP/3 origin. The URL still crosses DockerWM's normal
+navigation, DNS-admission, request-interception, and disposable-egress policy.
+
 A custom URI protocol was considered. It is a poor presence check: invoking it
 starts a closed application, failures are inconsistently observable through OS
 shell APIs, and browser clients may display an external-protocol prompt. It
@@ -35,8 +40,10 @@ existing DockerWM window and opens the URL in a new DockerWM tab.
 Holdfast Desktop reads at most 4 KiB from a regular descriptor, rejects broad
 Unix permissions and malformed/non-loopback values, and uses short bounded
 connect/I/O timeouts. A missing, stale or unreachable descriptor means
-"DockerWM is not running" and invokes the existing remote `/newswall/open`
-fallback. A reachable bridge rejection is not silently sent elsewhere.
+"DockerWM is not running" and invokes the remote public-viewer deep-link
+fallback. Its default viewer origin is `https://docker.direct.asylum.st`; an
+operator may override or disable it through the existing localStorage setting.
+A reachable bridge rejection is not silently sent elsewhere.
 
 The browser client retains the remote action: a web page cannot safely read a
 per-user native capability file, and exposing an unauthenticated localhost API

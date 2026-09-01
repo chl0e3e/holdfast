@@ -97,9 +97,10 @@ function fakeLine(cells: [string, number][]): CellReader {
 
 assert.equal(
   dockerwmOpenUrl("https://docker.example/", "https://a.b/c?d=e&f=g"),
-  "https://docker.example/newswall/open?url=https%3A%2F%2Fa.b%2Fc%3Fd%3De%26f%3Dg",
+  "https://docker.example/?url=https%3A%2F%2Fa.b%2Fc%3Fd%3De%26f%3Dg",
   "URL is fully encoded and base slash-trimmed",
 );
+assert.equal(DOCKERWM_DEFAULT, "https://docker.direct.asylum.st");
 
 const store = (value: string | null) => ({ getItem: () => value, setItem: () => {} });
 assert.equal(loadDockerwmBase(store(null)), DOCKERWM_DEFAULT, "nothing stored → default");

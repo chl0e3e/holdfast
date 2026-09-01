@@ -285,8 +285,9 @@ are detected
 client-side (http/https only — OSC 8 hyperlinks stay inert per T9) and
 hovering one shows a popover with the full destination and two explicit
 actions: open directly, or open in a disposable dockerwm browser
-(`<dockerwm>/newswall/open?url=…`, dockerwm's cookie-authenticated page that
-provisions a sandboxed container and forwards to its viewer). A popover
+(`<viewer>/?url=…`, dockerwm's anonymous public-viewer deep link that
+provisions a sandboxed browser and applies the URL through its normal policy
+checks). A popover
 instead of click-to-open because weechat's mouse mode owns the terminal's
 clicks — xterm.js forwards them to the application — while hover detection
 stays client-side; the buttons are ordinary DOM outside the mouse capture.
@@ -294,8 +295,8 @@ Nothing auto-opens, and the URL is shown verbatim (textContent) before any
 navigation. On desktop the webview has no working window.open, so the
 buttons invoke a Rust `open_external` command that re-validates the scheme
 (hostile output must not reach other URL-scheme handlers) and hands the URL
-to the OS default browser via the `open` crate. The dockerwm base defaults
-to `https://docker.asylum.st`;
+to the OS default browser via the `open` crate. The dockerwm viewer origin
+defaults to `https://docker.direct.asylum.st`;
 override or disable via localStorage key `holdfast.dockerwm.url` (empty
 string hides the button). Wide/cluster glyphs before a URL are mapped
 cell-accurately (`rowText`); URLs wrapped by weechat's own line-breaking are

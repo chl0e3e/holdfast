@@ -88,9 +88,9 @@ Windows manual regression:
 The terminal link popover's **dockerwm** action first looks for the
 authenticated loopback bridge published by a running DockerWM Desktop app. If
 present, the link opens in a new tab in that existing app. If no bridge is
-reachable, Holdfast opens the existing cookie-authenticated remote URL at
-`https://docker.asylum.st/newswall/open` (or the
-`holdfast.dockerwm.url` localStorage override). An empty override still hides
+reachable, Holdfast opens the anonymous disposable viewer deep link at
+`https://docker.direct.asylum.st/?url=...` (or the
+`holdfast.dockerwm.url` viewer-origin override). An empty override still hides
 the DockerWM action entirely.
 
 This is intentionally a local IPC probe rather than a custom URI protocol: a
