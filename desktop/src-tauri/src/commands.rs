@@ -37,10 +37,12 @@ pub async fn add_server(
     display_name: String,
     username: Option<String>,
     ssh_key_path: Option<String>,
+    remember_login: bool,
 ) -> CmdResult<String> {
     state
         .core
         .add_server(ServerConfig {
+            remember_login,
             url,
             display_name,
             username,
@@ -53,6 +55,18 @@ pub async fn add_server(
 #[tauri::command]
 pub async fn remove_server(state: State<'_, AppState>, server: String) -> CmdResult<()> {
     state.core.remove_server(&server).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn set_remember_login(
+    state: State<'_, AppState>,
+    server: String,
+    remember: bool,
+) -> CmdResult<()> {
+    state
+        .core
+        .set_remember_login(&server, remember)
+        .map_err(err)
 }
 
 /// Continue one interactive auth attempt: a password, or an empty value for an

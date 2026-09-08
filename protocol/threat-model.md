@@ -57,6 +57,10 @@ Assets, in priority order:
 An attacker exfiltrates a connection grant or resume token (XSS, malware,
 shoulder-surfed URL, leaked log).
 
+- Desktop grants stay in memory unless remembering is explicitly enabled per
+  server. Windows state is protected with user-scoped DPAPI, including shell
+  tokens and recovery keys (ADR 0031). Legacy desktop grants are discarded on
+  migration. Same-user malware can still read live credentials or invoke DPAPI.
 - Grants and resume tokens are short-lived and narrowly scoped (user, audience,
   shell, operations).
 - Resume tokens rotate on every successful attach; replay of a rotated token is

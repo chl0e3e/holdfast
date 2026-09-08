@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         let (url, user, key) = (&chunk[0], &chunk[1], &chunk[2]);
         let server = core
             .add_server(ServerConfig {
+            remember_login: false,
                 url: url.clone(),
                 display_name: url.clone(),
                 username: Some(user.clone()),

@@ -8,13 +8,15 @@ Adding a server takes a URL plus either a username **and** SSH key path
 (SSH challenge/response) or a username alone — then the app prompts for the
 Unix password on connect (ADR 0016, requires `holdfastd --password-auth
 <user>`). Passwords are used for one login and never stored; the issued
-12 h grant (refreshed on use) carries reconnects and restarts. Leave both
+12 h grant carries reconnects while the app is open. Restarting requires a
+fresh login unless **Remember login after closing Holdfast** is enabled for
+that server. Change this through the server’s **Login** settings. Leave both
 fields empty only for loopback dev daemons.
 
 Shells live on the server (spec §11): closing the app, losing the network
 or rebooting the client machine never kills them. On launch the app
 reattaches every stored shell with screen + scrollback restored, using the
-persisted grant (12 h, refreshed on use) and per-shell resume tokens; lost
+fresh authentication (or an explicitly remembered 12 h grant) and per-shell resume tokens; lost
 tokens recover via idempotency keys (ADR 0018).
 
 ## Layout
@@ -109,9 +111,13 @@ cargo test -p hf-client-core dockerwm
 
 `%APPDATA%\holdfast\desktop.json` (Windows) /
 `~/.config/holdfast/desktop.json` (unix, 0600), override with
-`HOLDFAST_DESKTOP_STATE`. Schema v2; the hf CLI's v1 `state.json` is
-imported once on first run. Corrupt files are renamed aside, never silently
-replaced.
+`HOLDFAST_DESKTOP_STATE`. Schema v3. Windows protects the entire file with user-scoped DPAPI; other
+platforms retain 0600 JSON. The CLI’s v1 shell metadata is imported once,
+without login grants. Legacy desktop grants are discarded on upgrade and
+remembering defaults off; server settings and shell recovery data are retained.
+Invalid or undecryptable files are retained and refused. State is limited to
+8 MiB. See [ADR 0031](../docs/decisions/0031-desktop-credential-persistence.md)
+for migration, threat-model limits and automated/Windows reproduction steps.
 
 ## Manual acceptance (milestone 1)
 
@@ -218,7 +224,7 @@ hostname and saved username. Submit a deliberately incorrect password once:
 The transport-neutral correct/wrong-password and grant restart paths run with:
 
 ```bash
-cargo test -p hf-client-core password_login_and_grant_only_restart --locked
+cargo test -p hf-client-core password_login_ --locked
 ```
 
 ### Windows security-key retry regression

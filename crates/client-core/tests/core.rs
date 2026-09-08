@@ -116,6 +116,7 @@ async fn open_attach_io_and_client_restart_reattach() {
     let (core, mut events) = Core::spawn(store_path.clone()).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url: url.clone(),
             display_name: "local".into(),
             username: None,
@@ -204,6 +205,7 @@ async fn multiple_shells_on_one_connection() {
     let (core, mut events) = Core::spawn(dir.join("desktop.json")).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url,
             display_name: "local".into(),
             username: None,
@@ -259,6 +261,7 @@ async fn upload_command_streams_reports_progress_and_cancels() {
     let (core, mut events) = Core::spawn(dir.join("desktop.json")).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url: format!("http://{}", daemon.local_addr),
             display_name: "local".into(),
             username: None,
@@ -342,6 +345,7 @@ async fn pending_open_journal_recovers_after_crash_before_reply() {
     let (core, mut events) = Core::spawn(store_path.clone()).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url,
             display_name: "local".into(),
             username: None,
@@ -395,10 +399,18 @@ async fn pending_open_journal_recovers_after_crash_before_reply() {
 
 /// Password auth (ADR 0016): the supervisor surfaces `AuthRequired` instead
 /// of retrying, a wrong password re-prompts with the failure message, the
-/// right one connects, and the refreshed grant — never the password —
-/// carries the next app run straight to `Connected`.
+/// right one connects. Restart requires fresh auth unless remembering is enabled.
 #[tokio::test]
-async fn password_login_and_grant_only_restart() {
+async fn password_login_requires_fresh_auth_after_restart() {
+    password_restart(false).await;
+}
+
+#[tokio::test]
+async fn password_login_and_remembered_grant_restart() {
+    password_restart(true).await;
+}
+
+async fn password_restart(remember: bool) {
     use hf_client_core::ServerStatus;
 
     let dir = temp_dir();
@@ -426,6 +438,7 @@ async fn password_login_and_grant_only_restart() {
     let (core, mut events) = Core::spawn(store_path.clone()).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: remember,
             url,
             display_name: "pw".into(),
             username: Some("alice".into()),
@@ -459,19 +472,23 @@ async fn password_login_and_grant_only_restart() {
         .unwrap();
     wait_output(&mut rx, "pw-alive").await;
 
-    // The password must never touch the store — only the issued grant does.
+    // The password is never stored; the grant is saved only by explicit choice.
     let stored = std::fs::read_to_string(&store_path).unwrap();
     assert!(
         !stored.contains("s3cret-horse"),
         "password persisted: {stored}"
     );
-    assert!(stored.contains("\"grant\""), "grant missing from store");
+    assert_eq!(stored.contains("\"grant\""), remember);
 
-    // "App restart": the stored grant alone must reconnect — no login call.
+    // App restart follows the chosen policy and restores the same shell.
     drop(core);
     drop(events);
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (core2, mut events2) = Core::spawn(store_path).await.unwrap();
+    if !remember {
+        wait_status(&mut events2, &server, ServerStatus::AuthRequired).await;
+        core2.login(&server, "s3cret-horse".into()).await.unwrap();
+    }
     wait_connected(&mut events2, &server).await;
     let (tx2, mut rx2) = mpsc::channel(256);
     core2
@@ -504,6 +521,7 @@ async fn ssh_key_failure_waits_for_explicit_retry() {
     let (core, mut events) = Core::spawn(store_path).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url,
             display_name: "key".into(),
             username: Some("alice".into()),
@@ -547,6 +565,7 @@ async fn bootstrap_snapshots_auth_required_status() {
     let (core, events) = Core::spawn(store_path.clone()).await.unwrap();
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url: "https://unreachable.invalid".into(),
             display_name: "pw".into(),
             username: Some("someone".into()),

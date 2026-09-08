@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
     let (core, mut events) = Core::spawn(PathBuf::from(store)).await?;
     let key = core
         .add_server(ServerConfig {
+            remember_login: false,
             url,
             display_name: "inputprobe".into(),
             username: Some(username),

@@ -52,7 +52,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pwsh ./desktop/scripts/prepare-msquic.ps1
       - run: cargo check -p hf-native-client --lib --locked
-      - run: cargo check -p hf-client-core --locked
+      - run: |
+          $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
+          cargo test -p hf-client-core --lib --locked
 
   # Desktop app (standalone workspace, ADR 0019): frontend typecheck+build,
   # then compile the Tauri crate.

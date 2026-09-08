@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
 
     let server = core
         .add_server(ServerConfig {
+            remember_login: false,
             url: url.clone(),
             display_name: url.clone(),
             username: Some(user.clone()),

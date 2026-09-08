@@ -52,6 +52,8 @@
           <label><span>Username</span><input id="srv-user" placeholder="Username" /></label>
           <label><span>SSH key path</span><input id="srv-key" placeholder="C:\Users\me\.ssh\id_ed25519" /></label>
         </div>
+        <label class="checkbox-label"><input id="srv-remember" type="checkbox" /> Remember login after closing Holdfast</label>
+        <p class="hint">Leave off to log in again after restarting the app. Reconnects work while Holdfast is open. Remembered logins last up to 12 hours without another key touch or password.</p>
         <p class="hint">Use a username and key for SSH authentication, or leave the key empty for password login. Leave both empty only for a loopback development daemon.</p>
         <menu>
           <!-- type=button, NOT a submit: the first submit button in a form is
@@ -59,6 +61,19 @@
                swallowed Enter-confirmed input. -->
           <button type="button" id="srv-cancel">Cancel</button>
           <button id="srv-submit" class="primary-button" value="default">Add server</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="login-settings-dialog">
+      <form method="dialog" id="login-settings-form">
+        <h2>Login settings</h2>
+        <p id="login-settings-target"></p>
+        <label class="checkbox-label"><input id="login-settings-remember" type="checkbox" /> Remember login after closing Holdfast</label>
+        <p class="hint">Leave off to log in again after restarting the app. Reconnects work while Holdfast is open. Remembered logins last up to 12 hours without another key touch or password.</p>
+        <menu>
+          <button type="button" id="login-settings-cancel">Cancel</button>
+          <button class="primary-button" value="default">Save</button>
         </menu>
       </form>
     </dialog>

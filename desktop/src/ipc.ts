@@ -16,6 +16,7 @@ export type ServerView = {
   displayName: string;
   username?: string;
   usesSshKey: boolean;
+  rememberLogin: boolean;
   shells: ShellView[];
   /** Status at bootstrap time — set when the core emitted one before the
    *  frontend subscribed (e.g. auth-required right after launch). */
@@ -91,8 +92,11 @@ export type HistoryPage = {
 export const ipc = {
   bootstrap: () => invoke<BootstrapView>("bootstrap"),
 
-  addServer: (url: string, displayName: string, username?: string, sshKeyPath?: string) =>
-    invoke<string>("add_server", { url, displayName, username, sshKeyPath }),
+  addServer: (url: string, displayName: string, rememberLogin: boolean, username?: string, sshKeyPath?: string) =>
+    invoke<string>("add_server", { url, displayName, username, sshKeyPath, rememberLogin }),
+
+  setRememberLogin: (server: string, remember: boolean) =>
+    invoke<void>("set_remember_login", { server, remember }),
 
   removeServer: (server: string) => invoke<void>("remove_server", { server }),
 

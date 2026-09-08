@@ -100,6 +100,7 @@ fn main() {
             commands::bootstrap,
             commands::add_server,
             commands::remove_server,
+            commands::set_remember_login,
             commands::login,
             commands::open_shell,
             commands::attach_shell,

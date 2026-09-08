@@ -21,6 +21,10 @@ serde_json.workspace = true
 base64.workspace = true
 rand.workspace = true
 dirs.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
 
 # The integration tests spawn a real daemon, which is unix-only (pty, pam).
 [dev-dependencies]

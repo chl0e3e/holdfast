@@ -14,6 +14,8 @@ protocol already support everything needed (per-shell attachment streams,
 rotating resume tokens, snapshot + scrollback replay); the work is client
 architecture.
 
+> Credential retention and Windows storage are superseded by [ADR 0031](0031-desktop-credential-persistence.md).
+
 ## Decision
 
 **Stack.** Tauri 2 with the platform webview (WebView2 on Windows) and

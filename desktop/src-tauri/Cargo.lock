@@ -1899,11 +1899,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
 name = "hf-desktop"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

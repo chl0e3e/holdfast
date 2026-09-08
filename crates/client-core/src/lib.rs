@@ -12,6 +12,8 @@
 //! *attachment* is one temporary stream binding to it.
 
 pub mod dockerwm;
+#[cfg(windows)]
+mod dpapi;
 mod server;
 mod shell;
 pub mod store;
@@ -27,8 +29,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use server::{run_supervisor, ServerCmd, SupervisorCtx};
 use store::{Store, StoreData};
 
-pub(crate) type StatusMap =
-    Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>;
+pub(crate) type StatusMap = Arc<std::sync::Mutex<HashMap<String, (ServerStatus, Option<String>)>>>;
 
 /// Events the GUI renders. Low-rate; terminal bytes go through the
 /// per-attachment output sinks instead.
@@ -151,6 +152,7 @@ pub struct ServerView {
     /// Distinguishes a key retry prompt from a password prompt when the
     /// server reports `AuthRequired`.
     pub uses_ssh_key: bool,
+    pub remember_login: bool,
     pub shells: Vec<ShellView>,
     /// Present connection status. Status events emitted before the GUI
     /// subscribes (e.g. `auth-required` milliseconds after spawn) are
@@ -172,6 +174,7 @@ pub struct ShellView {
 /// Configuration for a newly added server.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    pub remember_login: bool,
     pub url: String,
     pub display_name: String,
     pub username: Option<String>,
@@ -283,6 +286,7 @@ impl Core {
                         display_name: record.display_name,
                         username: record.username,
                         uses_ssh_key,
+                        remember_login: record.remember_login,
                         shells: record
                             .shells
                             .into_iter()
@@ -306,6 +310,7 @@ impl Core {
             display_name: config.display_name,
             username: config.username,
             ssh_key_path: config.ssh_key_path,
+            remember_login: config.remember_login,
             grant: None,
             shells: Default::default(),
             pending_opens: Vec::new(),
@@ -321,6 +326,10 @@ impl Core {
         self.inner.statuses.lock().unwrap().remove(server_key);
         self.inner.capabilities.lock().unwrap().remove(server_key);
         self.inner.store.remove_server(server_key)
+    }
+
+    pub fn set_remember_login(&self, server: &str, remember: bool) -> Result<()> {
+        self.inner.store.set_remember_login(server, remember)
     }
 
     pub async fn open_shell(
@@ -571,6 +580,7 @@ mod view_tests {
     fn bootstrap_json_carries_status_for_the_gui() {
         let view = BootstrapView {
             servers: vec![ServerView {
+                remember_login: false,
                 key: "abc".into(),
                 url: "https://host".into(),
                 display_name: "host".into(),
@@ -593,6 +603,7 @@ mod view_tests {
         // Absent status must be omitted, not null: the GUI tests truthiness.
         let view = BootstrapView {
             servers: vec![ServerView {
+                remember_login: false,
                 key: "abc".into(),
                 url: "https://host".into(),
                 display_name: "host".into(),

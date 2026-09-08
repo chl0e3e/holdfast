@@ -1,4 +1,4 @@
-//! Desktop client persistence (schema v2): per-server config + grants +
+//! Desktop client persistence (schema v3): per-server config + grants +
 //! per-shell resume tokens and idempotency keys, in `holdfast/desktop.json`
 //! under the per-user config dir (`HOLDFAST_DESKTOP_STATE` overrides).
 //!
@@ -8,17 +8,21 @@
 //! file is imported once on first run.
 //!
 //! Same write discipline as ADR 0018: atomic tmp+rename created 0600 (unix),
-//! corrupt files renamed aside rather than silently replaced, newer schema
-//! versions refused.
+//! Invalid files are retained and refused; newer schema versions are refused.
+//! Windows encrypts the entire file using user-scoped DPAPI (ADR 0031).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const STORE_VERSION: u32 = 2;
+pub const STORE_VERSION: u32 = 3;
+/// Hard ceiling for serialized state, including migration input.
+const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(windows)]
+const PROTECTED_HEADER: &[u8] = b"HOLDFAST-DPAPI-1\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,8 +51,11 @@ pub struct ServerRecord {
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_key_path: Option<PathBuf>,
-    /// base64 connection grant (12h TTL; refreshed on every auth).
+    /// Explicit consent to retain a login across app restarts.
+    #[serde(default)]
+    pub remember_login: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Base64 connection grant; persisted only with explicit consent.
     pub grant: Option<String>,
     /// shell id hex → shell record
     #[serde(default)]
@@ -107,42 +114,72 @@ pub fn default_path() -> Result<PathBuf> {
 
 impl Store {
     pub fn load(path: PathBuf) -> Result<Loaded> {
-        let (data, warning) = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<StoreData>(&text) {
-                Ok(data) if data.version > STORE_VERSION => bail!(
-                    "{} is schema v{} but this client only understands v{}; upgrade the client",
-                    path.display(),
-                    data.version,
-                    STORE_VERSION
-                ),
-                Ok(data) => (data, None),
-                Err(parse_err) => {
-                    let backup = path.with_file_name(format!(
-                        "desktop.json.corrupt-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0)
-                    ));
-                    std::fs::rename(&path, &backup)
-                        .with_context(|| format!("back up corrupt {}", path.display()))?;
-                    let warning = format!(
-                        "{} did not parse ({parse_err}); moved to {}",
-                        path.display(),
-                        backup.display()
-                    );
-                    (StoreData::default(), Some(warning))
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (StoreData::default(), None),
-            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        let bytes = match read_bounded(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                None
+            }
+            Err(e) => return Err(e).context("read desktop state"),
         };
+        let mut data = StoreData::default();
+        let mut migrated = false;
+        if let Some(bytes) = bytes {
+            #[cfg(windows)]
+            let protected = bytes.starts_with(PROTECTED_HEADER);
+            #[cfg(windows)]
+            let bytes = if protected {
+                crate::dpapi::unprotect(&bytes[PROTECTED_HEADER.len()..]).context(
+                    "unlock desktop state with this Windows account; original file retained",
+                )?
+            } else {
+                bytes
+            };
+            anyhow::ensure!(
+                bytes.len() <= MAX_STATE_BYTES,
+                "desktop state exceeds 8 MiB"
+            );
+            let bytes = zeroize::Zeroizing::new(bytes);
+            data = serde_json::from_slice(&bytes)
+                .context("invalid desktop state; original file retained")?;
+            anyhow::ensure!(
+                data.version <= STORE_VERSION,
+                "desktop state is schema v{}; upgrade this client",
+                data.version
+            );
+            migrated = data.version < STORE_VERSION;
+            #[cfg(windows)]
+            anyhow::ensure!(
+                protected || migrated,
+                "unencrypted v3 desktop state refused"
+            );
+            for server in data.servers.values_mut() {
+                // Old versions never asked consent. Do not use their grants even once.
+                if migrated {
+                    server.remember_login = false;
+                }
+                if !server.remember_login {
+                    server.grant = None;
+                }
+            }
+            data.version = STORE_VERSION;
+        }
+        let store = Store {
+            path,
+            data: Mutex::new(data),
+        };
+        if migrated {
+            // Replace legacy plaintext before any supervisor can authenticate.
+            store.save(&store.data.lock().unwrap())?;
+        }
         Ok(Loaded {
-            store: Store {
-                path,
-                data: Mutex::new(data),
-            },
-            warning,
+            store,
+            warning: migrated.then(|| {
+                "Saved login cleared on upgrade. Log in again; your shells have been retained."
+                    .into()
+            }),
         })
     }
 
@@ -165,12 +202,17 @@ impl Store {
             idempotency_key: Option<String>,
         }
 
-        let text = match std::fs::read_to_string(v1_path) {
+        let text = match read_bounded(v1_path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(0)
+            }
             Err(e) => return Err(e).with_context(|| format!("read {}", v1_path.display())),
         };
-        let v1: V1State = match serde_json::from_str(&text) {
+        let v1: V1State = match serde_json::from_slice(&text) {
             Ok(v1) => v1,
             // A corrupt CLI file is the CLI's problem; never block first run.
             Err(_) => return Ok(0),
@@ -180,6 +222,7 @@ impl Store {
         if !data.servers.is_empty() {
             return Ok(0);
         }
+        let mut next = data.clone();
         let mut imported = 0;
         let urls: std::collections::BTreeSet<&String> =
             v1.servers.keys().chain(v1.grants.keys()).collect();
@@ -203,14 +246,15 @@ impl Store {
                         .collect()
                 })
                 .unwrap_or_default();
-            data.servers.insert(
+            next.servers.insert(
                 new_server_key(),
                 ServerRecord {
                     url: url.clone(),
                     display_name: url.clone(),
                     username: None,
                     ssh_key_path: None,
-                    grant: v1.grants.get(url).cloned(),
+                    remember_login: false,
+                    grant: None,
                     shells,
                     pending_opens: Vec::new(),
                 },
@@ -218,7 +262,8 @@ impl Store {
             imported += 1;
         }
         if imported > 0 {
-            self.save(&data)?;
+            self.save(&next)?;
+            *data = next;
         }
         Ok(imported)
     }
@@ -234,15 +279,24 @@ impl Store {
     pub fn add_server(&self, record: ServerRecord) -> Result<String> {
         let mut data = self.data.lock().unwrap();
         let key = new_server_key();
-        data.servers.insert(key.clone(), record);
-        self.save(&data)?;
+        let mut next = data.clone();
+        next.servers.insert(key.clone(), record);
+        self.save(&next)?;
+        *data = next;
         Ok(key)
     }
 
     pub fn remove_server(&self, key: &str) -> Result<()> {
         let mut data = self.data.lock().unwrap();
-        data.servers.remove(key);
-        self.save(&data)
+        let mut next = data.clone();
+        next.servers.remove(key);
+        self.save(&next)?;
+        *data = next;
+        Ok(())
+    }
+
+    pub fn set_remember_login(&self, key: &str, remember: bool) -> Result<()> {
+        self.mutate_server(key, |server| server.remember_login = remember)
     }
 
     pub fn set_grant(&self, key: &str, grant: &[u8]) -> Result<()> {
@@ -255,7 +309,12 @@ impl Store {
     }
 
     /// Persist a pending open *before* the OpenShell request goes out.
-    pub fn push_pending_open(&self, key: &str, idempotency_key_hex: &str, name: &str) -> Result<()> {
+    pub fn push_pending_open(
+        &self,
+        key: &str,
+        idempotency_key_hex: &str,
+        name: &str,
+    ) -> Result<()> {
         self.mutate_server(key, |server| {
             server.pending_opens.push(PendingOpen {
                 idempotency_key: idempotency_key_hex.to_string(),
@@ -305,7 +364,13 @@ impl Store {
     }
 
     /// Update a shell's token (rotation). Preserves name and recovery key.
-    pub fn update_token(&self, key: &str, shell_hex: &str, token: &[u8], now_ms: i64) -> Result<()> {
+    pub fn update_token(
+        &self,
+        key: &str,
+        shell_hex: &str,
+        token: &[u8],
+        now_ms: i64,
+    ) -> Result<()> {
         use base64::Engine;
         self.mutate_server(key, |server| {
             if let Some(shell) = server.shells.get_mut(shell_hex) {
@@ -340,17 +405,38 @@ impl Store {
 
     fn mutate_server(&self, key: &str, f: impl FnOnce(&mut ServerRecord)) -> Result<()> {
         let mut data = self.data.lock().unwrap();
-        if let Some(server) = data.servers.get_mut(key) {
-            f(server);
-        }
-        self.save(&data)
+        let mut next = data.clone();
+        let server = next.servers.get_mut(key).context("unknown server")?;
+        f(server);
+        self.save(&next)?;
+        *data = next;
+        Ok(())
     }
 
     fn save(&self, data: &StoreData) -> Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_string_pretty(data)?;
+        let mut persisted = data.clone();
+        for server in persisted.servers.values_mut() {
+            if !server.remember_login {
+                server.grant = None;
+            }
+        }
+        let mut writer = BoundedState(Vec::new());
+        serde_json::to_writer(&mut writer, &persisted)?;
+        let bytes = zeroize::Zeroizing::new(writer.0);
+        #[cfg(windows)]
+        let bytes = {
+            let encrypted = crate::dpapi::protect(&bytes).context("protect desktop state")?;
+            let mut framed = PROTECTED_HEADER.to_vec();
+            framed.extend_from_slice(&encrypted);
+            anyhow::ensure!(
+                framed.len() <= MAX_STATE_BYTES,
+                "protected state exceeds 8 MiB"
+            );
+            zeroize::Zeroizing::new(framed)
+        };
         let tmp = self.path.with_extension("json.tmp");
         {
             let mut opts = std::fs::OpenOptions::new();
@@ -365,11 +451,42 @@ impl Store {
             let mut file = opts
                 .open(&tmp)
                 .with_context(|| format!("create {}", tmp.display()))?;
-            file.write_all(json.as_bytes())?;
+            file.write_all(&bytes)?;
             file.sync_all()?;
         }
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("rename {} over {}", tmp.display(), self.path.display()))?;
+        Ok(())
+    }
+}
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.len() <= MAX_STATE_BYTES as u64,
+        "desktop state exceeds 8 MiB"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_STATE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_STATE_BYTES,
+        "desktop state exceeds 8 MiB"
+    );
+    Ok(bytes)
+}
+
+struct BoundedState(Vec<u8>);
+impl std::io::Write for BoundedState {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_STATE_BYTES.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("desktop state exceeds 8 MiB"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -398,7 +515,8 @@ mod tests {
     use super::*;
 
     fn temp_store() -> (Store, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("hf-store-test-{:032x}", rand::random::<u128>()));
+        let dir =
+            std::env::temp_dir().join(format!("hf-store-test-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("desktop.json");
         let loaded = Store::load(path.clone()).unwrap();
@@ -415,12 +533,15 @@ mod tests {
                 display_name: "a".into(),
                 username: Some("alice".into()),
                 ssh_key_path: None,
+                remember_login: false,
                 grant: None,
                 shells: BTreeMap::new(),
                 pending_opens: Vec::new(),
             })
             .unwrap();
-        store.push_pending_open(&key, "00ff", "build shell").unwrap();
+        store
+            .push_pending_open(&key, "00ff", "build shell")
+            .unwrap();
         store
             .resolve_pending_open(&key, "00ff", "aabb", b"tok", 42)
             .unwrap();
@@ -437,26 +558,20 @@ mod tests {
 
         reloaded.remove_shell(&key, "aabb").unwrap();
         reloaded.remove_server(&key).unwrap();
-        assert!(Store::load(path).unwrap().store.snapshot().servers.is_empty());
+        assert!(Store::load(path)
+            .unwrap()
+            .store
+            .snapshot()
+            .servers
+            .is_empty());
     }
 
     #[test]
-    fn corrupt_store_is_backed_up_with_warning() {
+    fn corrupt_store_is_retained_and_refused() {
         let (_store, path) = temp_store();
         std::fs::write(&path, "{ nope").unwrap();
-        let loaded = Store::load(path.clone()).unwrap();
-        assert!(loaded.warning.is_some());
-        assert!(loaded.store.snapshot().servers.is_empty());
-        let backups = std::fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("desktop.json.corrupt-")
-            })
-            .count();
-        assert_eq!(backups, 1);
+        assert!(Store::load(path.clone()).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "{ nope");
     }
 
     #[test]
@@ -467,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_import_brings_over_shells_and_grants_once() {
+    fn v1_import_brings_over_shells_without_grants_once() {
         let (store, _path) = temp_store();
         let dir = std::env::temp_dir().join(format!("hf-v1-test-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -483,12 +598,147 @@ mod tests {
         let snap = store.snapshot();
         let (_, server) = snap.servers.iter().next().unwrap();
         assert_eq!(server.url, "https://old");
-        assert_eq!(server.grant.as_deref(), Some("Zw=="));
+        assert!(server.grant.is_none());
         assert_eq!(
             server.shells.get("aa").unwrap().idempotency_key.as_deref(),
             Some("00ff")
         );
         // Second import is a no-op (store no longer empty).
         assert_eq!(store.import_v1(&v1).unwrap(), 0);
+    }
+    fn record() -> ServerRecord {
+        ServerRecord {
+            url: "https://example.test".into(),
+            display_name: "example".into(),
+            username: Some("alice".into()),
+            ssh_key_path: Some("id_ed25519_sk".into()),
+            remember_login: false,
+            grant: None,
+            shells: BTreeMap::new(),
+            pending_opens: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn grant_is_available_for_reconnect_but_not_app_restart() {
+        let (store, path) = temp_store();
+        let key = store.add_server(record()).unwrap();
+        store.set_grant(&key, b"secret-grant").unwrap();
+        assert!(store.server(&key).unwrap().grant.is_some());
+        // Subsequent shell updates must not accidentally persist the runtime grant.
+        store
+            .push_pending_open(&key, "recovery-secret", "build")
+            .unwrap();
+        assert!(Store::load(path)
+            .unwrap()
+            .store
+            .server(&key)
+            .unwrap()
+            .grant
+            .is_none());
+    }
+
+    #[test]
+    fn remembering_is_opt_in_and_disabling_removes_disk_grant_immediately() {
+        let (store, path) = temp_store();
+        let key = store.add_server(record()).unwrap();
+        store.set_grant(&key, b"secret-grant").unwrap();
+        store.set_remember_login(&key, true).unwrap();
+        assert!(Store::load(path.clone())
+            .unwrap()
+            .store
+            .server(&key)
+            .unwrap()
+            .grant
+            .is_some());
+        store.set_remember_login(&key, false).unwrap();
+        assert!(
+            store.server(&key).unwrap().grant.is_some(),
+            "in-process reconnect retained"
+        );
+        assert!(Store::load(path)
+            .unwrap()
+            .store
+            .server(&key)
+            .unwrap()
+            .grant
+            .is_none());
+    }
+
+    #[test]
+    fn legacy_grant_is_discarded_before_use_and_shell_recovery_survives() {
+        let (_store, path) = temp_store();
+        let legacy = br#"{"version":2,"servers":{"a":{"url":"https://example.test","displayName":"example","username":"alice","sshKeyPath":"id_ed25519_sk","grant":"legacy-secret","shells":{"s":{"token":"shell-secret","idempotencyKey":"recovery-secret","name":"build","lastAttachedAtMs":1}}}}}"#;
+        std::fs::write(&path, legacy).unwrap();
+        let loaded = Store::load(path.clone()).unwrap();
+        assert!(loaded.warning.is_some());
+        let server = loaded.store.server("a").unwrap();
+        assert!(!server.remember_login);
+        assert!(server.grant.is_none());
+        assert_eq!(
+            server.shells["s"].idempotency_key.as_deref(),
+            Some("recovery-secret")
+        );
+        assert!(Store::load(path.clone()).unwrap().warning.is_none());
+        let disk = std::fs::read(&path).unwrap();
+        assert!(!disk
+            .windows(b"legacy-secret".len())
+            .any(|w| w == b"legacy-secret"));
+        #[cfg(windows)]
+        {
+            assert!(disk.starts_with(PROTECTED_HEADER));
+            assert!(!disk
+                .windows(b"shell-secret".len())
+                .any(|w| w == b"shell-secret"));
+            assert!(!disk
+                .windows(b"recovery-secret".len())
+                .any(|w| w == b"recovery-secret"));
+        }
+    }
+
+    #[test]
+    fn oversized_input_and_failed_preference_save_are_refused() {
+        let (store, path) = temp_store();
+        let key = store.add_server(record()).unwrap();
+        // Force atomic write failure without touching the current state.
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(store.set_remember_login(&key, true).is_err());
+        assert!(!store.server(&key).unwrap().remember_login);
+        assert!(
+            !Store::load(path.clone())
+                .unwrap()
+                .store
+                .server(&key)
+                .unwrap()
+                .remember_login
+        );
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_STATE_BYTES as u64 + 1).unwrap();
+        assert!(Store::load(path).is_err());
+        let mut writer = BoundedState(vec![0; MAX_STATE_BYTES]);
+        assert!(std::io::Write::write(&mut writer, b"x").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encrypted_state_is_opaque_and_unreadable_state_is_never_overwritten() {
+        let (store, path) = temp_store();
+        let key = store.add_server(record()).unwrap();
+        store.set_remember_login(&key, true).unwrap();
+        store.set_grant(&key, b"secret-grant").unwrap();
+        let mut disk = std::fs::read(&path).unwrap();
+        assert!(disk.starts_with(PROTECTED_HEADER));
+        assert!(serde_json::from_slice::<serde_json::Value>(&disk).is_err());
+        assert!(Store::load(path.clone())
+            .unwrap()
+            .store
+            .server(&key)
+            .unwrap()
+            .grant
+            .is_some());
+        disk.truncate(disk.len() / 2);
+        std::fs::write(&path, &disk).unwrap();
+        assert!(Store::load(path.clone()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), disk);
     }
 }

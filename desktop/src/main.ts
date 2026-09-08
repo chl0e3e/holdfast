@@ -35,6 +35,7 @@ type ServerGroup = {
   displayName: string;
   username?: string;
   usesSshKey: boolean;
+  rememberLogin: boolean;
   status: ServerStatus;
   fileUploads: boolean;
   container: HTMLElement;
@@ -247,7 +248,7 @@ class App implements TabDelegate {
   }
 
   ensureGroup(
-    server: Pick<ServerView, "key" | "displayName" | "username" | "usesSshKey">,
+    server: Pick<ServerView, "key" | "displayName" | "username" | "usesSshKey" | "rememberLogin">,
   ): ServerGroup {
     let group = this.groups.get(server.key);
     if (group) return group;
@@ -273,13 +274,18 @@ class App implements TabDelegate {
     remove.className = "remove-server";
     remove.title = `Remove ${server.displayName} (shells keep running on the server)`;
     remove.onclick = () => void this.removeServer(server.key);
-    container.append(label, slot, newShell, remove);
+    const settings = document.createElement("button");
+    settings.textContent = "Login";
+    settings.title = `Login settings for ${server.displayName}`;
+    settings.onclick = () => this.loginSettings(server.key);
+    container.append(label, slot, newShell, settings, remove);
     document.getElementById("tabs")!.appendChild(container);
     group = {
       key: server.key,
       displayName: server.displayName,
       username: server.username,
       usesSshKey: server.usesSshKey,
+      rememberLogin: server.rememberLogin,
       status: "connecting",
       fileUploads: false,
       container,
@@ -755,6 +761,26 @@ class App implements TabDelegate {
     tab.appendNotice(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
   }
 
+  loginSettings(server: string): void {
+    const group = this.groups.get(server);
+    if (!group) return;
+    const dialog = document.getElementById("login-settings-dialog") as HTMLDialogElement;
+    const form = document.getElementById("login-settings-form") as HTMLFormElement;
+    const remember = document.getElementById("login-settings-remember") as HTMLInputElement;
+    document.getElementById("login-settings-target")!.textContent = group.displayName;
+    remember.checked = group.rememberLogin;
+    document.getElementById("login-settings-cancel")!.onclick = () => dialog.close();
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const value = remember.checked;
+      void ipc.setRememberLogin(server, value).then(() => {
+        group.rememberLogin = value;
+        dialog.close();
+      }).catch((error) => this.setStatus(`save login settings failed: ${error}`, "err"));
+    };
+    dialog.showModal();
+  }
+
   addServerDialog(): void {
     const dialog = document.getElementById("add-server-dialog") as HTMLDialogElement;
     const form = document.getElementById("add-server-form") as HTMLFormElement;
@@ -762,6 +788,8 @@ class App implements TabDelegate {
     const name = document.getElementById("srv-name") as HTMLInputElement;
     const user = document.getElementById("srv-user") as HTMLInputElement;
     const key = document.getElementById("srv-key") as HTMLInputElement;
+    const remember = document.getElementById("srv-remember") as HTMLInputElement;
+    remember.checked = false;
     form.onsubmit = (event) => {
       if ((event.submitter as HTMLButtonElement | null)?.value !== "default") return;
       const trimmedUrl = url.value.trim();
@@ -771,6 +799,7 @@ class App implements TabDelegate {
           const server = await ipc.addServer(
             trimmedUrl,
             name.value.trim() || trimmedUrl,
+            remember.checked,
             user.value.trim() || undefined,
             key.value.trim() || undefined,
           );
@@ -779,6 +808,7 @@ class App implements TabDelegate {
             displayName: name.value.trim() || trimmedUrl,
             username: user.value.trim() || undefined,
             usesSshKey: Boolean(key.value.trim()),
+            rememberLogin: remember.checked,
           });
           this.refreshStatusLine();
         } catch (error) {
