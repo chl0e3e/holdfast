@@ -72,6 +72,10 @@ jobs:
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
+      - run: npx playwright install chromium
+        working-directory: desktop
+      - run: node scripts/connection-smoke.mjs
+        working-directory: desktop
       - run: cargo check --locked
         working-directory: desktop/src-tauri
 

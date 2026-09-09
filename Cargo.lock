@@ -1271,7 +1271,7 @@ checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hf-agent"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "hf-auth",
  "hf-gateway",
@@ -1288,7 +1288,7 @@ dependencies = [
 
 [[package]]
 name = "hf-auth"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "base64",
  "ed25519-dalek 2.2.0",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "hf-client-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "base64",
@@ -1324,11 +1324,11 @@ dependencies = [
 
 [[package]]
 name = "hf-control-plane"
-version = "0.0.6"
+version = "0.0.7"
 
 [[package]]
 name = "hf-daemon"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "hf-gateway"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "hf-protocol",
  "quinn",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "hf-launch"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "nix 0.31.3",
  "thiserror 2.0.18",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "hf-native-client"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "base64",
@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "hf-protocol"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bytes",
  "prost",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "hf-pty"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "nix 0.31.3",
  "portable-pty",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "hf-session-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "hf-launch",
  "hf-protocol",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "hf-spawner"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "hf-launch",
  "hf-protocol",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "hf-ssh-adapter"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "hf-auth",
@@ -1484,11 +1484,11 @@ dependencies = [
 
 [[package]]
 name = "hf-ssh-backend"
-version = "0.0.6"
+version = "0.0.7"
 
 [[package]]
 name = "hf-terminal-model"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "avt",
  "thiserror 2.0.18",
@@ -1496,11 +1496,11 @@ dependencies = [
 
 [[package]]
 name = "hf-transport"
-version = "0.0.6"
+version = "0.0.7"
 
 [[package]]
 name = "hf-upload-store"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "hf-protocol",
  "nix 0.31.3",
@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "hf-xterm-width-tables"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "libc",
  "unicode-width 0.1.14",
@@ -3598,7 +3598,7 @@ dependencies = [
 
 [[package]]
 name = "spike-encoding"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "spike-pty"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "portable-pty",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "spike-terminal-model"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "avt",
@@ -3626,7 +3626,7 @@ dependencies = [
 
 [[package]]
 name = "spike-webtransport-echo"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "tokio",

@@ -332,6 +332,25 @@ partials with deliberately slow or interrupted streams.
   read denial; malicious-webview arbitrary-path attempt; successful transfer
   over WebSocket and real WebTransport.
 
+## TCP forwarding (ADR 0032)
+
+An authenticated client can request daemon TCP egress only when its username is
+explicitly allowlisted and its grant permits `tcp-forward`. This is separate
+from shell account policy and disabled by default. Enabling it intentionally
+exposes TCP services reachable from the daemon, including private/loopback
+services, to that user. Operators can further constrain egress at the firewall.
+The desktop's no-auth SOCKS5 port is loopback-only and explicitly started; other
+local processes can use it. No system-wide proxy settings are changed.
+
+Connection/user/global limits precede DNS and socket work. Input/data frames,
+SOCKS address lengths, accept backlog, command/ack queues and inactivity/write
+waits are explicitly bounded. Invalid roles, extra data without acknowledgement,
+post-EOF data and oversized chunks abort only that forward. Losing the desktop,
+control connection or forwarding stream closes the outbound sockets without
+replaying data. File and terminal streams remain independent. Tests cover
+capability downgrade, unauthenticated and wrong-user denial, scoped-grant denial,
+limits, slow-stream/control isolation, half-close and stop/disconnect cleanup.
+
 ## Residual risks accepted for now (revisit before beta)
 
 - Agentless mode makes the gateway a full bastion (T4): accepted for Phase 4

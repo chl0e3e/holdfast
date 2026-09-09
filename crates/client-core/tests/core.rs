@@ -618,3 +618,64 @@ async fn bootstrap_snapshots_auth_required_status() {
     }
     assert_eq!(status, Some(hf_client_core::ServerStatus::AuthRequired));
 }
+
+#[tokio::test]
+async fn socks_listener_is_explicit_and_stops_on_server_removal() {
+    use hf_client_core::SocksAction;
+    use tokio::net::{TcpListener, TcpStream};
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        tcp_forward_users: ["dev".into()].into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let dir = temp_dir();
+    let (core, mut events) = Core::spawn(dir.join("state.json")).await.unwrap();
+    let server = core
+        .add_server(ServerConfig {
+            url: format!("http://{}", daemon.local_addr),
+            display_name: "proxy".into(),
+            username: None,
+            ssh_key_path: None,
+            remember_login: false,
+        })
+        .await
+        .unwrap();
+    wait_connected(&mut events, &server).await;
+    let state = core.socks(&server, SocksAction::Status).await.unwrap();
+    assert!(state.supported);
+    assert!(state.address.is_none());
+    let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = reservation.local_addr().unwrap();
+    assert!(core
+        .socks(&server, SocksAction::Start(address.port()))
+        .await
+        .is_err());
+    drop(reservation);
+    let state = core
+        .socks(&server, SocksAction::Start(address.port()))
+        .await
+        .unwrap();
+    assert_eq!(state.address.as_deref(), Some(address.to_string().as_str()));
+    assert!(TcpStream::connect(address).await.is_ok());
+    assert!(core
+        .socks(&server, SocksAction::Start(address.port()))
+        .await
+        .is_err());
+    assert!(core
+        .socks(&server, SocksAction::Stop)
+        .await
+        .unwrap()
+        .address
+        .is_none());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(TcpStream::connect(address).await.is_err());
+    core.socks(&server, SocksAction::Start(address.port()))
+        .await
+        .unwrap();
+    core.remove_server(&server).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(TcpStream::connect(address).await.is_err());
+    daemon.abort();
+}

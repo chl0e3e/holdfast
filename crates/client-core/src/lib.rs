@@ -34,7 +34,11 @@ pub(crate) type StatusMap = Arc<std::sync::Mutex<HashMap<String, (ServerStatus, 
 /// Events the GUI renders. Low-rate; terminal bytes go through the
 /// per-attachment output sinks instead.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum CoreEvent {
     ServerStatus {
         server: String,
@@ -186,6 +190,19 @@ pub struct Core {
     inner: Arc<CoreInner>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocksStatus {
+    pub supported: bool,
+    pub address: Option<String>,
+}
+
+pub enum SocksAction {
+    Status,
+    Start(u16),
+    Stop,
+}
+
 struct CoreInner {
     store: Arc<Store>,
     servers: Mutex<HashMap<String, ServerHandle>>,
@@ -212,6 +229,37 @@ const EVENT_QUEUE: usize = 256;
 const UPLOAD_QUEUE: usize = 8;
 
 impl Core {
+    pub async fn socks(&self, server_key: &str, action: SocksAction) -> Result<SocksStatus> {
+        let connected = self
+            .inner
+            .statuses
+            .lock()
+            .unwrap()
+            .get(server_key)
+            .is_some_and(|(status, _)| *status == ServerStatus::Connected);
+        if !connected {
+            return match action {
+                SocksAction::Start(_) => {
+                    Err(anyhow!("connect to the server before starting SOCKS"))
+                }
+                _ => Ok(SocksStatus::default()),
+            };
+        }
+        let handle = self
+            .inner
+            .servers
+            .lock()
+            .await
+            .get(server_key)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown server"))?;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .commands
+            .try_send(ServerCmd::Socks { action, reply })
+            .map_err(|_| anyhow!("server is busy or disconnected"))?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx).await??
+    }
     /// Load (or create) the store at `store_path`, import the hf CLI's v1
     /// state on first run, and start a supervisor per configured server.
     pub async fn spawn(store_path: PathBuf) -> Result<(Core, mpsc::Receiver<CoreEvent>)> {
@@ -573,6 +621,33 @@ pub(crate) fn normalize_url(url: &str) -> String {
 #[cfg(test)]
 mod view_tests {
     use super::*;
+
+    #[test]
+    fn live_events_use_the_desktop_field_names() {
+        let event = serde_json::to_value(CoreEvent::ServerCapabilities {
+            server: "test".into(),
+            file_uploads: true,
+        })
+        .unwrap();
+        assert_eq!(event["fileUploads"], true);
+        let progress = serde_json::to_value(CoreEvent::UploadProgress {
+            server: "test".into(),
+            shell: "shell".into(),
+            phase: UploadPhase::Uploading,
+            bytes: 10,
+            total_bytes: 20,
+        })
+        .unwrap();
+        assert_eq!(progress["totalBytes"], 20);
+        let exited = serde_json::to_value(CoreEvent::ShellState {
+            server: "test".into(),
+            shell: "shell".into(),
+            state: ShellStateEvent::Exited,
+            exit_code: Some(7),
+        })
+        .unwrap();
+        assert_eq!(exited["exitCode"], 7);
+    }
 
     /// The desktop reads these exact keys/values to decide whether to open
     /// the login dialog at launch; a rename here silently loses the prompt.

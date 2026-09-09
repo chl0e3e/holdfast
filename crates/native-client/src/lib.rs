@@ -9,6 +9,7 @@
 
 #[cfg(windows)]
 mod schannel_adapter;
+pub mod socks;
 pub mod state;
 mod transport;
 
@@ -242,7 +243,10 @@ pub async fn connect_with(http_base: &str, auth: AuthMethod) -> Result<ServerCon
             protocol_minor: PROTOCOL_MINOR,
             client_kind: pb::ClientKind::NativeQuic as i32,
             client_build: format!("hf {}", env!("CARGO_PKG_VERSION")),
-            capabilities: vec![pb::Capability::FileTransfer as i32],
+            capabilities: vec![
+                pb::Capability::FileTransfer as i32,
+                pb::Capability::TcpForward as i32,
+            ],
             max_frame_bytes: FRAME_BYTES_DEFAULT,
             max_datagram_bytes: 1200,
             encodings: vec![pb::Encoding::Utf8 as i32],

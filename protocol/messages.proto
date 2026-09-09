@@ -51,6 +51,11 @@ message Envelope {
     FinishUpload finish_upload = 41;
     UploadFinished upload_finished = 42;
     AbortUpload abort_upload = 43;
+    OpenTcpForward open_tcp_forward = 44;
+    TcpForwardOpened tcp_forward_opened = 45;
+    TcpForwardData tcp_forward_data = 46;
+    TcpForwardEof tcp_forward_eof = 47;
+    TcpForwardAck tcp_forward_ack = 48;
   }
 }
 
@@ -162,7 +167,21 @@ enum Capability {
   CAPABILITY_DATAGRAMS = 1;
   CAPABILITY_CLIPBOARD = 2;
   CAPABILITY_FILE_TRANSFER = 3;
+  CAPABILITY_TCP_FORWARD = 4; // minor 3, explicit daemon user allowlist
 }
+
+// Spec §6.2. One forward per dedicated channel; no shell identity.
+message OpenTcpForward {
+  string host = 1; // ASCII DNS name or IP literal, 1..255 bytes
+  uint32 port = 2; // 1..65535
+}
+message TcpForwardOpened {
+  string bound_ip = 1; // actual local IP of daemon's connected TCP socket
+  uint32 bound_port = 2;
+}
+message TcpForwardData { bytes data = 1; } // 1..8192 bytes
+message TcpForwardEof {} // directional half-close; also acknowledged
+message TcpForwardAck {} // acknowledges one Data or Eof after socket write
 
 enum Encoding {
   ENCODING_UNSPECIFIED = 0;

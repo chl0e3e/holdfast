@@ -23,6 +23,7 @@ pub mod observability;
 pub mod agent_mode;
 pub mod auth;
 mod conn;
+mod forward;
 #[cfg(unix)]
 mod frontdoor_bridge;
 mod uploads;
@@ -130,6 +131,8 @@ pub struct DaemonConfig {
     /// Absolute temporary upload root. `None` keeps file transfer disabled and
     /// unadvertised. See ADR 0028.
     pub upload_root: Option<PathBuf>,
+    /// Explicit authenticated usernames allowed TCP egress; empty disables it.
+    pub tcp_forward_users: BTreeSet<String>,
     pub upload_max_file_bytes: u64,
     pub upload_retention: std::time::Duration,
     pub session: SessionCoreConfig,
@@ -153,6 +156,7 @@ impl Default for DaemonConfig {
             grant_signing_key: None,
             server_id: None,
             upload_root: None,
+            tcp_forward_users: BTreeSet::new(),
             upload_max_file_bytes: hf_protocol::UPLOAD_FILE_BYTES_DEFAULT,
             upload_retention: std::time::Duration::from_secs(24 * 60 * 60),
             session: SessionCoreConfig::default(),
@@ -190,6 +194,7 @@ pub struct AppState {
     pub webtransport_cert_hash: Option<[u8; 32]>,
     pub observability: Observability,
     pub(crate) uploads: Option<Arc<uploads::UploadService>>,
+    pub(crate) forwards: Arc<forward::ForwardService>,
 }
 
 impl AppState {
@@ -421,6 +426,9 @@ impl Daemon {
             webtransport_cert_hash,
             observability: observability.clone(),
             uploads: uploads.clone(),
+            forwards: Arc::new(forward::ForwardService::new(
+                config.tcp_forward_users.clone(),
+            )?),
         });
 
         if let Some(listener) = &wt_listener {

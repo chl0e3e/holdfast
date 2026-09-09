@@ -31,7 +31,13 @@ export function uploadAction(
   return {
     label: "Upload",
     enabled: connected && supported && running,
-    title: !supported
+    title: state === null
+      ? "Select a running shell to upload a file"
+      : !connected
+      ? "Wait for the server to connect before uploading"
+      : !running
+      ? "Select a running shell to upload a file"
+      : !supported
       ? "File uploads are not enabled on this server"
       : "Upload a local file to this shell's temporary directory",
   };

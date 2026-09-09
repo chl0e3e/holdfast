@@ -10,7 +10,7 @@ Unix password on connect (ADR 0016, requires `holdfastd --password-auth
 <user>`). Passwords are used for one login and never stored; the issued
 12 h grant carries reconnects while the app is open. Restarting requires a
 fresh login unless **Remember login after closing Holdfast** is enabled for
-that server. Change this through the server’s **Login** settings. Leave both
+that server. Change this through the server’s **Connect** settings. Leave both
 fields empty only for loopback dev daemons.
 
 Shells live on the server (spec §11): closing the app, losing the network
@@ -249,3 +249,60 @@ where.exe ssh-keygen
 where.exe ssh
 ssh -V
 ```
+
+## Local SOCKS5 proxy (0.4.0)
+
+Choose **Connect** beside a server to manage **Remember login after closing
+Holdfast** and the local SOCKS5 proxy. Choose a free local port (default 1080),
+then **Start SOCKS**. Configure the other application to use SOCKS5 at
+`127.0.0.1:<port>` with proxy DNS enabled. For example:
+
+```sh
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+Holdfast's own QUIC connection still goes directly to the selected daemon.
+SOCKS supports TCP CONNECT, IPv4, IPv6 and server-side DNS. The local listener
+is accessible to local processes only; it does not change Windows proxy
+settings. **Stop SOCKS** closes its active TCP connections. A server disconnect,
+removal or application exit also stops it; Start is explicit after reconnect.
+One listener per configured server and at most 16 connections per listener are
+allowed. UDP ASSOCIATE, BIND, SOCKS4 and automatic TCP resumption are unsupported.
+
+The server needs holdfastd 0.0.7 with `--tcp-forward-user <authenticated-user>`
+(repeat for each allowed user). Without this configuration, Start is disabled.
+A scoped grant must also permit `tcp-forward`. The configured account may
+access TCP services reachable from the daemon, including its private network.
+The proxy uses bounded 8 KiB frames with one outstanding frame per direction;
+throughput on high-latency paths is correspondingly limited in this first version.
+
+### Upload disabled regression
+
+0.4.0 fixes live Rust event fields being emitted in snake_case while the desktop
+expected camelCase (`file_uploads` versus `fileUploads`, also upload totals and
+exit codes). This could overwrite a valid bootstrap capability and disable
+Upload on an enabled daemon. The Rust JSON contract test and browser test cover
+an initially disabled Upload becoming enabled on the real UI's capability event.
+Daemon uploads still require `--upload-root` and a selected running shell.
+
+### Connection UI verification
+
+```sh
+cargo test -p hf-client-core --lib --test core --locked -j 2
+cargo test -p hf-daemon --test tcp_forward --locked -j 2
+cargo test -p hf-native-client --test socks --locked -j 2
+cd desktop
+npm ci
+npm test
+npm run typecheck
+npm run build
+npx playwright install chromium
+node scripts/connection-smoke.mjs
+```
+
+`HOLDFAST_CHROMIUM=/absolute/path/to/chrome` selects an existing Chromium.
+The smoke test starts its own loopback Vite server and mocks only the native IPC
+boundary. It checks Connect preferences and failed saves, SOCKS Start/Stop, and
+live upload capability rendering. Real TCP/QUIC forwarding and listener teardown
+are covered by the Rust integration tests. Native Windows compile, credential
+protection tests and executable packaging run in `.github/workflows/audit.yml`.

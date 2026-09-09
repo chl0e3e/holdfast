@@ -220,6 +220,9 @@ async fn main() -> anyhow::Result<()> {
                         .into(),
                 );
             }
+            "--tcp-forward-user" => {
+                config.tcp_forward_users.insert(args.next().ok_or_else(|| anyhow::anyhow!("--tcp-forward-user needs a username"))?);
+            }
             "--upload-root" => {
                 config.upload_root = Some(
                     args.next()

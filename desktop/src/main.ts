@@ -12,6 +12,7 @@ import {
   type ServerStatus,
   type ServerView,
   type ShellRow,
+  type SocksStatus,
 } from "./ipc.js";
 import { Tab, type TabDelegate } from "./tab.js";
 import { pasteNeedsConfirmation } from "./terminal-safety.js";
@@ -65,6 +66,7 @@ class App implements TabDelegate {
   elsewhere = new Map<string, Map<string, HTMLButtonElement>>();
   /** Server key the login dialog is currently prompting for. */
   loginFor: string | null = null;
+  private connectionFor: string | null = null;
   fontSize = loadFontSize();
   private dockerwmBase = loadDockerwmBase();
   // Navigation goes through the Rust side: the webview has no working
@@ -162,6 +164,8 @@ class App implements TabDelegate {
           }
         }
         this.refreshStatusLine();
+        this.syncChrome();
+        if (this.connectionFor === e.server) void this.refreshSocks(e.server);
       },
       shellState: (e) => {
         const tab = this.findTab(e.server, e.shell);
@@ -275,9 +279,9 @@ class App implements TabDelegate {
     remove.title = `Remove ${server.displayName} (shells keep running on the server)`;
     remove.onclick = () => void this.removeServer(server.key);
     const settings = document.createElement("button");
-    settings.textContent = "Login";
-    settings.title = `Login settings for ${server.displayName}`;
-    settings.onclick = () => this.loginSettings(server.key);
+    settings.textContent = "Connect";
+    settings.title = `Connection settings for ${server.displayName}`;
+    settings.onclick = () => this.connectionSettings(server.key);
     container.append(label, slot, newShell, settings, remove);
     document.getElementById("tabs")!.appendChild(container);
     group = {
@@ -761,7 +765,7 @@ class App implements TabDelegate {
     tab.appendNotice(`\r\n\x1b[31m[shell ${how}]\x1b[0m\r\n`);
   }
 
-  loginSettings(server: string): void {
+  connectionSettings(server: string): void {
     const group = this.groups.get(server);
     if (!group) return;
     const dialog = document.getElementById("login-settings-dialog") as HTMLDialogElement;
@@ -769,16 +773,66 @@ class App implements TabDelegate {
     const remember = document.getElementById("login-settings-remember") as HTMLInputElement;
     document.getElementById("login-settings-target")!.textContent = group.displayName;
     remember.checked = group.rememberLogin;
+    this.connectionFor = server;
+    dialog.onclose = () => { this.connectionFor = null; };
+    document.getElementById("connection-error")!.hidden = true;
+    void this.refreshSocks(server);
     document.getElementById("login-settings-cancel")!.onclick = () => dialog.close();
     form.onsubmit = (event) => {
       event.preventDefault();
       const value = remember.checked;
+      const submit = form.querySelector<HTMLButtonElement>("button[value=default]")!;
+      submit.disabled = true;
       void ipc.setRememberLogin(server, value).then(() => {
         group.rememberLogin = value;
         dialog.close();
-      }).catch((error) => this.setStatus(`save login settings failed: ${error}`, "err"));
+      }).catch((error) => {
+        const line = document.getElementById("connection-error")!;
+        line.textContent = `Could not save: ${error}`;
+        line.hidden = false;
+      }).finally(() => { submit.disabled = false; });
     };
     dialog.showModal();
+  }
+
+  private async refreshSocks(server: string): Promise<void> {
+    if (this.connectionFor !== server) return;
+    const toggle = document.getElementById("socks-toggle") as HTMLButtonElement;
+    toggle.disabled = true;
+    try {
+      const state = await ipc.socksStatus(server);
+      if (this.connectionFor === server) this.renderSocks(server, state);
+    } catch (error) {
+      if (this.connectionFor === server) document.getElementById("socks-status")!.textContent = `Could not check SOCKS: ${error}`;
+    }
+  }
+
+  private renderSocks(server: string, state: SocksStatus): void {
+    const toggle = document.getElementById("socks-toggle") as HTMLButtonElement;
+    const port = document.getElementById("socks-port") as HTMLInputElement;
+    const line = document.getElementById("socks-status")!;
+    const connected = this.groups.get(server)?.status === "connected";
+    line.textContent = state.address ? `Listening on ${state.address}`
+      : !connected ? "Connect to this server to start SOCKS."
+      : !state.supported ? "TCP forwarding is not enabled on this server."
+      : "Stopped";
+    toggle.textContent = state.address ? "Stop SOCKS" : "Start SOCKS";
+    toggle.disabled = !connected || !state.supported;
+    port.disabled = Boolean(state.address);
+    toggle.onclick = () => {
+      if (!state.address && (!port.checkValidity() || !port.value)) {
+        port.reportValidity(); return;
+      }
+      toggle.disabled = true;
+      const action = state.address ? ipc.stopSocks(server) : ipc.startSocks(server, Number(port.value));
+      void action.then((next) => {
+        if (this.connectionFor === server) this.renderSocks(server, next);
+      }).catch((error) => {
+        if (this.connectionFor !== server) return;
+        line.textContent = `SOCKS failed: ${error}`;
+        toggle.disabled = false;
+      });
+    };
   }
 
   addServerDialog(): void {
@@ -849,14 +903,26 @@ class App implements TabDelegate {
     const passwordLabel = document.getElementById("login-password-label")!;
     const submit = document.getElementById("login-submit") as HTMLButtonElement;
     passwordLabel.hidden = usesSshKey;
-    submit.textContent = usesSshKey ? "Retry" : "Log in";
+    submit.textContent = usesSshKey ? "Retry connection" : "Connect";
+    const remember = document.getElementById("login-remember") as HTMLInputElement;
+    remember.checked = group.rememberLogin;
     password.value = "";
     form.onsubmit = (event) => {
       if ((event.submitter as HTMLButtonElement | null)?.value !== "default") return;
+      event.preventDefault();
       const value = usesSshKey ? "" : password.value;
       password.value = "";
       if (usesSshKey || value) {
-        void ipc.login(server, value).catch((e) => this.setStatus(`login failed: ${e}`, "err"));
+        submit.disabled = true;
+        const rememberLogin = remember.checked;
+        void ipc.setRememberLogin(server, rememberLogin).then(async () => {
+          group.rememberLogin = rememberLogin;
+          await ipc.login(server, value);
+          dialog.close();
+        }).catch((e) => {
+          error.textContent = `Connection failed: ${e}`;
+          error.hidden = false;
+        }).finally(() => { submit.disabled = false; });
       }
     };
     dialog.onclose = () => {

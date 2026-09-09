@@ -61,6 +61,9 @@ pub fn negotiate_server(
         .filter(|c| {
             *c != Capability::FileTransfer || protocol_minor >= FILE_TRANSFER_PROTOCOL_MINOR
         })
+        .filter(|c| {
+            *c != Capability::TcpForward || protocol_minor >= crate::TCP_FORWARD_PROTOCOL_MINOR
+        })
         .collect();
     if !transport_supports_datagrams {
         capabilities.retain(|c| *c != Capability::Datagrams);

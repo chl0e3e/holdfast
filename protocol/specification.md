@@ -1,10 +1,10 @@
 # Holdfast protocol specification
 
 ```text
-Protocol version: 0.2 (draft)
+Protocol version: 0.3 (draft)
 Status: Normative; every wire change to this document must ship with the
         matching change to messages.proto
-Last updated: 2026-08-19
+Last updated: 2026-09-09
 ```
 
 This protocol is transport-independent. It runs over any transport that provides
@@ -79,6 +79,8 @@ gateway enforces its own per-user limits (§8) regardless of transport limits.
 - **Upload stream** — one bidirectional stream per file upload, opened by the
   client, beginning with `BeginUpload`. Carries only that upload's messages and
   is available only when `FILE_TRANSFER` was negotiated.
+- **TCP forwarding stream** — begins with `OpenTcpForward`, one outbound TCP
+  connection per channel; requires negotiated `TCP_FORWARD` (minor 3).
 - **Datagrams (optional)** — screen snapshots/deltas and revision acks only
   (§7). Never input, never authentication, never history.
 
@@ -112,7 +114,7 @@ The first frame in each direction on the control channel:
 
 ```text
 client -> ClientHello {
-    protocol_major = 0, protocol_minor = 2
+    protocol_major = 0, protocol_minor = 3
     client_kind    (BROWSER_WEBTRANSPORT | BROWSER_WEBSOCKET | NATIVE_QUIC | ADAPTER)
     client_build   (informational string)
     capabilities   (repeated enum: DATAGRAMS, CLIPBOARD, FILE_TRANSFER, ...)
@@ -136,6 +138,7 @@ Rules:
   additionally disabled if the transport reports datagrams Unsupported.
 - `FILE_TRANSFER` requires selected minor 2. A minor-1 peer advertising the
   reserved enum value does not enable file transfer.
+- `TCP_FORWARD` requires selected minor 3 and explicit daemon configuration.
 - Anything after `ServerHello` and before a successful `Authenticate` exchange
   other than `Authenticate`, `Ping`, `Pong`, `Close` is rejected with
   `ERR_UNAUTHENTICATED`.
@@ -207,6 +210,8 @@ All messages ride in `Envelope`. Requests carry a client-chosen `request_id`
 | UploadChunk | upload stream | c→s | §6.1; reliable, ordered bytes |
 | FinishUpload / UploadFinished | upload stream | c→s / s→c | §6.1; commit exchange |
 | AbortUpload | upload stream | c→s | §6.1; removes the partial |
+| OpenTcpForward / TcpForwardOpened | forwarding | c→s / s→c | §6.2; first exchange |
+| TcpForwardData / TcpForwardEof / TcpForwardAck | forwarding | both | §6.2; bounded TCP relay |
 | Ping / Pong | any | both | keepalive, RTT estimate |
 | Error | any | both | code, message, echoed request_id |
 | Close | control | both | code, reason; last message |
@@ -286,6 +291,40 @@ Upload messages are invalid on the control or attachment channel. Attachment,
 terminal, history and datagram messages are invalid on an upload channel. File
 contents never enter terminal input/output, scrollback, or control-plane
 messages. Upload forwarding over `AgentEnvelope` is not defined in minor 2.
+
+### 6.2 TCP forwarding (minor 3)
+
+A new client channel begins with `OpenTcpForward { host, port }`, nonzero
+`request_id`, empty `shell_id`, and empty or matching standalone `server_id`.
+The daemon requires authentication, negotiated `TCP_FORWARD`, the `tcp-forward`
+grant operation and an explicitly allowlisted authenticated username. It checks
+these before DNS or TCP work. Host is an ASCII DNS name or IP literal, at most
+255 bytes, and port is 1..65535. DNS resolution occurs on the daemon. Destination
+policy allows all reachable TCP addresses, including loopback/private addresses.
+
+On success it echoes the request ID with `TcpForwardOpened { bound_ip,
+bound_port }`, describing its connected TCP socket. Failure sends `Error` on
+that channel. Forbidden requests use `ERR_FORBIDDEN`; disabled/unnegotiated
+capabilities use `ERR_UNKNOWN_MESSAGE`; invalid arguments, limits and destination
+failure use `ERR_INVALID_ARGUMENT`, `ERR_LIMIT_EXCEEDED`, and
+`ERR_SERVER_UNAVAILABLE` respectively.
+
+After opening, both directions use only `TcpForwardData { data }` (1..8192
+bytes), `TcpForwardEof {}`, `TcpForwardAck {}` and `Error`, with zero request ID
+and empty server/shell IDs. Each direction allows exactly one unacknowledged
+Data or Eof. The receiver acknowledges only after writing all bytes to TCP or
+shutting down its TCP write half. EOF is directional: the reverse direction
+continues until its own EOF/ack exchange completes. Duplicate/unsolicited acks,
+data after EOF, excess outstanding messages, oversized data and messages from
+other channel roles abort the forward. Errors affect only the forward; no bytes
+are sent to the PTY or control channel. Dropping the channel/connection cancels
+the outbound socket. Completed/failed forwarding channels cannot be reused.
+
+Limits: 16 forwards per connection, 32 per user, 128 per daemon; a single queued
+input frame and ack per forward, in addition to the existing bounded transport
+queues; 10 s destination connect deadline, 30 s write/ack deadlines, 5 minute
+connection inactivity deadline. Limits are checked before spawning/resolving. Connections
+do not resume after transport loss. The admin agent protocol has no forwarding.
 
 ## 7. Screen synchronization
 

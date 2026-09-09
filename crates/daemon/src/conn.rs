@@ -58,6 +58,7 @@ pub(crate) struct Conn {
     attachments: HashMap<u64, Binding>,
     /// channel_id → bounded command sender for one upload actor.
     uploads: HashMap<u64, UploadBinding>,
+    forwards: HashMap<u64, crate::forward::ForwardBinding>,
     out: tokio::sync::mpsc::Sender<(u64, Envelope)>,
 }
 
@@ -97,6 +98,7 @@ impl Conn {
             transport_datagrams,
             attachments: HashMap::new(),
             uploads: HashMap::new(),
+            forwards: HashMap::new(),
             out,
         }
     }
@@ -119,6 +121,7 @@ impl Conn {
     /// The transport saw a channel/stream close: drop its attachment, if any.
     pub(crate) fn channel_closed(&mut self, channel: u64) {
         self.uploads.remove(&channel);
+        self.forwards.remove(&channel);
         if let Some(binding) = self.attachments.remove(&channel) {
             let _ = self
                 .state
@@ -135,6 +138,7 @@ impl Conn {
     /// shells keep running (spec §11).
     pub(crate) fn detach_all(&mut self) {
         self.uploads.clear();
+        self.forwards.clear();
         for (_, binding) in self.attachments.drain() {
             let _ = self
                 .state
@@ -432,15 +436,32 @@ impl Conn {
                 .await;
         }
 
+        if let Some(binding) = self.forwards.get(&channel) {
+            if !binding.message(envelope) {
+                binding.abort();
+                return self
+                    .send_error(
+                        channel,
+                        pb::ErrorCode::ErrInvalidArgument,
+                        "invalid TCP forwarding frame",
+                    )
+                    .await;
+            }
+            return true;
+        }
+
         match (channel, message) {
             (0, Msg::ClientHello(hello)) => {
+                let mut capabilities = Vec::with_capacity(2);
+                if self.state.uploads.is_some() {
+                    capabilities.push(pb::Capability::FileTransfer);
+                }
+                if self.state.forwards.enabled() {
+                    capabilities.push(pb::Capability::TcpForward);
+                }
                 match negotiate_server(
                     &hello,
-                    if self.state.uploads.is_some() {
-                        &[pb::Capability::FileTransfer]
-                    } else {
-                        &[]
-                    },
+                    &capabilities,
                     FRAME_BYTES_DEFAULT,
                     1200,
                     self.transport_datagrams,
@@ -728,6 +749,9 @@ impl Conn {
                     }
                 }
             }
+            (ch, Msg::OpenTcpForward(open)) if ch != 0 => {
+                self.open_forward(ch, &envelope, open).await
+            }
             // ---- Upload channels (client-opened, reliable, minor 2+) ----
             (ch, Msg::BeginUpload(begin)) if ch != 0 => {
                 self.begin_upload(ch, &envelope, begin).await
@@ -918,6 +942,74 @@ impl Conn {
                 .await
             }
         }
+    }
+
+    async fn open_forward(
+        &mut self,
+        channel: u64,
+        env: &Envelope,
+        open: pb::OpenTcpForward,
+    ) -> bool {
+        let error = if !self
+            .negotiated
+            .as_ref()
+            .is_some_and(|n| n.capabilities.contains(&pb::Capability::TcpForward))
+        {
+            Some((
+                pb::ErrorCode::ErrUnknownMessage,
+                "TCP forwarding is not enabled",
+            ))
+        } else if !self.permits("tcp-forward") || !self.state.forwards.permits(&self.user_id) {
+            Some((
+                pb::ErrorCode::ErrForbidden,
+                "TCP forwarding is not allowed for this user",
+            ))
+        } else if env.request_id == 0
+            || !env.shell_id.is_empty()
+            || (!env.server_id.is_empty() && env.server_id != self.state.server_id.to_wire())
+            || self.attachments.contains_key(&channel)
+            || self.uploads.contains_key(&channel)
+            || !hf_protocol::forward::valid_destination(&open.host, open.port)
+        {
+            Some((
+                pb::ErrorCode::ErrInvalidArgument,
+                "invalid TCP forwarding request",
+            ))
+        } else if self.forwards.len() >= crate::forward::MAX_PER_CONNECTION {
+            Some((pb::ErrorCode::ErrLimitExceeded, "too many TCP forwards"))
+        } else {
+            None
+        };
+        if let Some((code, text)) = error {
+            return self
+                .send(channel, error_envelope(env.request_id, code, text, false))
+                .await;
+        }
+        let Some(permit) = self.state.forwards.acquire(&self.user_id) else {
+            return self
+                .send(
+                    channel,
+                    error_envelope(
+                        env.request_id,
+                        pb::ErrorCode::ErrLimitExceeded,
+                        "too many TCP forwards",
+                        false,
+                    ),
+                )
+                .await;
+        };
+        self.forwards.insert(
+            channel,
+            crate::forward::spawn(
+                open.host,
+                open.port as u16,
+                channel,
+                env.request_id,
+                self.out.clone(),
+                permit,
+            ),
+        );
+        true
     }
 
     async fn begin_upload(

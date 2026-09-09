@@ -121,3 +121,31 @@ cargo test -p hf-daemon
 cargo test -p hf-daemon --test webtransport_tls
 cargo test -p hf-daemon --features agent-mode --test agent_mode
 ```
+
+## TCP forwarding for desktop SOCKS5 (0.0.7)
+
+Forwarding is disabled by default. Add `--tcp-forward-user alice` to the daemon's
+existing arguments to allow the authenticated Holdfast username `alice`; repeat
+for other users. Shell account mappings do not implicitly grant forwarding.
+The client's grant must permit `tcp-forward` (an unrestricted local grant does).
+Then reconnect Desktop 0.4.0 and choose **Connect → Start SOCKS**.
+
+TCP destinations and DNS are reached from the daemon's network namespace under
+its unprivileged service identity. The allowlist deliberately permits all
+reachable TCP destinations, including loopback and private addresses. Forwarding
+needs no privileged spawner, new public listener, SSH service or central service.
+It works through both the direct QUIC endpoint and the shared HTTP/3 bridge.
+
+The listener stays on the desktop machine's loopback interface. TCP data has its
+own protocol channels and never enters shell input/output or history. Limits are
+16 connections per authenticated connection, 32 per user and 128 per daemon,
+with 8 KiB chunks, explicit acknowledgements and bounded deadlines (ADR 0032).
+A daemon update/restart ends existing shells; schedule installation accordingly.
+Publishing the release binaries does not restart a running daemon.
+
+```sh
+cargo test -p hf-protocol --locked -j 2
+cargo test -p hf-daemon --test tcp_forward --locked -j 2
+cargo test -p hf-native-client --test socks --locked -j 2
+cargo test -p hf-client-core --lib --test core --locked -j 2
+```

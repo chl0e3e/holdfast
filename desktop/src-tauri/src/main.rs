@@ -98,6 +98,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap,
+            commands::socks_status,
+            commands::start_socks,
+            commands::stop_socks,
             commands::add_server,
             commands::remove_server,
             commands::set_remember_login,

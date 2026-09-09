@@ -4,6 +4,7 @@
 //! `protocol/specification.md` on semantics. This crate is
 //! transport-independent: no HTTP, QUIC or WebSocket imports, ever.
 
+pub mod forward;
 pub mod framing;
 pub mod ids;
 pub mod negotiate;
@@ -16,7 +17,9 @@ pub mod pb {
 
 /// Protocol version implemented by this crate (spec §4).
 pub const PROTOCOL_MAJOR: u32 = 0;
-pub const PROTOCOL_MINOR: u32 = 2;
+pub const PROTOCOL_MINOR: u32 = 3;
+pub const TCP_FORWARD_PROTOCOL_MINOR: u32 = 3;
+pub const FORWARD_DATA_BYTES_MAX: usize = 8 * 1024;
 
 /// File transfer was added as an optional capability in protocol minor 2.
 pub const FILE_TRANSFER_PROTOCOL_MINOR: u32 = 2;

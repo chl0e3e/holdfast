@@ -25,6 +25,7 @@ export type ServerView = {
   fileUploads: boolean;
 };
 export type BootstrapView = { servers: ServerView[] };
+export type SocksStatus = { supported: boolean; address: string | null };
 
 export type ServerStatus = "connecting" | "connected" | "reconnecting" | "auth-required";
 export type ShellStateName = "attached" | "detached" | "orphaned" | "exited";
@@ -90,6 +91,9 @@ export type HistoryPage = {
 };
 
 export const ipc = {
+  socksStatus: (server: string) => invoke<SocksStatus>("socks_status", { server }),
+  startSocks: (server: string, port: number) => invoke<SocksStatus>("start_socks", { server, port }),
+  stopSocks: (server: string) => invoke<SocksStatus>("stop_socks", { server }),
   bootstrap: () => invoke<BootstrapView>("bootstrap"),
 
   addServer: (url: string, displayName: string, rememberLogin: boolean, username?: string, sshKeyPath?: string) =>

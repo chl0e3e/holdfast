@@ -36,6 +36,10 @@ const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(15);
 
 pub enum ServerCmd {
+    Socks {
+        action: crate::SocksAction,
+        reply: oneshot::Sender<Result<crate::SocksStatus>>,
+    },
     Open {
         name: String,
         cols: u16,
@@ -377,6 +381,10 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
         ctx.emit_capabilities(file_uploads).await;
 
         let mut live: HashMap<String, mpsc::Sender<WriterCmd>> = HashMap::new();
+        let tcp_forward = hello
+            .capabilities
+            .contains(&(pb::Capability::TcpForward as i32));
+        let mut socks: Option<hf_native_client::socks::SocksProxy> = None;
         loop {
             tokio::select! {
                 cmd = rx.recv() => {
@@ -384,7 +392,15 @@ pub async fn run_supervisor(ctx: SupervisorCtx, mut rx: mpsc::Receiver<ServerCmd
                         cancel_active_uploads(&ctx);
                         return;
                     }; // Core dropped this server
-                    handle_cmd(&ctx, cmd, &connection, &control, &mut live, file_uploads).await;
+                    if let ServerCmd::Socks { action, reply } = cmd {
+                        // A timed-out desktop command must not start a listener
+                        // later when the supervisor finally drains its queue.
+                        if reply.is_closed() { continue; }
+                        let result = socks_command(&mut socks, &connection, tcp_forward, action).await;
+                        let _ = reply.send(result);
+                    } else {
+                        handle_cmd(&ctx, cmd, &connection, &control, &mut live, file_uploads).await;
+                    }
                 }
                 _ = dead.changed() => {
                     // Attachment pumps die with their streams; the frontend
@@ -438,6 +454,9 @@ async fn connect_and_auth(ctx: &SupervisorCtx, password: Option<String>) -> Resu
 fn refuse_unauthenticated(cmd: ServerCmd) {
     let refusal = || anyhow!("authentication required: log in to this server first");
     match cmd {
+        ServerCmd::Socks { reply, .. } => {
+            let _ = reply.send(Err(refusal()));
+        }
         ServerCmd::Open { reply, .. } => {
             let _ = reply.send(Err(refusal()));
         }
@@ -504,6 +523,9 @@ async fn handle_cmd(
     file_uploads: bool,
 ) {
     match cmd {
+        ServerCmd::Socks { reply, .. } => {
+            let _ = reply.send(Err(anyhow!("SOCKS command requires supervisor")));
+        }
         ServerCmd::Open {
             name,
             cols,
@@ -909,4 +931,42 @@ impl SupervisorCtx {
             })
             .await;
     }
+}
+
+async fn socks_command(
+    proxy: &mut Option<hf_native_client::socks::SocksProxy>,
+    connection: &Connection,
+    supported: bool,
+    action: crate::SocksAction,
+) -> Result<crate::SocksStatus> {
+    match action {
+        crate::SocksAction::Start(port) => {
+            if !supported {
+                bail!("TCP forwarding is not enabled on this server");
+            }
+            if port == 0 {
+                bail!("choose a SOCKS port between 1 and 65535");
+            }
+            if proxy.is_some() {
+                bail!("SOCKS is already running for this server");
+            }
+            *proxy = Some(
+                hf_native_client::socks::SocksProxy::start(
+                    connection.clone(),
+                    ([127, 0, 0, 1], port).into(),
+                )
+                .await?,
+            );
+        }
+        crate::SocksAction::Stop => {
+            if let Some(proxy) = proxy.take() {
+                proxy.stop().await;
+            }
+        }
+        crate::SocksAction::Status => {}
+    }
+    Ok(crate::SocksStatus {
+        supported,
+        address: proxy.as_ref().map(|p| p.address.to_string()),
+    })
 }

@@ -26,6 +26,43 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 #[tauri::command]
+pub async fn socks_status(
+    state: State<'_, AppState>,
+    server: String,
+) -> CmdResult<hf_client_core::SocksStatus> {
+    state
+        .core
+        .socks(&server, hf_client_core::SocksAction::Status)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn start_socks(
+    state: State<'_, AppState>,
+    server: String,
+    port: u16,
+) -> CmdResult<hf_client_core::SocksStatus> {
+    state
+        .core
+        .socks(&server, hf_client_core::SocksAction::Start(port))
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stop_socks(
+    state: State<'_, AppState>,
+    server: String,
+) -> CmdResult<hf_client_core::SocksStatus> {
+    state
+        .core
+        .socks(&server, hf_client_core::SocksAction::Stop)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
 pub async fn bootstrap(state: State<'_, AppState>) -> CmdResult<BootstrapView> {
     Ok(state.core.bootstrap().await)
 }

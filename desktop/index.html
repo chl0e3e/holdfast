@@ -67,10 +67,19 @@
 
     <dialog id="login-settings-dialog">
       <form method="dialog" id="login-settings-form">
-        <h2>Login settings</h2>
+        <h2>Connect</h2>
         <p id="login-settings-target"></p>
         <label class="checkbox-label"><input id="login-settings-remember" type="checkbox" /> Remember login after closing Holdfast</label>
         <p class="hint">Leave off to log in again after restarting the app. Reconnects work while Holdfast is open. Remembered logins last up to 12 hours without another key touch or password.</p>
+        <fieldset>
+          <legend>SOCKS5 proxy</legend>
+          <p class="hint">Route other apps through this server. Set their SOCKS5 host to 127.0.0.1 and enable proxy DNS.</p>
+          <label><span>Local port</span><input id="socks-port" type="number" min="1" max="65535" value="1080" /></label>
+          <p id="socks-status" role="status" aria-live="polite">Checking…</p>
+          <button type="button" id="socks-toggle" disabled>Start SOCKS</button>
+          <p class="hint">TCP only. Stops when this server disconnects or Holdfast closes.</p>
+        </fieldset>
+        <p id="connection-error" class="hint" role="alert" hidden></p>
         <menu>
           <button type="button" id="login-settings-cancel">Cancel</button>
           <button class="primary-button" value="default">Save</button>
@@ -81,13 +90,14 @@
     <dialog id="login-dialog">
       <form method="dialog" id="login-form">
         <p class="eyebrow">Authentication</p>
-        <h2>Log in</h2>
+        <h2>Connect</h2>
         <p id="login-target"></p>
         <p id="login-error" class="hint" hidden></p>
         <label id="login-password-label"><span>Password</span><input id="login-password" type="password" autocomplete="current-password" /></label>
+        <label class="checkbox-label"><input id="login-remember" type="checkbox" /> Remember login after closing Holdfast</label>
         <menu>
           <button type="button" id="login-cancel">Cancel</button>
-          <button id="login-submit" class="primary-button" value="default">Log in</button>
+          <button id="login-submit" class="primary-button" value="default">Connect</button>
         </menu>
       </form>
     </dialog>
