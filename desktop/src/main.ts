@@ -49,6 +49,7 @@ class App implements TabDelegate {
   groups = new Map<string, ServerGroup>();
   active: Tab | null = null;
   status = document.getElementById("status")!;
+  connectAction = document.getElementById("connect") as HTMLButtonElement;
   attachmentAction = document.getElementById("attachment-action") as HTMLButtonElement;
   terminateAction = document.getElementById("terminate") as HTMLButtonElement;
   uploadAction = document.getElementById("upload") as HTMLButtonElement;
@@ -262,9 +263,11 @@ class App implements TabDelegate {
     label.className = "server-label";
     label.textContent = server.displayName;
     label.dataset.status = "connecting";
-    // A dismissed login prompt can be reopened from the server label.
+    label.title = `Connection settings for ${server.displayName}`;
+    // Keep settings reachable even when this server has no open shell.
     label.onclick = () => {
       if (this.groups.get(server.key)?.status === "auth-required") this.promptLogin(server.key);
+      else this.connectionSettings(server.key);
     };
     const slot = document.createElement("span");
     slot.style.display = "contents";
@@ -278,11 +281,7 @@ class App implements TabDelegate {
     remove.className = "remove-server";
     remove.title = `Remove ${server.displayName} (shells keep running on the server)`;
     remove.onclick = () => void this.removeServer(server.key);
-    const settings = document.createElement("button");
-    settings.textContent = "Connect";
-    settings.title = `Connection settings for ${server.displayName}`;
-    settings.onclick = () => this.connectionSettings(server.key);
-    container.append(label, slot, newShell, settings, remove);
+    container.append(label, slot, newShell, remove);
     document.getElementById("tabs")!.appendChild(container);
     group = {
       key: server.key,
@@ -996,6 +995,13 @@ class App implements TabDelegate {
    *  tab. This closes the old dead-end where Detach offered no Attach path. */
   private syncChrome(): void {
     const tab = this.active;
+    const connectionGroup = tab ? this.groups.get(tab.server) : this.groups.values().next().value;
+    this.connectAction.disabled = !connectionGroup;
+    this.connectAction.title = connectionGroup
+      ? `Connection settings for ${connectionGroup.displayName}` : "Add a server to connect";
+    this.connectAction.onclick = () => {
+      if (connectionGroup) this.connectionSettings(connectionGroup.key);
+    };
     this.emptyState.hidden = tab !== null;
     if (!tab) {
       const configured = this.groups.size > 0;

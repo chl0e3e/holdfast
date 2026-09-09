@@ -13,6 +13,10 @@ fresh login unless **Remember login after closing Holdfast** is enabled for
 that server. Change this through the server’s **Connect** settings. Leave both
 fields empty only for loopback dev daemons.
 
+**Connect** sits beside Upload, Detach and Terminate and opens settings for the
+active shell's server (the first configured server when no shell is open).
+Click a server label to access its settings without opening a shell.
+
 Shells live on the server (spec §11): closing the app, losing the network
 or rebooting the client machine never kills them. On launch the app
 reattaches every stored shell with screen + scrollback restored, using the
@@ -302,7 +306,8 @@ node scripts/connection-smoke.mjs
 
 `HOLDFAST_CHROMIUM=/absolute/path/to/chrome` selects an existing Chromium.
 The smoke test starts its own loopback Vite server and mocks only the native IPC
-boundary. It checks Connect preferences and failed saves, SOCKS Start/Stop, and
+boundary. It checks toolbar Connect targeting across servers, settings for a
+server without shells, preferences and failed saves, SOCKS Start/Stop, and
 live upload capability rendering. Real TCP/QUIC forwarding and listener teardown
 are covered by the Rust integration tests. Native Windows compile, credential
 protection tests and executable packaging run in `.github/workflows/audit.yml`.

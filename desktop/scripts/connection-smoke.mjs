@@ -24,7 +24,11 @@ try {
       invoke: async (cmd, args) => {
         window.hfCalls.push({ cmd, args });
         if (cmd === "plugin:event|listen") { listeners.set(args.event, args.handler); return 1; }
-        if (cmd === "bootstrap") return { servers: [{ key: "test", url: "https://example.test", displayName: "Example server", username: "alice", usesSshKey: true, rememberLogin: false, shells: [{ shell: "shell", name: "test shell" }], status: "connected", fileUploads: false }] };
+        if (cmd === "bootstrap") return { servers: [
+          { key: "test", url: "https://example.test", displayName: "Example server", username: "alice", usesSshKey: true, rememberLogin: false, shells: [{ shell: "shell", name: "test shell" }], status: "connected", fileUploads: false },
+          { key: "second", url: "https://second.test", displayName: "Second server", usesSshKey: false, rememberLogin: false, shells: [{ shell: "other", name: "second shell" }], status: "connected", fileUploads: false },
+          { key: "empty", url: "https://empty.test", displayName: "Empty server", usesSshKey: false, rememberLogin: false, shells: [], status: "connected", fileUploads: false },
+        ] };
         if (cmd === "attach_shell") {
           callbacks.get(args.output.id)({ index: 0, message: { data: btoa("ready"), attachmentId: 1, sequence: 0, requiresAck: false } });
           return { oldestHistoryLineId: 0, newestHistoryLineId: 0 };
@@ -43,7 +47,18 @@ try {
   await page.evaluate(() => window.hfEmit("server-capabilities", { server: "test", fileUploads: true }));
   await page.waitForFunction(() => !document.querySelector("#upload").disabled);
   assert.equal(await page.getByRole("button", { name: "Login", exact: true }).count(), 0);
+  assert.equal(await page.locator("#shell-actions #connect").count(), 1);
+  assert.equal(await page.locator("#tabs").getByRole("button", { name: "Connect", exact: true }).count(), 0);
+  await page.locator(".shell-tab").filter({ hasText: "second shell" }).click();
+  await page.locator("#connect").click();
+  assert.equal(await page.locator("#login-settings-target").textContent(), "Second server");
+  await page.locator("#login-settings-cancel").click();
+  await page.getByRole("button", { name: "Empty server", exact: true }).click();
+  assert.equal(await page.locator("#login-settings-target").textContent(), "Empty server");
+  await page.locator("#login-settings-cancel").click();
+  await page.locator(".shell-tab").filter({ hasText: "test shell" }).click();
   await page.getByRole("button", { name: "Connect", exact: true }).click();
+  assert.equal(await page.locator("#login-settings-target").textContent(), "Example server");
   const remember = page.locator("#login-settings-remember");
   assert.equal(await remember.isChecked(), false);
   await page.locator("#socks-port").fill("1088");
@@ -65,7 +80,7 @@ try {
   assert.equal(await remember.isChecked(), true);
   await page.screenshot({ path: process.env.HOLDFAST_UI_SCREENSHOT || "/tmp/holdfast-connect.png" });
   assert.deepEqual(errors, []);
-  console.log("PASS: Connect preference, failed save, SOCKS start/stop, live upload capability");
+  console.log("PASS: toolbar Connect targets active server, shell-free server settings, preference, failed save, SOCKS start/stop, live upload capability");
 } finally {
   await browser.close();
   server.kill();
