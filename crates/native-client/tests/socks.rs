@@ -144,3 +144,104 @@ async fn socks_rejects_unsupported_commands_and_stop_closes_active_sockets() {
     .unwrap();
     daemon.abort();
 }
+
+#[tokio::test]
+async fn socks_releases_streams_after_repeated_requests() {
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        tcp_forward_users: ["dev".into()].into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let conn = connect(&format!("http://{}", daemon.local_addr))
+        .await
+        .unwrap();
+    let proxy = SocksProxy::start(conn.connection.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = target.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        for _ in 0..100 {
+            let (mut socket, _) = target.accept().await.unwrap();
+            let mut request = [0; 1];
+            socket.read_exact(&mut request).await.unwrap();
+            socket.write_all(&request).await.unwrap();
+            socket.shutdown().await.unwrap();
+        }
+    });
+    for request in 0..100u8 {
+        timeout(Duration::from_secs(3), async {
+            let mut socket = handshake(&proxy, vec![1, 127, 0, 0, 1], port).await;
+            socket.write_all(&[request]).await.unwrap();
+            socket.shutdown().await.unwrap();
+            let mut response = [0; 1];
+            socket.read_exact(&mut response).await.unwrap();
+            assert_eq!(response, [request]);
+            assert_eq!(socket.read(&mut response).await.unwrap(), 0);
+        })
+        .await
+        .unwrap_or_else(|_| panic!("request {request} stalled"));
+    }
+    server.await.unwrap();
+    proxy.stop().await;
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn socks_queues_at_capacity_and_admits_after_a_connection_closes() {
+    let daemon = Daemon::start(DaemonConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        tcp_forward_users: ["dev".into()].into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let conn = connect(&format!("http://{}", daemon.local_addr))
+        .await
+        .unwrap();
+    let proxy = SocksProxy::start(conn.connection.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = target.local_addr().unwrap().port();
+    timeout(Duration::from_secs(10), async {
+        let mut clients = Vec::with_capacity(32);
+        let mut peers = Vec::with_capacity(32);
+        for _ in 0..32 {
+            clients.push(handshake(&proxy, vec![1, 127, 0, 0, 1], port).await);
+            peers.push(target.accept().await.unwrap().0);
+        }
+        let mut pending = TcpStream::connect(proxy.address).await.unwrap();
+        pending.write_all(&[5, 1, 0]).await.unwrap();
+        let mut greeting = [0; 2];
+        assert!(timeout(
+            Duration::from_millis(100),
+            pending.read_exact(&mut greeting)
+        )
+        .await
+        .is_err());
+        clients[0].shutdown().await.unwrap();
+        let mut byte = [0];
+        assert_eq!(peers[0].read(&mut byte).await.unwrap(), 0);
+        peers[0].shutdown().await.unwrap();
+        assert_eq!(clients[0].read(&mut byte).await.unwrap(), 0);
+        pending.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, 0]);
+        let mut request = vec![5, 1, 0, 1, 127, 0, 0, 1];
+        request.extend(port.to_be_bytes());
+        pending.write_all(&request).await.unwrap();
+        let mut reply = [0; 10];
+        pending.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply[..4], &[5, 0, 0, 1]);
+        let (mut peer, _) = target.accept().await.unwrap();
+        pending.write_all(b"x").await.unwrap();
+        peer.read_exact(&mut byte).await.unwrap();
+        assert_eq!(&byte, b"x");
+    })
+    .await
+    .unwrap();
+    proxy.stop().await;
+    daemon.abort();
+}

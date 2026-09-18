@@ -30,7 +30,7 @@ buffering without blocking the connection dispatcher on a slow TCP peer. EOF
 half-closes one direction; full close, error, Stop or connection loss aborts the
 forward. TCP connections are never resumed/replayed after reconnect.
 
-Bounds: 16 forwards per connection/listener, 32 per authenticated user, 128 per
+Bounds: 32 forwards per connection/listener, 64 per authenticated user, 256 per
 daemon; at most 256 configured forwarding users; 255-byte ASCII hostname/IP,
 port 1..65535; 10-second SOCKS handshake and destination connect deadlines;
 30-second write/ack deadlines; 5-minute connection inactivity deadline. The local TCP accept backlog is 16. Per-forward input
@@ -69,3 +69,36 @@ match the desktop IPC contract; a regression test failed before that fix.
 
 Trade-off: stop-and-wait 8 KiB forwarding limits throughput on high-RTT links.
 A larger negotiated credit window may follow with its own bounds and tests.
+
+## Browsing capacity and stream cleanup (2026-09-18)
+
+The deployed proxy reached its original 16 concurrent TCP connections during
+ordinary browsing. The listener accepted and immediately dropped excess
+connections, producing browser failures. Raise the explicit bounds to 32 per
+connection/listener, 64 per user and 256 per daemon. This leaves room within the
+existing 64 QUIC stream ceiling for control, attachments and uploads. At local
+capacity stop accepting until a task completes; the existing 16-entry TCP
+backlog bounds pending connections. Reap completed tasks before accepting more.
+Sustained saturation can still exceed the backlog or browser deadlines.
+
+A real-QUIC regression also stalled on request 63: completed channel readers
+left their writer queues and stream send halves alive, exhausting stream
+credit. Closing a channel now closes its writer and completed reader tasks are
+reaped. On Windows, explicitly cancel dropped stream halves because the
+MsQuic wrapper does not do this on drop. A successful SOCKS relay finishes its
+send stream after both EOF exchanges, preserving the final acknowledgement.
+Cancelled forwards remain non-resumable; existing byte, queue and timeout
+bounds are unchanged. There are no new messages or capability requirements.
+
+Reproduce cleanup, capacity admission, half-close and authorization regressions:
+
+```sh
+cargo test -p hf-native-client --test socks --locked -j 2
+cargo test -p hf-daemon --lib --test tcp_forward --test webtransport --test frontdoor_bridge --locked -j 2
+cargo check -p hf-native-client --lib --target x86_64-pc-windows-msvc --locked -j 2
+```
+
+The SOCKS tests make 100 successive requests on one QUIC connection and hold
+32 simultaneous forwards while checking that the next request waits and is
+admitted after a slot is released. Windows runtime verification remains a
+separate gate from the Linux integration and Windows compilation checks.

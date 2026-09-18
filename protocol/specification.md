@@ -320,7 +320,7 @@ other channel roles abort the forward. Errors affect only the forward; no bytes
 are sent to the PTY or control channel. Dropping the channel/connection cancels
 the outbound socket. Completed/failed forwarding channels cannot be reused.
 
-Limits: 16 forwards per connection, 32 per user, 128 per daemon; a single queued
+Limits: 32 forwards per connection, 64 per user, 256 per daemon; a single queued
 input frame and ack per forward, in addition to the existing bounded transport
 queues; 10 s destination connect deadline, 30 s write/ack deadlines, 5 minute
 connection inactivity deadline. Limits are checked before spawning/resolving. Connections

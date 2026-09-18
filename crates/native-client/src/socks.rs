@@ -21,7 +21,8 @@ use tokio::{
 const HANDSHAKE: Duration = Duration::from_secs(10);
 const IO: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(300);
-const MAX_CONNECTIONS: usize = 16;
+const MAX_CONNECTIONS: usize = 32;
+const ACCEPT_BACKLOG: u32 = 16;
 
 /// Dropping this handle closes the listener and every accepted TCP connection.
 pub struct SocksProxy {
@@ -55,19 +56,23 @@ impl SocksProxy {
         #[cfg(unix)]
         socket.set_reuseaddr(true)?;
         socket.bind(address)?;
-        let listener = socket.listen(MAX_CONNECTIONS as u32)?;
+        let listener = socket.listen(ACCEPT_BACKLOG)?;
         let address = listener.local_addr()?;
         let task = tokio::spawn(async move {
             let mut clients = JoinSet::new();
             loop {
                 tokio::select! {
-                    accepted = listener.accept() => {
+                    // Reap completed tasks first. At capacity leave connections
+                    // in the bounded TCP backlog rather than accepting and
+                    // silently closing a browser's next request.
+                    biased;
+                    _ = clients.join_next(), if !clients.is_empty() => {}
+                    accepted = listener.accept(), if clients.len() < MAX_CONNECTIONS => {
                         let Ok((socket, peer)) = accepted else { break };
-                        if !peer.ip().is_loopback() || clients.len() >= MAX_CONNECTIONS { continue; }
+                        if !peer.ip().is_loopback() { continue; }
                         let connection = connection.clone();
                         clients.spawn(async move { let _ = serve(socket, &connection).await; });
                     }
-                    _ = clients.join_next(), if !clients.is_empty() => {}
                 }
             }
             // JoinSet drop aborts children; they must never outlive the listener.
@@ -200,6 +205,8 @@ async fn relay(mut socket: TcpStream, chan: Chan) -> Result<()> {
     let mut ack_deadline = tokio::time::Instant::now() + IO;
     loop {
         if local_eof && remote_eof && !waiting_ack {
+            // Flush the final EOF acknowledgement before releasing the stream.
+            timeout(IO, send.finish()).await??;
             return Ok(());
         }
         tokio::select! {

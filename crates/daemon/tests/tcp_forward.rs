@@ -239,8 +239,8 @@ async fn forwarding_connection_limit_does_not_block_control() {
     let daemon = Daemon::start(config(&["dev"])).await.unwrap();
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (mut ws, _) = client(&daemon, true, 3).await;
-    let mut peers = Vec::with_capacity(16);
-    for index in 0..16 {
+    let mut peers = Vec::with_capacity(32);
+    for index in 0..32 {
         send(
             &mut ws,
             1 + index * 2,
@@ -251,8 +251,8 @@ async fn forwarding_connection_limit_does_not_block_control() {
         peers.push(target.accept().await.unwrap().0);
         assert!(matches!(recv(&mut ws).await, (_, Msg::TcpForwardOpened(_))));
     }
-    send(&mut ws, 33, 30, open(target.local_addr().unwrap().port())).await;
-    let (33, Msg::Error(error)) = recv(&mut ws).await else {
+    send(&mut ws, 65, 40, open(target.local_addr().unwrap().port())).await;
+    let (65, Msg::Error(error)) = recv(&mut ws).await else {
         panic!("limit")
     };
     assert_eq!(error.code, pb::ErrorCode::ErrLimitExceeded as i32);

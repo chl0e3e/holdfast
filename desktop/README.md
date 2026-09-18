@@ -270,8 +270,10 @@ SOCKS supports TCP CONNECT, IPv4, IPv6 and server-side DNS. The local listener
 is accessible to local processes only; it does not change Windows proxy
 settings. **Stop SOCKS** closes its active TCP connections. A server disconnect,
 removal or application exit also stops it; Start is explicit after reconnect.
-One listener per configured server and at most 16 connections per listener are
-allowed. UDP ASSOCIATE, BIND, SOCKS4 and automatic TCP resumption are unsupported.
+One listener per configured server and at most 32 connections per listener are
+allowed. At capacity, connections wait in a bounded 16-entry TCP backlog until
+a slot is free. Sustained saturation can still time out. UDP ASSOCIATE, BIND,
+SOCKS4 and automatic TCP resumption are unsupported.
 
 The server needs holdfastd 0.0.7 with `--tcp-forward-user <authenticated-user>`
 (repeat for each allowed user). Without this configuration, Start is disabled.

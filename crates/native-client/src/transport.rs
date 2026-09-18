@@ -77,6 +77,20 @@ mod platform {
         current: Option<ma::StreamRecvBuffer>,
     }
 
+    impl Drop for SendStream {
+        fn drop(&mut self) {
+            // msquic-async does not shut down a stream when its handle drops.
+            // In particular, cancelled SOCKS requests must release server slots.
+            h3::quic::SendStream::<Bytes>::reset(&mut self.inner, 0);
+        }
+    }
+
+    impl Drop for RecvStream {
+        fn drop(&mut self) {
+            self.inner.stop_sending(0);
+        }
+    }
+
     /// Connect with normal Schannel/WebPKI validation when `expected_hash` is
     /// absent, or with an exact development certificate pin when it is set.
     pub async fn connect_webtransport(
@@ -235,6 +249,12 @@ mod platform {
     }
 
     impl SendStream {
+        pub async fn finish(&mut self) -> Result<()> {
+            poll_fn(|cx| h3::quic::SendStream::<Bytes>::poll_finish(&mut self.inner, cx))
+                .await
+                .map_err(|error| anyhow!("finish WebTransport stream: {error:?}"))
+        }
+
         pub async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
             let mut bytes = Bytes::copy_from_slice(bytes);
             while bytes.has_remaining() {
@@ -389,6 +409,11 @@ mod platform {
     }
 
     impl SendStream {
+        pub async fn finish(&mut self) -> Result<()> {
+            self.inner.finish().await?;
+            Ok(())
+        }
+
         pub async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
             self.inner.write_all(bytes).await?;
             Ok(())

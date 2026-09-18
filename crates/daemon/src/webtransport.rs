@@ -541,6 +541,7 @@ impl SessionReceive {
 enum WriterMsg {
     Register(u64, SessionSend),
     Frame(u64, Envelope),
+    Closed(u64),
 }
 
 /// Each QUIC stream owns an independent bounded writer queue. A blocked shell
@@ -675,6 +676,11 @@ fn spawn_writer_router() -> (
                         Err(e) => tracing::warn!("dropping unencodable frame: {e}"),
                     }
                 }
+                WriterMsg::Closed(channel) => {
+                    if let Some(queue) = queues.remove(&channel) {
+                        queue.close();
+                    }
+                }
             }
         }
         for queue in queues.values() {
@@ -736,6 +742,10 @@ impl ProtocolSessionRuntime {
     }
 
     async fn register(&mut self, send: SessionSend, mut recv: SessionReceive) -> Result<(), ()> {
+        // Reap on admission so completed readers cannot accumulate over the
+        // connection's lifetime. Do not cancel accept_bi to do this: HTTP/3
+        // may be partway through reading the next stream's header.
+        while self.readers.try_join_next().is_some() {}
         let channel = self.next_channel;
         self.next_channel = self.next_channel.checked_add(1).ok_or(())?;
         self.writer_tx
@@ -744,6 +754,7 @@ impl ProtocolSessionRuntime {
             .map_err(|_| ())?;
         let conn = Arc::clone(&self.conn);
         let close = self.close_tx.clone();
+        let writer = self.writer_tx.clone();
         self.readers.spawn(async move {
             let mut decoder = FrameDecoder::new(hf_protocol::FRAME_BYTES_DEFAULT);
             let mut buffer = vec![0_u8; 16 * 1024];
@@ -779,6 +790,9 @@ impl ProtocolSessionRuntime {
                 let _ = close.send(true);
             } else {
                 conn.lock().await.channel_closed(channel);
+                // A finished request must release its send half as well as
+                // its reader, otherwise QUIC stream credit never returns.
+                let _ = writer.send(WriterMsg::Closed(channel)).await;
             }
         });
         Ok(())
@@ -952,6 +966,39 @@ mod tests {
         assert_eq!(independent.next().await, Some(vec![7]));
         independent.close();
         assert_eq!(independent.next().await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_bridge_channel_releases_its_writer_while_control_stays_open() {
+        use super::{SessionSend, WriterMsg};
+        use tokio::io::AsyncReadExt;
+        let (writer, task) = super::spawn_writer_router();
+        let (control, _control_peer) = tokio::net::UnixStream::pair().unwrap();
+        let (_control_read, control_write) = control.into_split();
+        writer
+            .send(WriterMsg::Register(0, SessionSend::Bridge(control_write)))
+            .await
+            .unwrap();
+        for channel in 1..=100 {
+            let (stream, mut peer) = tokio::net::UnixStream::pair().unwrap();
+            let (_read, write) = stream.into_split();
+            writer
+                .send(WriterMsg::Register(channel, SessionSend::Bridge(write)))
+                .await
+                .unwrap();
+            writer.send(WriterMsg::Closed(channel)).await.unwrap();
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), peer.read(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
+        drop(writer);
+        task.await.unwrap();
     }
 
     /// The web link's counterpart to `hf_protocol`'s `agent_liveness_tests`.

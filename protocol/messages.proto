@@ -171,6 +171,7 @@ enum Capability {
 }
 
 // Spec §6.2. One forward per dedicated channel; no shell identity.
+// Admission bounds: 32 forwards per connection, 64 per user, 256 per daemon.
 message OpenTcpForward {
   string host = 1; // ASCII DNS name or IP literal, 1..255 bytes
   uint32 port = 2; // 1..65535

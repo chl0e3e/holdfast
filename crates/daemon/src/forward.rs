@@ -20,7 +20,7 @@ use tokio::{
 
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-pub(crate) const MAX_PER_CONNECTION: usize = 16;
+pub(crate) const MAX_PER_CONNECTION: usize = 32;
 
 pub(crate) struct ForwardService {
     users: BTreeSet<String>,
@@ -45,7 +45,7 @@ impl ForwardService {
     }
     pub fn acquire(self: &Arc<Self>, user: &str) -> Option<Permit> {
         let mut active = self.active.lock().unwrap();
-        if active.values().sum::<usize>() >= 128 || active.get(user).copied().unwrap_or(0) >= 32 {
+        if active.values().sum::<usize>() >= 256 || active.get(user).copied().unwrap_or(0) >= 64 {
             return None;
         }
         *active.entry(user.into()).or_default() += 1;
@@ -268,14 +268,14 @@ mod tests {
         let service = Arc::new(ForwardService::new(["alice".into()].into()).unwrap());
         assert!(service.permits("alice"));
         assert!(!service.permits("bob"));
-        let mut permits: Vec<_> = (0..32).map(|_| service.acquire("alice").unwrap()).collect();
+        let mut permits: Vec<_> = (0..64).map(|_| service.acquire("alice").unwrap()).collect();
         assert!(service.acquire("alice").is_none());
         permits.pop();
         assert!(service.acquire("alice").is_some());
         drop(permits);
         assert!(service.active.lock().unwrap().is_empty());
-        let permits: Vec<_> = (0..128)
-            .map(|i| service.acquire(&format!("user-{}", i / 32)).unwrap())
+        let permits: Vec<_> = (0..256)
+            .map(|i| service.acquire(&format!("user-{}", i / 64)).unwrap())
             .collect();
         assert!(service.acquire("next-user").is_none());
         drop(permits);
