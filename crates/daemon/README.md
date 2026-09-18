@@ -138,7 +138,7 @@ It works through both the direct QUIC endpoint and the shared HTTP/3 bridge.
 
 The listener stays on the desktop machine's loopback interface. TCP data has its
 own protocol channels and never enters shell input/output or history. Limits are
-16 connections per authenticated connection, 32 per user and 128 per daemon,
+32 connections per authenticated connection, 64 per user and 256 per daemon,
 with 8 KiB chunks, explicit acknowledgements and bounded deadlines (ADR 0032).
 A daemon update/restart ends existing shells; schedule installation accordingly.
 Publishing the release binaries does not restart a running daemon.

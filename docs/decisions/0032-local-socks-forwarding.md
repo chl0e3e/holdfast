@@ -102,3 +102,8 @@ The SOCKS tests make 100 successive requests on one QUIC connection and hold
 32 simultaneous forwards while checking that the next request waits and is
 admitted after a slot is released. Windows runtime verification remains a
 separate gate from the Linux integration and Windows compilation checks.
+
+The release audit also found RUSTSEC-2026-0285 in the existing rustls 0.23.42
+lockfile. Both workspace lockfiles now select rustls 0.23.45 and its required
+rustls-webpki 0.103.15 patch. Re-run `cargo audit` and
+`cargo audit --file desktop/src-tauri/Cargo.lock` when preparing the update.
